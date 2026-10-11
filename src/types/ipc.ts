@@ -1414,7 +1414,10 @@ export interface SessionSearchHit {
 /** The `SessionsSearch` reply: the matches, newest session first, and whether a cap stopped the scan. */
 export interface SessionSearchReply {
   hits: SessionSearchHit[];
+  /** More matches exist than the answer holds. */
   truncated: boolean;
+  /** The scan did not read everything it should have. */
+  stoppedEarly: boolean;
 }
 
 /** The `SessionTasks` reply: the list as derived now, and the rows past the cap. */

@@ -23,6 +23,13 @@ pub(crate) const SEARCH_SESSION_CAP: usize = 200;
 /// Most hits one search returns, newest first.
 pub(crate) const SEARCH_HIT_CAP: usize = 50;
 
+/// Most matches one session contributes, newest first.
+pub(crate) const SEARCH_SESSION_CANDIDATE_CAP: usize = 50;
+
+/// The largest transcript (stored payload bytes) a search replays into memory.
+/// A bigger one is skipped and the answer says so.
+pub(crate) const SEARCH_SESSION_BYTES_CAP: u64 = 64 * 1024 * 1024;
+
 /// Most matches one scan collects before it stops and sorts; reaching it is a
 /// cap like any other and sets `truncated`.
 pub(crate) const SEARCH_CANDIDATE_CAP: usize = 500;
@@ -38,7 +45,12 @@ const SNIPPET_CONTEXT: usize = 60;
 /// budget, a cancellation or an unreadable journal cut the scan short.
 pub(crate) struct TranscriptSearch {
     pub(crate) hits: Vec<SessionSearchHit>,
+    /// More matches exist than the answer holds: a cap was reached.
     pub(crate) truncated: bool,
+    /// The scan did not read everything it should have: the time budget ran
+    /// out, it was superseded, a transcript could not be read, or one was
+    /// skipped as too large. The answer may be missing matches for that reason.
+    pub(crate) stopped_early: bool,
 }
 
 /// A match with the time its event was written, for the newest-first order.
@@ -51,6 +63,7 @@ struct Candidate {
 struct Collector {
     candidates: Vec<Candidate>,
     truncated: bool,
+    stopped_early: bool,
     finished: bool,
 }
 
@@ -100,7 +113,7 @@ impl SearchRun {
             // No scanner means no hits, and the answer must say the search did
             // not run to completion.
             if let Ok(mut state) = collector.lock() {
-                state.truncated = true;
+                state.stopped_early = true;
                 state.finished = true;
             }
         }
@@ -126,10 +139,13 @@ impl SearchRun {
         let Ok(mut state) = self.collector.lock() else {
             return TranscriptSearch {
                 hits: Vec::new(),
-                truncated: true,
+                truncated: false,
+                stopped_early: true,
             };
         };
-        let mut truncated = state.truncated || !state.finished;
+        let mut truncated = state.truncated;
+        // A scan still running at the budget was stopped, whatever it found.
+        let stopped_early = state.stopped_early || !state.finished;
         let mut candidates = std::mem::take(&mut state.candidates);
         candidates.sort_by(|left, right| {
             right
@@ -147,7 +163,11 @@ impl SearchRun {
             .take(SEARCH_HIT_CAP)
             .map(|candidate| candidate.hit)
             .collect();
-        TranscriptSearch { hits, truncated }
+        TranscriptSearch {
+            hits,
+            truncated,
+            stopped_early,
+        }
     }
 }
 
@@ -162,14 +182,21 @@ fn scan(
     cancel: &AtomicBool,
     collector: &Mutex<Collector>,
 ) {
-    let finish = |truncated: bool| {
+    // The scan reads on its own connection: the writer thread is never asked
+    // for rows, so a search cannot delay an append.
+    let finish = |more: bool, early: bool| {
         if let Ok(mut state) = collector.lock() {
-            state.truncated |= truncated;
+            state.truncated |= more;
+            state.stopped_early |= early;
             state.finished = true;
         }
     };
-    let Ok(records) = journal.list() else {
-        finish(true);
+    let Ok(reader) = journal.open_reader() else {
+        finish(false, true);
+        return;
+    };
+    let Ok(records) = crate::journal::list_sessions_on(&reader) else {
+        finish(false, true);
         return;
     };
     let mut sessions: Vec<_> = records
@@ -178,18 +205,25 @@ fn scan(
         .collect();
     sessions.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
     let mut truncated = sessions.len() > SEARCH_SESSION_CAP;
+    let mut stopped_early = false;
     for record in sessions.iter().take(SEARCH_SESSION_CAP) {
         if cancel.load(Ordering::Acquire) {
-            truncated = true;
+            stopped_early = true;
             break;
         }
-        let Ok(replay) = journal.replay(&record.id) else {
+        // A transcript past the size cap is not replayed into memory: the answer
+        // says the search did not read it, rather than reading it whole.
+        if record.payload_bytes > SEARCH_SESSION_BYTES_CAP {
+            stopped_early = true;
+            continue;
+        }
+        let Ok(replay) = crate::journal::replay_session_on(&reader, &record.id) else {
             // An unreadable session is a gap in the answer, never a silent
             // "no match".
-            truncated = true;
+            stopped_early = true;
             continue;
         };
-        let mut found = Vec::new();
+        let mut found: Vec<Candidate> = Vec::new();
         for (index, (event, (generation, seq))) in replay
             .events
             .iter()
@@ -198,6 +232,12 @@ fn scan(
             .rev()
         {
             if cancel.load(Ordering::Acquire) {
+                stopped_early = true;
+                break;
+            }
+            // The newest matches of a session are the ones kept: once the
+            // per-session cap is full, older matches are not built at all.
+            if found.len() >= SEARCH_SESSION_CANDIDATE_CAP {
                 truncated = true;
                 break;
             }
@@ -229,7 +269,7 @@ fn scan(
             continue;
         }
         let Ok(mut state) = collector.lock() else {
-            finish(true);
+            finish(false, true);
             return;
         };
         if state.candidates.len() + found.len() > SEARCH_CANDIDATE_CAP {
@@ -240,7 +280,7 @@ fn scan(
         }
         state.candidates.extend(found);
     }
-    finish(truncated);
+    finish(truncated, stopped_early);
 }
 
 /// The words of an event a search reads: what the person typed, and what the
@@ -326,7 +366,7 @@ fn collapse_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{agent_report_record, new_session_record};
+    use crate::journal::{agent_report_record, agent_report_record_at, new_session_record};
     use devboule_protocol::SessionKind;
 
     #[test]
@@ -433,7 +473,9 @@ mod tests {
             ("s.theirs", 1, &stranger),
         ] {
             let record = agent_report_record(session, 1, seq, event).expect("a record");
-            assert!(journal.try_append(record), "the event is journalled");
+            journal
+                .append_blocking(record)
+                .expect("the event is journalled");
         }
         (dir, Arc::new(journal))
     }
@@ -449,6 +491,7 @@ mod tests {
         .unwrap_or(TranscriptSearch {
             hits: Vec::new(),
             truncated: false,
+            stopped_early: false,
         })
     }
 
@@ -502,7 +545,9 @@ mod tests {
             }))
             .expect("a human message");
             let record = agent_report_record_at(id, 1, 1, &event, written_at).expect("a record");
-            assert!(journal.try_append(record), "the event is journalled");
+            journal
+                .append_blocking(record)
+                .expect("the event is journalled");
         }
         let found = search(&Arc::new(journal), "owner", "kalsa");
         let order: Vec<&str> = found
@@ -519,6 +564,39 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_answer_is_truncated_not_stopped_early() {
+        let dir = crate::test_dirs::test_temp_dir("devboule-transcript-cap");
+        let journal = Journal::open(&dir.join("journal.sqlite")).expect("journal");
+        journal
+            .upsert_blocking(new_session_record(
+                "s.many",
+                "owner",
+                None,
+                SessionKind::Claude,
+                "a session",
+            ))
+            .expect("session row");
+        journal.start_generation("s.many", 1).expect("generation");
+        for seq in 1..=(SEARCH_SESSION_CANDIDATE_CAP as u64 + 5) {
+            let event: SessionEvent = serde_json::from_value(serde_json::json!({
+                "type": "agent_user_message",
+                "text": format!("kalsa line {seq}"),
+            }))
+            .expect("a human message");
+            let record = agent_report_record_at("s.many", 1, seq, &event, seq).expect("a record");
+            journal.append_blocking(record).expect("journalled");
+        }
+        let found = search(&Arc::new(journal), "owner", "kalsa");
+        assert_eq!(
+            found.hits.len(),
+            SEARCH_HIT_CAP.min(SEARCH_SESSION_CANDIDATE_CAP)
+        );
+        assert!(found.truncated, "more matches exist than the answer holds");
+        assert!(!found.stopped_early, "nothing was skipped or cut short");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_cancelled_scan_stops_and_says_so() {
         let (dir, journal) = searchable_journal();
         let cancel = Arc::new(AtomicBool::new(true));
@@ -527,7 +605,7 @@ mod tests {
         let found = run.wait();
         assert!(found.hits.is_empty(), "nothing is read after the cancel");
         assert!(
-            found.truncated,
+            found.stopped_early,
             "a cancelled scan is never presented as complete"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -564,7 +642,7 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the wait is bounded"
         );
-        assert!(found.truncated);
+        assert!(found.stopped_early);
         assert!(
             cancel.load(Ordering::Acquire),
             "the scanner is told to stop"

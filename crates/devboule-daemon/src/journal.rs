@@ -978,6 +978,36 @@ enum JournalCmd {
     Shutdown,
 }
 
+impl Journal {
+    /// A read-only connection of this journal's own. Reads that scan many rows
+    /// (the transcript search) go through it, so they never queue behind the
+    /// writer thread and never delay an append. WAL lets it read while the
+    /// writer appends.
+    pub(crate) fn open_reader(&self) -> Result<Connection, JournalError> {
+        let conn = Connection::open_with_flags(
+            &self.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(Duration::from_millis(500))?;
+        Ok(conn)
+    }
+}
+
+/// The session rows, read on a connection the caller opened. Same query the
+/// writer answers `list` with.
+pub(crate) fn list_sessions_on(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
+    journal_replay::list_sessions(conn)
+}
+
+/// One session replayed on a connection the caller opened. The whole replay is
+/// built in memory, so a caller bounds what it replays before it calls this.
+pub(crate) fn replay_session_on(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Replay, JournalError> {
+    journal_replay::replay_session(conn, session_id)
+}
+
 pub struct Journal {
     tx: SyncSender<JournalCmd>,
     join: Mutex<Option<JoinHandle<()>>>,

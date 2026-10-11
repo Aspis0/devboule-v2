@@ -62,7 +62,7 @@ afterEach(async () => {
 
 describe("TranscriptSearchResults", () => {
   it("waits for the typing to pause before it asks the daemon", async () => {
-    sessionsSearch.mockResolvedValue({ hits: [], truncated: false });
+    sessionsSearch.mockResolvedValue({ hits: [], truncated: false, stoppedEarly: false });
     await act(async () => render({ query: "kal" }));
     await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS - 1);
     expect(sessionsSearch).not.toHaveBeenCalled();
@@ -72,7 +72,7 @@ describe("TranscriptSearchResults", () => {
   });
 
   it("asks once for a query that changed while the first was still waiting", async () => {
-    sessionsSearch.mockResolvedValue({ hits: [], truncated: false });
+    sessionsSearch.mockResolvedValue({ hits: [], truncated: false, stoppedEarly: false });
     await act(async () => render({ query: "k" }));
     await flush(100);
     await act(async () => render({ query: "ka" }));
@@ -87,6 +87,7 @@ describe("TranscriptSearchResults", () => {
     sessionsSearch.mockResolvedValue({
       hits: [hit(), hit({ seq: 9, author: "person", snippet: "the Kalsa logo" })],
       truncated: false,
+      stoppedEarly: false,
     });
     await act(async () => render({ query: "kalsa", onOpen }));
     await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS);
@@ -101,13 +102,21 @@ describe("TranscriptSearchResults", () => {
     );
   });
 
+  it("says when the scan stopped early, which is not the same as more matches", async () => {
+    sessionsSearch.mockResolvedValueOnce({ hits: [hit()], truncated: false, stoppedEarly: true });
+    await act(async () => render({ query: "kalsa" }));
+    await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS);
+    expect(container.textContent).toContain("stopped early");
+    expect(container.textContent).not.toContain("More matches exist.");
+  });
+
   it("says so when no message matches, and when the scan stopped at a cap", async () => {
-    sessionsSearch.mockResolvedValueOnce({ hits: [], truncated: false });
+    sessionsSearch.mockResolvedValueOnce({ hits: [], truncated: false, stoppedEarly: false });
     await act(async () => render({ query: "nothing" }));
     await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS);
     expect(container.textContent).toContain("No messages match.");
 
-    sessionsSearch.mockResolvedValueOnce({ hits: [hit()], truncated: true });
+    sessionsSearch.mockResolvedValueOnce({ hits: [hit()], truncated: true, stoppedEarly: false });
     await act(async () => render({ query: "kalsa" }));
     await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS);
     expect(container.textContent).toContain("More matches exist.");
@@ -126,11 +135,16 @@ describe("TranscriptSearchResults", () => {
     sessionsSearch.mockResolvedValueOnce({
       hits: [hit({ snippet: "new words" })],
       truncated: false,
+      stoppedEarly: false,
     });
     await act(async () => render({ query: "new" }));
     await flush(TRANSCRIPT_SEARCH_DEBOUNCE_MS);
     await act(async () =>
-      answerFirst({ hits: [hit({ snippet: "stale words" })], truncated: false }),
+      answerFirst({
+        hits: [hit({ snippet: "stale words" })],
+        truncated: false,
+        stoppedEarly: false,
+      }),
     );
     expect(container.textContent).toContain("new words");
     expect(container.textContent).not.toContain("stale words");

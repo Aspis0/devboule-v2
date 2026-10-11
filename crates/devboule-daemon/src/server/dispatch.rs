@@ -109,6 +109,7 @@ pub(super) fn dispatch(
                 id,
                 hits: Vec::new(),
                 truncated: false,
+                stopped_early: false,
             });
         };
         let outbound = Arc::clone(&conn.outbound);
@@ -121,6 +122,7 @@ pub(super) fn dispatch(
                     id,
                     hits: search.hits,
                     truncated: search.truncated,
+                    stopped_early: search.stopped_early,
                 });
             });
         if spawn.is_err() {

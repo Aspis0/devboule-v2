@@ -73,9 +73,14 @@ export function TranscriptSearchResults({
       </div>
     );
   }
-  const { hits, truncated } = state.reply;
+  const { hits, truncated, stoppedEarly } = state.reply;
   if (hits.length === 0) {
-    return <div className="transcript-search-note">No messages match.</div>;
+    // Nothing found is not "no match" when the scan did not finish.
+    return (
+      <div className="transcript-search-note" role={stoppedEarly ? "status" : undefined}>
+        {stoppedEarly ? "Search stopped early before it found a match." : "No messages match."}
+      </div>
+    );
   }
   return (
     <div className="transcript-search" role="list" aria-label="Messages">
@@ -94,7 +99,11 @@ export function TranscriptSearchResults({
           </span>
         </button>
       ))}
-      {truncated ? (
+      {stoppedEarly ? (
+        <div className="transcript-search-note" role="status">
+          Search stopped early, so some matches may be missing.
+        </div>
+      ) : truncated ? (
         <div className="transcript-search-note">More matches exist. Type more to narrow.</div>
       ) : null}
     </div>

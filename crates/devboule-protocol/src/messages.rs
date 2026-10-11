@@ -2383,12 +2383,14 @@ pub enum DaemonMessage {
         sessions: Vec<Session>,
     },
     /// The reply to [`ClientMessage::SessionsSearch`]: the matches, newest
-    /// session first, and whether the search stopped at its session, hit or
-    /// time cap before it had read everything.
+    /// session first. `truncated` means more matches exist than the answer
+    /// holds; `stopped_early` means the scan did not read everything it should
+    /// have (time budget, a newer search, an unreadable or oversized transcript).
     SessionsSearch {
         id: u64,
         hits: Vec<SessionSearchHit>,
         truncated: bool,
+        stopped_early: bool,
     },
     /// The reply to [`ClientMessage::SessionTasksGet`]: the session's
     /// background-task list as derived at the moment of the request,

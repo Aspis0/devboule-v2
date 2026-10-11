@@ -1277,7 +1277,7 @@ impl DaemonClient {
     pub fn sessions_search(
         &self,
         query: &str,
-    ) -> Result<(Vec<devboule_protocol::SessionSearchHit>, bool), DaemonError> {
+    ) -> Result<(Vec<devboule_protocol::SessionSearchHit>, bool, bool), DaemonError> {
         self.require_agreed(devboule_protocol::caps::SESSIONS_SEARCH)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionsSearch {
@@ -1285,8 +1285,11 @@ impl DaemonClient {
             query: query.to_string(),
         })? {
             DaemonMessage::SessionsSearch {
-                hits, truncated, ..
-            } => Ok((hits, truncated)),
+                hits,
+                truncated,
+                stopped_early,
+                ..
+            } => Ok((hits, truncated, stopped_early)),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }

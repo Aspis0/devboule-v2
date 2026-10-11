@@ -320,7 +320,7 @@ pub(super) fn replay_agent_page(
 /// Every open session row: the roster's read, with `closed = 0` in SQL —
 /// closed rows accumulate for the daemon's whole life and are none of this
 /// path's business (history rides the transcript, not the live roster).
-pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
+pub(crate) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                 generation, status, exit_code, closed, last_seq, degraded,

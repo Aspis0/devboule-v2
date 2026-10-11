@@ -693,6 +693,7 @@ pub async fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Sessio
 pub struct SessionSearchReply {
     hits: Vec<SessionSearchHit>,
     truncated: bool,
+    stopped_early: bool,
 }
 
 #[tauri::command]
@@ -701,8 +702,13 @@ pub async fn sessions_search(
     query: String,
 ) -> Result<SessionSearchReply, CommandError> {
     let client = require_client(&bridge)?;
-    let (hits, truncated) = off_main_thread(move || client.sessions_search(&query)).await?;
-    Ok(SessionSearchReply { hits, truncated })
+    let (hits, truncated, stopped_early) =
+        off_main_thread(move || client.sessions_search(&query)).await?;
+    Ok(SessionSearchReply {
+        hits,
+        truncated,
+        stopped_early,
+    })
 }
 
 #[tauri::command]
