@@ -41,7 +41,7 @@ describe("devbouleToolLine", () => {
       state: "stopped",
       sessionId: "s.kalsa.finish",
       displayName: "Finish Kalsa website",
-      elapsedMs: 217_000,
+      runMs: 217_000,
     });
     expect(devbouleToolLine(call("devboule_stop_agent", output))).toBe(
       "Stopped Finish Kalsa website (3m 37s)",

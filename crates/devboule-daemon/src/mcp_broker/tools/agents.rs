@@ -292,7 +292,11 @@ pub(in crate::mcp_broker) fn stop_or_close(
     let child_name = stopped
         .as_ref()
         .and_then(|entry| crate::session::roster_title(&entry.session));
-    let child_elapsed = stopped.as_ref().and_then(|entry| entry.session.elapsed_ms);
+    // The run time: from the child's own start to this stop. The silence age
+    // (`elapsed_ms`) is not a run time and is never reported as one.
+    let child_run_ms = stopped
+        .as_ref()
+        .map(|entry| crate::journal::now_ms().saturating_sub(entry.session.created_at_ms));
     let action = if stopping {
         state
             .sessions
@@ -311,7 +315,7 @@ pub(in crate::mcp_broker) fn stop_or_close(
                 "state": word,
                 "sessionId": session_arg,
                 "displayName": child_name,
-                "elapsedMs": child_elapsed,
+                "runMs": child_run_ms,
             });
             Ok(Some(json!({
                 "jsonrpc": "2.0",

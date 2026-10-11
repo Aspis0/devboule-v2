@@ -991,6 +991,14 @@ fn the_end_tools_stop_and_close_a_callers_own_children_only() {
     ));
     assert_eq!(stopped["result"]["isError"], json!(false));
     assert_eq!(state_of(&stopped), json!("stopped"));
+    // The run time is the child's own start to this stop, a whole number of
+    // milliseconds; the silence age is never reported under that name.
+    let stopped_document = document_of(&stopped);
+    assert!(stopped_document["runMs"].is_u64(), "{stopped_document}");
+    assert!(
+        stopped_document.get("elapsedMs").is_none(),
+        "{stopped_document}"
+    );
     let live_ids = || {
         state
             .sessions
@@ -6629,14 +6637,19 @@ fn resolve_carries_the_serving_provider_beside_the_bare_id() {
     assert_eq!(old_facts.model_provider, None);
 }
 
-/// The state a stop or close result names: the result text is one JSON document
-/// (the state, the session, the name and the age), so the state is read from it.
-fn state_of(response: &serde_json::Value) -> serde_json::Value {
+/// The JSON document a stop or close result carries as its text: the state, the
+/// session, the name and the run time.
+fn document_of(response: &serde_json::Value) -> serde_json::Value {
     let text = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|document| document.get("state").cloned())
+    serde_json::from_str::<serde_json::Value>(text).unwrap_or(serde_json::Value::Null)
+}
+
+/// The state a stop or close result names.
+fn state_of(response: &serde_json::Value) -> serde_json::Value {
+    document_of(response)
+        .get("state")
+        .cloned()
         .unwrap_or(serde_json::Value::Null)
 }
