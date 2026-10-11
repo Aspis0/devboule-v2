@@ -434,6 +434,8 @@ impl AgentCreatorCaps {
 pub(super) struct PendingWake {
     pub(super) owner: OwnerId,
     pub(super) text: String,
+    /// The child the wake is about: where a muted line goes if it is dropped.
+    pub(super) child: Option<String>,
     /// How many deliveries have been refused, so a wake that never lands is
     /// dropped with a notice rather than retried forever.
     pub(super) attempts: u32,

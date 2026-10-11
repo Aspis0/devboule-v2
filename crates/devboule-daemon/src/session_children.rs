@@ -882,7 +882,8 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         text: &str,
     ) -> Result<(), WireError> {
-        self.deliver_to_creator(creator, owner, text).map(|_| ())
+        self.deliver_to_creator(creator, owner, text, None)
+            .map(|_| ())
     }
 
     /// Whether `child` is `creator`'s own child that asked to be told how it
@@ -1017,7 +1018,7 @@ impl super::SessionRegistry {
         // The notice has no event beside it, so its delivery id is not needed:
         // a parked child is visible on its own session, and the text is the
         // whole message.
-        let _ = self.deliver_to_creator(&creator, &owner, &envelope);
+        let _ = self.deliver_to_creator(&creator, &owner, &envelope, Some(child));
     }
 
     /// Read-only activity answer for one agent session: the derived headline,
@@ -1301,19 +1302,20 @@ impl super::SessionRegistry {
         // creator that is live but did not take the text is told so in the
         // note and gets no id at all: naming whatever message happened to be
         // last would point the app at somebody else's turn.
-        let (message_id, note) = match self.deliver_to_creator(&creator, owner, &envelope) {
-            Ok(Some(message_id)) => (Some(message_id), note),
-            // Delivered, and the creator's provider kept no transcript record
-            // for it: there is nothing to correlate to, and the text is there.
-            Ok(None) => (None, note),
-            Err(_) => (
-                None,
-                Some(match note {
-                    Some(note) => format!("{note} finish report not delivered"),
-                    None => "finish report not delivered".to_string(),
-                }),
-            ),
-        };
+        let (message_id, note) =
+            match self.deliver_to_creator(&creator, owner, &envelope, Some(child)) {
+                Ok(Some(message_id)) => (Some(message_id), note),
+                // Delivered, and the creator's provider kept no transcript record
+                // for it: there is nothing to correlate to, and the text is there.
+                Ok(None) => (None, note),
+                Err(_) => (
+                    None,
+                    Some(match note {
+                        Some(note) => format!("{note} finish report not delivered"),
+                        None => "finish report not delivered".to_string(),
+                    }),
+                ),
+            };
         match creator_runtime.publish_child_finished(
             message_id,
             &session.id,
@@ -1328,31 +1330,33 @@ impl super::SessionRegistry {
         }
     }
 
-    /// Hand one daemon-originated line to the creator through the slice-4
-    /// steer-or-prompt path, **without** a sender brake slot.
-    ///
-    /// The exemption is deliberate and narrow: the brakes bound what an *agent*
-    /// may spend on its peers, and this is the daemon's own report, raised by a
-    /// child's end rather than by a caller. It is one delivery per finish.
-    ///
-    /// The answer is the transcript id the delivered text got (`S5-04`): the
-    /// caller correlates an event to the message that is actually there, rather
-    /// than reading a "last message" that may belong to somebody else. `None`
-    /// means the text was delivered but left no transcript record.
+    /// Deliver a wake to `creator`: the daemon's message that a child finished,
+    /// errored or needs permission. It starts the creator's next turn. A creator
+    /// that is stopped, whose kill is in flight, or whose turn is running keeps
+    /// the wake held; a creator that is gone drops it with a muted notice in the
+    /// child. Answers the transcript id of the text when it was written now.
     pub(super) fn deliver_to_creator(
         &self,
         creator: &str,
         owner: &OwnerId,
         text: &str,
+        child: Option<&str>,
     ) -> Result<Option<String>, WireError> {
         let Some(runtime) = self.live_runtime(creator, owner) else {
+            self.drop_wake(child, owner, "its creator is no longer here");
             return Ok(None);
         };
+        // A stopped creator, or one whose kill is in flight, takes no writes:
+        // the wake waits until a resume (or the creator is gone for good).
+        if self.creator_fenced(creator, &runtime) {
+            self.hold_wake(creator, owner, text, child, 0);
+            return Ok(None);
+        }
         // A creator mid-turn takes the wake when that turn ends: a steer would
         // fold the child's news into a turn the creator may be ending anyway,
         // and nothing would start a turn for it afterwards.
         if runtime.is_running_turn() {
-            self.hold_wake(creator, owner, text, 0);
+            self.hold_wake(creator, owner, text, child, 0);
             return Ok(None);
         }
         match self.send_wake(creator, owner, text) {
@@ -1361,21 +1365,31 @@ impl super::SessionRegistry {
             // same thing twice, so an uncertain write is not held.
             Err(error @ crate::session::SendError::Uncertain(_)) => Err(WireError::from(error)),
             Err(_) => {
-                self.hold_wake(creator, owner, text, 1);
+                self.hold_wake(creator, owner, text, child, 1);
                 Ok(None)
             }
         }
     }
 
+    /// Whether a creator must take no write now: a stop ended it, or its kill is
+    /// in flight (the stop was asked and the process has not gone yet).
+    fn creator_fenced(&self, creator: &str, runtime: &SessionRuntime) -> bool {
+        runtime.stop_requested() || self.was_stopped(creator)
+    }
+
     /// One plain prompt that starts the creator's next turn. It is refused
-    /// while a turn runs, so a wake that raced a turn is held rather than
-    /// written into it.
+    /// while a turn runs, and while the creator's queue is fenced by a stop, so
+    /// a wake that raced either is held rather than written into it.
     fn send_wake(
         &self,
         creator: &str,
         owner: &OwnerId,
         text: &str,
     ) -> Result<Option<String>, crate::session::SendError> {
+        // A creator nothing has queued for has no queue state yet, and the fence
+        // check reads a missing state as fenced. Create the empty one, so the
+        // check reads an unfenced queue unless a stop has fenced it.
+        drop(self.queues.entry(creator));
         let internal_conn = ConnHandle::with_peer(0, None);
         self.send_with_subscription_timeout(&SendRequest {
             session_id: creator,
@@ -1396,7 +1410,7 @@ impl super::SessionRegistry {
             message_kind: UserMessageKind::SystemNotice,
             steer_origin: SteerOrigin::Agent,
             require_no_turn_running: true,
-            require_queue_unfenced: false,
+            require_queue_unfenced: true,
             peer_title: None,
         })
         .map(|outcome| outcome.message_id)
@@ -1404,7 +1418,14 @@ impl super::SessionRegistry {
 
     /// Hold a wake for its creator's next turn end. Past the attempt bound it
     /// is dropped, and the creator is told so once.
-    fn hold_wake(&self, creator: &str, owner: &OwnerId, text: &str, attempts: u32) {
+    fn hold_wake(
+        &self,
+        creator: &str,
+        owner: &OwnerId,
+        text: &str,
+        child: Option<&str>,
+        attempts: u32,
+    ) {
         if attempts >= MAX_WAKE_ATTEMPTS {
             eprintln!("a wake for {creator} was dropped after {attempts} refused deliveries");
             if let Some(runtime) = self.live_runtime(creator, owner) {
@@ -1428,13 +1449,29 @@ impl super::SessionRegistry {
             .push_back(PendingWake {
                 owner: owner.clone(),
                 text: text.to_string(),
+                child: child.map(str::to_string),
                 attempts,
             });
     }
 
-    /// The creator's turn ended: deliver its held wakes, one turn each. A
-    /// wake the creator refuses goes back to the end of the line with one more
-    /// attempt counted, and the drain stops there until the next turn end or sweep.
+    /// Drop a wake that can no longer reach its creator, leaving a muted line in
+    /// the child it came from so the person can see the report did not land.
+    fn drop_wake(&self, child: Option<&str>, owner: &OwnerId, reason: &str) {
+        let Some(child) = child else {
+            return;
+        };
+        if let Some(runtime) = self.live_runtime(child, owner) {
+            runtime.publish_session_notice(
+                format!("A report about this agent was not delivered: {reason}."),
+                devboule_protocol::NoticeSeverity::Info,
+            );
+        }
+    }
+
+    /// The creator's turn ended, or it was resumed: deliver its held wakes, one
+    /// turn each. A wake the creator refuses goes back to the end of the line
+    /// with one more attempt counted; a fenced creator keeps them all, in order,
+    /// until a resume; a creator that is gone drops them with a notice in the child.
     pub(crate) fn drain_wakes(&self, creator: &str) {
         loop {
             let next = {
@@ -1455,10 +1492,14 @@ impl super::SessionRegistry {
                 return;
             };
             let Some(runtime) = self.live_runtime(creator, &wake.owner) else {
-                // The creator is gone: nothing can take the wake now.
-                return;
+                self.drop_wake(
+                    wake.child.as_deref(),
+                    &wake.owner,
+                    "its creator is no longer here",
+                );
+                continue;
             };
-            if runtime.is_running_turn() {
+            if self.creator_fenced(creator, &runtime) || runtime.is_running_turn() {
                 self.push_front_wake(creator, wake);
                 return;
             }
@@ -1466,7 +1507,13 @@ impl super::SessionRegistry {
                 Ok(_) => continue,
                 Err(crate::session::SendError::Uncertain(_)) => return,
                 Err(_) => {
-                    self.hold_wake(creator, &wake.owner, &wake.text, wake.attempts + 1);
+                    self.hold_wake(
+                        creator,
+                        &wake.owner,
+                        &wake.text,
+                        wake.child.as_deref(),
+                        wake.attempts + 1,
+                    );
                     return;
                 }
             }

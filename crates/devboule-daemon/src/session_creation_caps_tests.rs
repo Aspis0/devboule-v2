@@ -782,7 +782,7 @@ fn a_wake_starts_the_next_turn_of_every_provider_it_reaches() {
         );
         creator.begin_turn();
         let held = registry
-            .deliver_to_creator("wake-creator", &owner, "child finished: all green")
+            .deliver_to_creator("wake-creator", &owner, "child finished: all green", None)
             .expect("a held wake is not an error");
         assert_eq!(
             held, None,
@@ -853,7 +853,12 @@ fn a_refused_wake_is_held_and_delivered_at_the_next_turn_end() {
     // The creator is idle, and its first write is refused: the wake is held.
     refuse.store(true, std::sync::atomic::Ordering::Release);
     registry
-        .deliver_to_creator("wake-retry-creator", &owner, "the second child is done")
+        .deliver_to_creator(
+            "wake-retry-creator",
+            &owner,
+            "the second child is done",
+            None,
+        )
         .expect("a refused delivery is held, not an error");
     assert!(written.lock().expect("written").is_empty());
 
@@ -866,6 +871,83 @@ fn a_refused_wake_is_held_and_delivered_at_the_next_turn_end() {
         text.contains("the second child is done"),
         "the held wake lands at the next turn end: {text}"
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A wake to a stopped creator is held and never written into it: a stop, and a
+/// kill still in flight, both keep the creator out of reach until it is resumed.
+#[test]
+fn a_wake_to_a_stopped_creator_is_held_and_never_written() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-wake-stopped", "process-wake-stopped");
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let creator = insert_live_agent_with_turn_control(
+        &registry,
+        "wake-stopped-creator",
+        owner.clone(),
+        SessionKind::Claude,
+        Box::new(RecordingWriter(Arc::clone(&written))),
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(RecordingSteerer(Arc::new(Mutex::new(Vec::new())))),
+    );
+    // The stop is asked and the kill is still in flight.
+    creator.request_stop();
+    let held = registry
+        .deliver_to_creator(
+            "wake-stopped-creator",
+            &owner,
+            "child finished: stopped",
+            None,
+        )
+        .expect("a held wake is not an error");
+    assert_eq!(held, None, "a fenced creator takes the wake later");
+    registry.drain_wakes("wake-stopped-creator");
+    assert!(
+        written.lock().expect("written").is_empty(),
+        "nothing is written into a stopped creator, not even by a drain"
+    );
+    let queued = registry
+        .creations
+        .lock()
+        .expect("creation table")
+        .pending_wakes
+        .get("wake-stopped-creator")
+        .map(|queue| queue.len());
+    assert_eq!(
+        queued,
+        Some(1),
+        "the wake waits for the creator to be resumed"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A wake whose creator is gone is dropped rather than held forever: nothing
+/// can take it, and the child it came from says it did not land.
+#[test]
+fn a_wake_to_a_creator_that_is_gone_is_dropped() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-wake-gone", "process-wake-gone");
+    let held = registry
+        .deliver_to_creator(
+            "no-such-creator",
+            &owner,
+            "child finished",
+            Some("no-such-child"),
+        )
+        .expect("a dropped wake is not an error");
+    assert_eq!(held, None);
+    let queued = registry
+        .creations
+        .lock()
+        .expect("creation table")
+        .pending_wakes
+        .get("no-such-creator")
+        .map(|queue| queue.len());
+    assert_eq!(queued, None, "a wake with no creator is not kept");
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -1782,7 +1782,7 @@ impl SessionRegistry {
             &display_name,
             &excerpt,
         );
-        let _ = self.deliver_to_creator(&creator, &owner, &envelope);
+        let _ = self.deliver_to_creator(&creator, &owner, &envelope, Some(session.id.as_str()));
     }
 
     pub(crate) fn set_presence(
@@ -2742,6 +2742,8 @@ impl SessionRegistry {
             }
         }
         self.forget_stopped(session_id);
+        // Wakes held while the creator was stopped may start its next turn now.
+        self.drain_wakes(session_id);
         self.resume_session_queue(session_id);
         self.resume_read_registered(session_id)
     }
