@@ -246,7 +246,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
+        "Creates a new Devboule agent session and sends it an initial prompt. Name the provider, model and mode yourself, or name a profile the human enabled for agents (see devboule_list_profiles), which names the whole configuration; preset design gives a design child the design tools without the browser lane. Do not guess a model: a value the provider does not offer refuses the creation. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -755,9 +755,30 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "provider": {
+                "type": "string",
+                "description": "The provider the child runs on (claude, codex, pi, ...). Required unless profile is named."
+            },
+            "model": {
+                "type": "string",
+                "description": "The provider's model id. Required unless profile is named."
+            },
+            "mode": {
+                "type": "string",
+                "description": "The session mode the child starts in. Required unless profile or preset is named."
+            },
+            "effort": {
+                "type": "string",
+                "description": "The thinking option for the model, when it has one. Optional."
+            },
+            "preset": {
+                "type": "string",
+                "enum": ["design", "worker"],
+                "description": "A preset chooses the mode and the tool overlay for the provider: design gives the child the design tools without the browser lane; worker gives it no overlay. Leave out mode when you name one."
+            },
             "profile": {
                 "type": "string",
-                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles."
+                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles. It names the whole configuration, so leave out provider, model, mode, effort and preset."
             },
             "title": {
                 "type": "string",
@@ -785,7 +806,7 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
                 "description": "Whether this session is told when the child finishes. Default true."
             }
         },
-        "required": ["profile", "title", "initialPrompt"],
+        "required": ["title", "initialPrompt"],
         "additionalProperties": false
     })
 }
@@ -1480,12 +1501,9 @@ pub(crate) struct AgentPreset {
     pub(crate) cells: &'static [AgentPresetCell],
 }
 
-// Kept as data, not as a path: a profile is now the
-// only thing a creation resolves, and these rows survive as the **seed values**
-// the Settings → Agents form offers and as the two overlays it starts from. No
-// production caller resolves one, which is what `#[allow(dead_code)]` says; the
-// change that publishes the seeds to the app is what removes this block.
-#[allow(dead_code)]
+// The presets a direct creation names with `preset`: each one chooses the mode
+// and the tool overlay of the provider it runs on (owner bug #34: the Design
+// route was lost when creation moved to profiles only).
 #[cfg(feature = "server")]
 pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
 #[cfg(feature = "server")]
@@ -1511,7 +1529,6 @@ pub(crate) const AGENT_PREAMBLE: &str =
 /// debug-only health probe that implements no `session/set_mode`, so a
 /// creation naming it is refused with `no non-bypass mode for provider`.
 #[cfg(feature = "server")]
-#[allow(dead_code)]
 const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -1552,7 +1569,6 @@ const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
 /// `initialPrompt`. A frozen copy in the catalog would be a second source of
 /// truth for a prompt the app still owns.
 #[cfg(feature = "server")]
-#[allow(dead_code)]
 const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -1589,7 +1605,6 @@ const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
 /// The closed preset table. A preset not in this list is an unknown
 /// preset and is refused by name rather than resolved by default.
 #[cfg(feature = "server")]
-#[allow(dead_code)]
 pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
     AgentPreset {
         id: AGENT_PRESET_WORKER,
@@ -1710,7 +1725,6 @@ pub(crate) fn catalog_provider_id_for(
 /// The preset with this id, or `None`. Case-sensitive: a preset id is our own
 /// closed vocabulary, not a user's spelling.
 #[cfg(feature = "server")]
-#[allow(dead_code)]
 pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
     AGENT_PRESETS.iter().find(|preset| preset.id == preset_id)
 }

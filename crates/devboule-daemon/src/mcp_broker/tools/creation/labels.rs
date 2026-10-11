@@ -113,7 +113,10 @@ pub(in crate::mcp_broker) fn stamped_labels(
     );
     labels.insert("devboule.depth".to_string(), depth.to_string());
     labels.insert("devboule.origin".to_string(), origin_label(origin));
-    labels.insert("devboule.profile".to_string(), profile.id.clone());
+    // A direct creation names no stored profile, so it carries no profile label.
+    if !profile.id.is_empty() {
+        labels.insert("devboule.profile".to_string(), profile.id.clone());
+    }
     labels
 }
 

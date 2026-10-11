@@ -793,10 +793,15 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_agent",
     label: "Create Devboule agent",
-    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.`,
+    description: `Creates a new Devboule agent session and sends it an initial prompt. Name the provider, model and mode yourself, or name a profile the human enabled for agents (see devboule_list_profiles), which names the whole configuration; preset design gives a design child the design tools without the browser lane. Do not guess a model: a value the provider does not offer refuses the creation. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.`,
     parameters: Type.Object(
       {
-        profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
+        provider: Type.Optional(Type.String({ description: "The provider the child runs on (claude, codex, pi, ...). Required unless profile is named." })),
+        model: Type.Optional(Type.String({ description: "The provider's model id. Required unless profile is named." })),
+        mode: Type.Optional(Type.String({ description: "The session mode the child starts in. Required unless profile or preset is named." })),
+        effort: Type.Optional(Type.String({ description: "The thinking option for the model, when it has one. Optional." })),
+        preset: Type.Optional(Type.Union([Type.Literal("design"), Type.Literal("worker")], { description: "A preset chooses the mode and the tool overlay for the provider: design gives the child the design tools without the browser lane; worker gives it no overlay. Leave out mode when you name one." })),
+        profile: Type.Optional(Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles. It names the whole configuration, so leave out provider, model, mode, effort and preset." })),
         title: Type.String({ description: "The child's display name, 1 to 60 characters." }),
         labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Optional labels for the child: string to string." })),
         workspaceId: Type.Optional(Type.String()),
@@ -804,7 +809,7 @@ export default function (pi) {
         initialPrompt: Type.String({ description: "The child's first prompt, at most 32 KiB." }),
         notifyOnFinish: Type.Optional(Type.Boolean()),
       },
-      { required: ["profile", "title", "initialPrompt"], additionalProperties: false },
+      { required: ["title", "initialPrompt"], additionalProperties: false },
     ),
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);

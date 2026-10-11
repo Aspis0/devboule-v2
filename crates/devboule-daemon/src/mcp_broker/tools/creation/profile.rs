@@ -2,6 +2,8 @@
 
 use serde_json::{json, Value};
 
+use super::request::CreationChoice;
+
 /// The name a profile's labels and the creation record are keyed on: the
 /// catalog's own spelling of the name, trimmed exactly as the store trims it.
 /// The comparison form of the name a creation asked for and of every stored
@@ -175,6 +177,61 @@ pub(in crate::mcp_broker) fn predicted_unattended(
         return devboule_protocol::UnattendedState::Yes;
     }
     crate::peer_policy::unattended_mode(kind, Some(mode_id))
+}
+
+/// What one creation runs, resolved from its choice: a profile the human ticked
+/// (see [`resolve_profile`]), or the provider and settings the caller named.
+///
+/// A direct creation has no stored profile, so its id is empty and it carries no
+/// features, no spawn prompt and no model provider; the provider and model are
+/// the caller's, and the spawn path validates them against what the provider
+/// offers exactly as it does a profile's. A preset supplies the mode and the tool
+/// overlay of its cell for that provider; without one the caller's mode stands.
+pub(in crate::mcp_broker) fn resolve_creation(
+    store: &crate::agent_profiles::AgentProfilesStore,
+    choice: &CreationChoice,
+) -> Result<ResolvedProfile, String> {
+    let (provider, model, mode, effort, preset) = match choice {
+        CreationChoice::Profile(name) => return resolve_profile(store, name),
+        CreationChoice::Direct {
+            provider,
+            model,
+            mode,
+            effort,
+            preset,
+        } => (provider, model, mode, effort, preset),
+    };
+    let catalog_id = crate::provider_catalog::catalog_provider_id_for(
+        &crate::session::catalog_registry(),
+        provider,
+    )
+    .ok_or_else(|| format!("provider {provider} is not installed"))?;
+    let (mode, overlay) = match preset {
+        Some(preset_id) => {
+            let (_, cell) = crate::provider_catalog::resolve_agent_preset(preset_id, &catalog_id)?;
+            (cell.mode.to_string(), cell.overlay)
+        }
+        None => (
+            mode.clone()
+                .ok_or_else(|| "mode is required when no preset or profile is named".to_string())?,
+            crate::provider_catalog::ToolOverlay::NONE,
+        ),
+    };
+    Ok(ResolvedProfile {
+        id: String::new(),
+        name: match preset {
+            Some(preset_id) => format!("{catalog_id} {preset_id}"),
+            None => format!("{catalog_id} {model}"),
+        },
+        provider: catalog_id,
+        model: model.clone(),
+        model_provider: None,
+        mode,
+        thinking_option_id: effort.clone(),
+        features: serde_json::Map::new(),
+        spawn_prompt: String::new(),
+        overlay,
+    })
 }
 
 /// One `devboule_list_profiles` call (`create-from-profile`).

@@ -866,8 +866,11 @@ export const Type = {
   }
   const create = tools.devboule_create_agent.parameters;
   if (create.additionalProperties !== false) process.exit(22);
-  for (const key of ["profile", "title", "initialPrompt"]) {
+  for (const key of ["title", "initialPrompt"]) {
     if (!(create.required || []).includes(key)) process.exit(23);
+  }
+  for (const key of ["provider", "model", "mode", "preset", "profile"]) {
+    if (!((create.properties || {})[key])) process.exit(23);
   }
   const outcome = (((tools.devboule_answer_permission.parameters || {}).properties || {}).outcome || {});
   const values = outcome.anyOf ? outcome.anyOf.map((entry) => entry.const) : outcome.enum;

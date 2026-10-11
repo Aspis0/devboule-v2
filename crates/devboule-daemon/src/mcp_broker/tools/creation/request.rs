@@ -12,14 +12,54 @@ use super::labels::parse_labels;
 /// read out of the published schema rather than repeated here, so the document
 /// an agent sees and the check it hits cannot disagree.
 ///
-/// `profile` is a **name**, and it is the only way this request says what to
-/// run: the provider, the model, the mode, the thinking option, the features
-/// and the tool overlay all come from the stored profile that name resolves to
-/// at the moment of the call. There is no field here that could disagree with
-/// it.
+/// What the creation runs: a profile the human ticked, or the provider and the
+/// settings the caller names itself. A profile is the optional shortcut; the
+/// direct form needs no profile at all (owner bug #34).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::mcp_broker) enum CreationChoice {
+    /// A profile's **name**: the provider, model, mode, thinking option,
+    /// features and tool overlay all come from the stored profile that name
+    /// resolves to at the moment of the call.
+    Profile(String),
+    /// The provider and model the caller names. The mode is the caller's, or
+    /// the preset's (`design`, `worker`), which also carries the tool overlay.
+    Direct {
+        provider: String,
+        model: String,
+        mode: Option<String>,
+        effort: Option<String>,
+        preset: Option<String>,
+    },
+}
+
+impl CreationChoice {
+    /// The choice as one stable string for the creation's fingerprint: its
+    /// JSON encoding, so every field is named and two choices cannot spell
+    /// the same string.
+    pub(in crate::mcp_broker) fn fingerprint(&self) -> String {
+        match self {
+            Self::Profile(name) => json!({"profile": name}),
+            Self::Direct {
+                provider,
+                model,
+                mode,
+                effort,
+                preset,
+            } => json!({
+                "provider": provider,
+                "model": model,
+                "mode": mode,
+                "effort": effort,
+                "preset": preset,
+            }),
+        }
+        .to_string()
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::mcp_broker) struct AgentCreateRequest {
-    pub(in crate::mcp_broker) profile: String,
+    pub(in crate::mcp_broker) choice: CreationChoice,
     pub(in crate::mcp_broker) title: String,
     /// The caller's own labels. The daemon's `devboule.` keys are stamped into
     /// the same map at the creation and are refused here.
@@ -38,13 +78,14 @@ impl AgentCreateRequest {
     pub(in crate::mcp_broker) fn creation_fingerprint_fields<'a>(
         creator_id: &'a str,
         request: &'a Self,
+        choice: &'a str,
         notify_field: &'a str,
         labels: &'a str,
     ) -> Vec<&'a str> {
         vec![
             creator_id,
             &request.title,
-            &request.profile,
+            choice,
             &request.initial_prompt,
             request.workspace_id.as_deref().unwrap_or(""),
             request.cwd.as_deref().unwrap_or(""),
@@ -90,13 +131,13 @@ impl AgentCreateRequest {
                 .ok_or_else(|| format!("{key} is required"))
         };
         let title = devboule_protocol::validate_display_name(&required("title")?)?;
-        // The profile name is compared against the store's own names, which
-        // `agent_profiles.rs` trims on the way in, so a caller that padded its
-        // name is naming the same profile rather than a profile that cannot
-        // exist. It is deliberately **not** bounded here: a name that matches
-        // nothing is refused with the store's sentence, and a name that is
-        // longer than the store admits can never match one.
-        let profile = required("profile")?;
+        // The choice. A profile names the whole configuration, so a direct
+        // setting next to it is refused rather than guessed between. The
+        // profile name is compared against the store's own names, which
+        // `agent_profiles.rs` trims on the way in; it is deliberately **not**
+        // bounded here, since a name longer than the store admits can never
+        // match one.
+        let choice = choice_of(object)?;
         let initial_prompt = required("initialPrompt")?;
         // A prompt of spaces is a prompt nobody can act on, and the same rule
         // the display name gets: whitespace is not content.
@@ -116,7 +157,7 @@ impl AgentCreateRequest {
             Some(_) => return Err("notifyOnFinish must be a boolean".to_string()),
         };
         Ok(Self {
-            profile,
+            choice,
             title,
             labels: parse_labels(object)?,
             workspace_id: optional_text("workspaceId", object)?,
@@ -125,6 +166,57 @@ impl AgentCreateRequest {
             notify,
         })
     }
+}
+
+/// The creation's choice out of the arguments: a profile by name, or the
+/// provider and model the caller names with its mode or preset. A profile names
+/// the whole configuration, so a direct setting beside it is refused rather
+/// than guessed between. A `null` is absent, as everywhere else in this tool.
+fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, String> {
+    let profile = optional_text("profile", object)?.filter(|value| !value.is_empty());
+    let provider = optional_text("provider", object)?.filter(|value| !value.is_empty());
+    let model = optional_text("model", object)?.filter(|value| !value.is_empty());
+    let mode = optional_text("mode", object)?.filter(|value| !value.is_empty());
+    let effort = optional_text("effort", object)?.filter(|value| !value.is_empty());
+    let preset = optional_text("preset", object)?.filter(|value| !value.is_empty());
+    let Some(name) = profile else {
+        let provider =
+            provider.ok_or_else(|| "provider is required when no profile is named".to_string())?;
+        let model =
+            model.ok_or_else(|| "model is required when no profile is named".to_string())?;
+        if let Some(id) = &preset {
+            if mode.is_some() {
+                return Err(
+                    "a preset chooses the mode; leave out mode, or leave out the preset"
+                        .to_string(),
+                );
+            }
+            if crate::provider_catalog::agent_preset(id).is_none() {
+                return Err(format!(
+                    "unknown preset {id}; the presets are design and worker"
+                ));
+            }
+        } else if mode.is_none() {
+            return Err("mode is required when no preset or profile is named".to_string());
+        }
+        return Ok(CreationChoice::Direct {
+            provider,
+            model,
+            mode,
+            effort,
+            preset,
+        });
+    };
+    let direct_present = ["provider", "model", "mode", "effort", "preset"]
+        .iter()
+        .any(|key| object.get(*key).is_some_and(|value| !value.is_null()));
+    if direct_present {
+        return Err(
+            "a profile names the whole configuration; leave out provider, model, mode, effort and preset"
+                .to_string(),
+        );
+    }
+    Ok(CreationChoice::Profile(name))
 }
 
 /// One optional string parameter, with its type enforced (audit S5-09).

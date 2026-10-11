@@ -1892,11 +1892,12 @@ fn claude_auto_with_the_tick_is_consistent() {
     );
 }
 
-/// The published schema of `devboule_create_agent` cannot express a provider,
-/// a preset, a model, a mode or a feature: what an agent cannot say is what no
-/// check of ours can get wrong.
+/// The published schema of `devboule_create_agent` names what a creation runs
+/// on: a provider, a model, a mode, an effort and a preset, with a profile as
+/// the optional shortcut (owner bug #34). Nothing a creation can say is outside
+/// the schema, and nothing outside it is accepted.
 #[test]
-fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
+fn the_create_agent_schema_names_the_direct_settings_and_the_profile() {
     let schema = super::agent_create_input_schema();
     let properties = schema["properties"].as_object().expect("properties");
     let mut names: Vec<&str> = properties.keys().map(String::as_str).collect();
@@ -1905,10 +1906,15 @@ fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
         names,
         [
             "cwd",
+            "effort",
             "initialPrompt",
             "labels",
+            "mode",
+            "model",
             "notifyOnFinish",
+            "preset",
             "profile",
+            "provider",
             "title",
             "workspaceId",
         ]
@@ -1919,15 +1925,18 @@ fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
         .iter()
         .map(|name| name.as_str().expect("a name"))
         .collect();
-    assert_eq!(required, ["profile", "title", "initialPrompt"]);
-    for forbidden in [
-        "provider", "preset", "model", "mode", "features", "settings",
-    ] {
+    assert_eq!(required, ["title", "initialPrompt"]);
+    for forbidden in ["features", "settings", "depth", "bypassMode"] {
         assert!(
             !properties.contains_key(forbidden),
-            "{forbidden} must not be expressible at all"
+            "{forbidden} is not a creation parameter"
         );
     }
+    assert_eq!(
+        properties["preset"]["enum"],
+        serde_json::json!(["design", "worker"]),
+        "the presets are the closed table"
+    );
     assert_eq!(schema["additionalProperties"], serde_json::json!(false));
 }
 

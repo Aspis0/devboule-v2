@@ -11,7 +11,7 @@ use crate::server::ServerState;
 
 use super::card::{creation_card, self_answer_note};
 use super::labels::stamped_labels;
-use super::profile::resolve_profile;
+use super::profile::resolve_creation;
 use super::request::{creation_fingerprint, AgentCreateRequest};
 use super::result::created_result;
 
@@ -204,9 +204,11 @@ fn run_creation(
     };
     let notify_field = if request.notify { "notify" } else { "quiet" };
     let labels_field = request.labels_fingerprint();
+    let choice_field = request.choice.fingerprint();
     let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
         &creator_id,
         &request,
+        &choice_field,
         notify_field,
         &labels_field,
     ));
@@ -230,7 +232,7 @@ fn run_creation(
             );
         }
     }
-    let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
+    let profile = match resolve_creation(&state.agent_profiles, &request.choice) {
         Ok(profile) => profile,
         Err(message) => return tool_error(id, &message),
     };

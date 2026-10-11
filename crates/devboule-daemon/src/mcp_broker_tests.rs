@@ -9,9 +9,10 @@ use super::tools::creation::card::{
 };
 use super::tools::creation::labels::{parse_labels, stamped_labels};
 use super::tools::creation::profile::{
-    list_profiles, predicted_unattended, resolve_profile, resolve_profile_for_move,
+    list_profiles, predicted_unattended, resolve_creation, resolve_profile,
+    resolve_profile_for_move,
 };
-use super::tools::creation::request::{creation_fingerprint, AgentCreateRequest};
+use super::tools::creation::request::{creation_fingerprint, AgentCreateRequest, CreationChoice};
 use super::tools::creation::result::{created_result, created_result_for_tools};
 use super::tools::creation::run::{create_agent, create_agent_now, provider_is_launchable};
 use super::transport::{is_transient_accept_error, ConnectionPermit};
@@ -4198,7 +4199,7 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
     for (arguments, sentence) in [
         (
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "mode": "bypass"}),
-            "unknown parameter 'mode'",
+            "leave out provider, model, mode, effort and preset",
         ),
         (
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "depth": 1}),
@@ -4243,15 +4244,31 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "cwd": true}),
             "cwd must be a string",
         ),
-        // The two parameters this build removed are refused like any other
-        // name the schema does not publish.
+        // A profile names the whole configuration; a direct setting next to it
+        // is refused rather than guessed between.
         (
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "provider": "claude"}),
-            "unknown parameter 'provider'",
+            "leave out provider, model, mode, effort and preset",
         ),
         (
-            json!({"title": "b", "profile": "worker", "initialPrompt": "x", "preset": "worker"}),
-            "unknown parameter 'preset'",
+            json!({"title": "b", "initialPrompt": "x", "model": "claude-haiku-5-5", "mode": "default"}),
+            "provider is required when no profile is named",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "mode": "default"}),
+            "model is required when no profile is named",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m"}),
+            "mode is required when no preset or profile is named",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "gardener"}),
+            "unknown preset",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "design", "mode": "plan"}),
+            "a preset chooses the mode",
         ),
         (
             json!(["not", "an", "object"]),
@@ -4299,7 +4316,7 @@ fn a_creation_fingerprint_covers_workspace_cwd_and_notify() {
         "{}",
     ];
     let request = AgentCreateRequest {
-        profile: "builder".to_string(),
+        choice: CreationChoice::Profile("builder".to_string()),
         title: "builder".to_string(),
         labels: std::collections::BTreeMap::new(),
         workspace_id: Some("workspace-1".to_string()),
@@ -4308,19 +4325,21 @@ fn a_creation_fingerprint_covers_workspace_cwd_and_notify() {
         notify: true,
     };
     let labels = request.labels_fingerprint();
+    let choice = request.choice.fingerprint();
     let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
         "session-alex",
         &request,
+        &choice,
         "notify",
         &labels,
     ));
-    let labels = request.labels_fingerprint();
     let elsewhere = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
         "session-alex",
         &AgentCreateRequest {
             cwd: Some("elsewhere".to_string()),
             ..request
         },
+        &choice,
         "notify",
         &labels,
     ));
@@ -4892,7 +4911,7 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
         .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
-        profile: "runner".to_string(),
+        choice: CreationChoice::Profile("runner".to_string()),
         title: "Kid".to_string(),
         labels: std::collections::BTreeMap::new(),
         workspace_id: None,
@@ -4989,7 +5008,7 @@ fn a_spawn_prompt_cannot_forge_the_card_metadata() {
         .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
-        profile: "runner".to_string(),
+        choice: CreationChoice::Profile("runner".to_string()),
         title: "Kid".to_string(),
         labels: std::collections::BTreeMap::new(),
         workspace_id: None,
@@ -5350,7 +5369,7 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
         .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
-        profile: "runner".to_string(),
+        choice: CreationChoice::Profile("runner".to_string()),
         title: "Kid".to_string(),
         labels: std::collections::BTreeMap::new(),
         workspace_id: None,
@@ -5510,6 +5529,7 @@ fn a_retry_is_answered_even_when_its_profile_is_gone() {
     let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
         &creator_id,
         &request,
+        &request.choice.fingerprint(),
         notify_field,
         &labels_field,
     ));
@@ -5858,7 +5878,7 @@ fn the_card_prints_a_delivered_feature_as_delivered() {
         .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
-        profile: "runner".to_string(),
+        choice: CreationChoice::Profile("runner".to_string()),
         title: "Kid".to_string(),
         labels: std::collections::BTreeMap::new(),
         workspace_id: None,
@@ -6705,4 +6725,73 @@ fn state_of(response: &serde_json::Value) -> serde_json::Value {
         .get("state")
         .cloned()
         .unwrap_or(serde_json::Value::Null)
+}
+
+/// A workspace agent can name a provider and a model and get a child with no
+/// profile at all (owner bug #34): the request parses, and the resolution
+/// answers the provider, model and mode the caller named.
+#[test]
+fn a_create_names_its_provider_and_model_without_a_profile() {
+    let request = AgentCreateRequest::parse(&json!({
+        "title": "Kalsa checker",
+        "provider": "claude",
+        "model": "claude-haiku-5-5",
+        "mode": "default",
+        "effort": "high",
+        "initialPrompt": "Check the page.",
+    }))
+    .expect("a direct creation parses");
+    let store = profile_store(document(vec![], ""));
+    let resolved = resolve_creation(&store, &request.choice).expect("a direct creation resolves");
+    assert_eq!(resolved.provider, "claude");
+    assert_eq!(resolved.model, "claude-haiku-5-5");
+    assert_eq!(resolved.mode, "default");
+    assert_eq!(resolved.thinking_option_id.as_deref(), Some("high"));
+    assert!(resolved.id.is_empty(), "no stored profile was named");
+    assert_eq!(resolved.overlay, ToolOverlay::NONE);
+}
+
+/// The Design route (owner bug #34, the regression): `preset: "design"` on a
+/// workspace agent's create gives the child the design overlay, which keeps
+/// the browser lane and the design-only denials as the preset always did.
+#[test]
+fn a_workspace_agent_can_create_a_design_child() {
+    let request = AgentCreateRequest::parse(&json!({
+        "title": "Design pass",
+        "provider": "codex",
+        "model": "gpt-6-luna",
+        "preset": "design",
+        "initialPrompt": "Draft the landing page.",
+    }))
+    .expect("a design creation parses");
+    let store = profile_store(document(vec![], ""));
+    let resolved = resolve_creation(&store, &request.choice).expect("design resolves for codex");
+    assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
+    assert_eq!(resolved.mode, "auto", "the design cell's own mode");
+    assert!(
+        !resolved
+            .overlay
+            .allows(crate::provider_catalog::MCP_BROWSER_NEW_TAB_TOOL),
+        "the design child is denied the browser lane"
+    );
+    assert!(
+        resolved.overlay.allows(MCP_ROSTER_TOOL),
+        "a design child keeps the roster of agents it can see"
+    );
+    assert!(
+        !resolved.overlay.allows(MCP_CREATE_AGENT_TOOL),
+        "a design child creates no agents of its own"
+    );
+}
+
+/// The schema publishes what the create tool takes: a provider, a model, a
+/// mode, an effort and a preset, with a profile as the optional shortcut.
+#[test]
+fn the_create_schema_publishes_the_direct_settings() {
+    let schema = crate::provider_catalog::agent_create_input_schema();
+    let properties = schema["properties"].as_object().expect("properties");
+    for key in ["provider", "model", "mode", "effort", "preset", "profile"] {
+        assert!(properties.contains_key(key), "{key} is published");
+    }
+    assert_eq!(schema["required"], json!(["title", "initialPrompt"]));
 }
