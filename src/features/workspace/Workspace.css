@@ -985,6 +985,18 @@
   color: var(--ink);
 }
 
+/* A line that opens something is a button: the browser's chrome is reset to the
+   line's own, and the width makes up the negative margin a block line gets free. */
+button.workspace-chat-tool-summary {
+  width: calc(100% + 2 * var(--space-8));
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
 .workspace-chat-tool summary:focus-visible,
 .workspace-chat-tool-group summary:focus-visible {
   outline: 2px solid var(--ring);
