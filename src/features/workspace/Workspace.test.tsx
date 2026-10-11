@@ -1905,6 +1905,46 @@ describe("Workspace sessions", () => {
     ).toBe("first prompt");
   });
 
+  it("a second send while the first agent is still being set up starts no second agent", async () => {
+    const double = agentDouble(true);
+    surfaceAgents.set("session-agent", double.agent);
+    vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
+    vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      provider: "claude",
+      models: { state: "present", items: [{ modelId: "sonnet", name: "Sonnet" }] },
+      modes: { state: "present", items: [] },
+      source: "probe",
+    } as never);
+    // The session exists and the model is still being set: the window the
+    // first press leaves open for a second one.
+    let finishModel: () => void = () => undefined;
+    vi.mocked(sessionSetModel).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishModel = resolve;
+        }) as never,
+    );
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+    await act(async () => undefined);
+
+    await sendDraftMessage("first prompt");
+    await sendDraftMessage("first prompt");
+    expect(sessionCreate).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishModel());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(sessionCreate).toHaveBeenCalledTimes(1);
+    expect(double.send).toHaveBeenCalledTimes(1);
+  });
+
   it("a first prompt the agent confirms clears the composer once, and the pane takes the agent", async () => {
     const double = agentDouble(true);
     surfaceAgents.set("session-agent", double.agent);

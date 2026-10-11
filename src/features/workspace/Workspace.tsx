@@ -1703,6 +1703,10 @@ export function Workspace({
   const [firstPrompt, setFirstPromptState] = useState<FirstPrompt | null>(null);
   /** The ref mirrors the state for the callbacks, which must see the latest prompt. */
   const firstPromptRef = useRef<FirstPrompt | null>(null);
+  // A first send from the press to the agent's answer. The ref is the guard; the
+  // state shows it in the composer.
+  const draftStartingRef = useRef(false);
+  const [draftStarting, setDraftStarting] = useState(false);
   const setFirstPrompt = useCallback((next: FirstPrompt | null) => {
     firstPromptRef.current = next;
     setFirstPromptState(next);
@@ -1807,7 +1811,7 @@ export function Workspace({
   );
   // Starts the agent the first message is for, with the provider picked in the
   // composer. The composer keeps its text until the agent confirms it.
-  const sendDraft = useCallback(
+  const startDraft = useCallback(
     async (text: string): Promise<boolean> => {
       if (draftKey === null) return false;
       const current = firstPromptRef.current;
@@ -1880,6 +1884,24 @@ export function Workspace({
       setFirstPrompt,
       startFirstPromptSend,
     ],
+  );
+  // One first send at a time. The start is awaited in several steps (the agent,
+  // its settings, the prompt's answer), and the composer keeps its text until the
+  // answer, so a second press in that window must not start a second agent: the
+  // ref refuses it at once, and the state disables the composer while it shows.
+  const sendDraft = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (draftStartingRef.current) return false;
+      draftStartingRef.current = true;
+      setDraftStarting(true);
+      try {
+        return await startDraft(text);
+      } finally {
+        draftStartingRef.current = false;
+        setDraftStarting(false);
+      }
+    },
+    [startDraft],
   );
   // The pane reports its agent as it attaches and as it leaves. A held prompt is
   // sent once, when its own agent first attaches; a pane that closes first hands
@@ -2605,13 +2627,15 @@ export function Workspace({
           : null
       }
       disabledReason={
-        sendingPrompt
-          ? "Sending to the agent…"
-          : draftProviders === null
-            ? "Loading agents…"
-            : draftProviders.length === 0
-              ? "No agent is installed to start."
-              : null
+        draftStarting
+          ? "Starting the agent…"
+          : sendingPrompt
+            ? "Sending to the agent…"
+            : draftProviders === null
+              ? "Loading agents…"
+              : draftProviders.length === 0
+                ? "No agent is installed to start."
+                : null
       }
     />
   );
