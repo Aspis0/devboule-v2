@@ -250,6 +250,18 @@ export function reuseUnchangedViews(
   return { projects: kept, views };
 }
 
+/** The same rows, each the same object: the kept map needs no new state. */
+function sameViewObjects(
+  next: ReadonlyMap<string, WorkspaceView>,
+  kept: ReadonlyMap<string, WorkspaceView>,
+): boolean {
+  if (next.size !== kept.size) return false;
+  for (const [id, view] of next) {
+    if (kept.get(id) !== view) return false;
+  }
+  return true;
+}
+
 export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) {
   const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
   const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
@@ -315,16 +327,18 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     [projectRecords, remoteRecords],
   );
   // Each row's view is kept by identity while its facts hold, so a session
-  // update repaints only the rows it changed.
-  const viewCache = useRef<ReadonlyMap<string, WorkspaceView>>(new Map());
-  const projectViews = useMemo(() => {
-    const next = reuseUnchangedViews(
-      viewCache.current,
-      allRecords.map((project) => projectView(project, sessionIndex)),
-    );
-    viewCache.current = next.views;
-    return next.projects;
-  }, [allRecords, sessionIndex]);
+  // update repaints only the rows it changed. The kept views are state, advanced
+  // during render (React's "store the previous value" pattern): each fresh view
+  // is compared field by field with the kept one, so a nested count cannot go
+  // stale, and a changed row gets a new object.
+  const freshViews = useMemo(
+    () => allRecords.map((project) => projectView(project, sessionIndex)),
+    [allRecords, sessionIndex],
+  );
+  const [keptViews, setKeptViews] = useState<ReadonlyMap<string, WorkspaceView>>(() => new Map());
+  const reused = useMemo(() => reuseUnchangedViews(keptViews, freshViews), [keptViews, freshViews]);
+  if (!sameViewObjects(reused.views, keptViews)) setKeptViews(reused.views);
+  const projectViews = reused.projects;
 
   useEffect(() => {
     if (loading || error !== null) return;
