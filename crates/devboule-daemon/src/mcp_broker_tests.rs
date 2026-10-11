@@ -20,7 +20,7 @@ use super::*;
 use crate::provider_catalog::{
     ToolOverlay, MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
 };
-use devboule_protocol::{SessionEvent, SessionOrigin, ToolPolicyEntry};
+use devboule_protocol::{SessionEvent, SessionOrigin, ToolPolicyEntry, WorkspaceIsolation};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -6819,6 +6819,61 @@ fn the_broker_introduces_devboule_at_initialize() {
     assert_eq!(
         response_json(&initialized)["result"]["instructions"],
         crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+    );
+    drop(guard);
+    drop(server);
+}
+
+/// The caller's own workspace is named at initialize, by its title and id:
+/// an agent that only knows its folder names the folder (owner bug #8, an
+/// agent that called workspace `test 2` by its folder's name `test`).
+#[test]
+fn the_broker_names_the_callers_workspace_at_initialize() {
+    let state = ServerState::new("mcp-workspace-identity".to_string());
+    let owner = owner(
+        "mcp-workspace-identity-user",
+        "mcp-workspace-identity-client",
+    );
+    let dir = crate::test_dirs::test_temp_dir("devboule-mcp-workspace-identity");
+    let root = dir.join("Test");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let project = state
+        .sessions
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+    let workspace = state
+        .sessions
+        .workspace_create_titled(&project.id, WorkspaceIsolation::Local, None, Some("test 2"))
+        .expect("workspace row");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "identity-caller",
+        owner.clone(),
+        &workspace.id,
+    );
+    let guard = state
+        .mcp
+        .register("identity-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("caller MCP guard");
+    let token = state.mcp.test_token("identity-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+    let initialized = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+    );
+    let instructions = response_json(&initialized)["result"]["instructions"]
+        .as_str()
+        .expect("instructions")
+        .to_string();
+    assert!(
+        instructions.contains("\"test 2\""),
+        "the workspace title is named: {instructions}"
+    );
+    assert!(
+        instructions.contains(&workspace.id),
+        "the workspace id is named: {instructions}"
     );
     drop(guard);
     drop(server);

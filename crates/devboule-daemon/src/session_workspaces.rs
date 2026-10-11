@@ -549,6 +549,22 @@ impl super::SessionRegistry {
         Ok((workspace_id, project_id))
     }
 
+    /// The caller's own workspace row, for the sentence that names it to the
+    /// agent. `None` for a session with no workspace or no readable row, so
+    /// the agent is told nothing rather than another workspace's name.
+    pub(crate) fn caller_workspace_record(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+    ) -> Option<crate::journal::WorkspaceRecord> {
+        let workspace_id = self.agent_creator(session_id, owner).ok()?.workspace_id?;
+        self.journal
+            .as_ref()?
+            .workspace_get(&workspace_id)
+            .ok()
+            .flatten()
+    }
+
     /// The project's name and folder, for surfaces that name where a
     /// create will land before the create runs.
     pub(crate) fn project_name_and_path(
