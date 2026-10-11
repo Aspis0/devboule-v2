@@ -486,6 +486,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const planOn = state.features?.planMode === true || planWaiting;
   const showPlanReader = latestPlan !== null && !planWaiting;
   const restoreNonceRef = useRef(0);
+  const resumeInFlight = useRef<Promise<boolean> | null>(null);
   const handDraftBack = useCallback(
     (text: string, focus: boolean, images: readonly PromptAttachment[] = []) => {
       restoreNonceRef.current += 1;
@@ -1007,7 +1008,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // A stopped session: the send resumes it, and the text and images
           // come back into the composer for the send that follows the resume.
           if (resumesEnded && resumeStopped !== undefined) {
-            await resumeStopped();
+            // One resume at a time: a send made while one is in flight waits on
+            // it instead of asking the daemon again.
+            resumeInFlight.current ??= resumeStopped()
+              .catch(() => false)
+              .finally(() => {
+                resumeInFlight.current = null;
+              });
+            await resumeInFlight.current;
             handDraftBack(text, true, attachments);
             return false;
           }

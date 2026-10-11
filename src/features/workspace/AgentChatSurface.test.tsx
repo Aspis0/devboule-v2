@@ -2373,6 +2373,56 @@ describe("AgentChatSurface", () => {
     expect(textarea.value, "the text waits in the composer for the next send").toBe("Pick this up");
   });
 
+  it("coalesces stopped-session sends into one resume while it is in flight", async () => {
+    const ended: SessionState = {
+      type: "ended",
+      generation: 1,
+      code: 1,
+      integrity: { kind: "complete" },
+    };
+    let finishResume: (resumed: boolean) => void = () => undefined;
+    const resumeStopped = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishResume = resolve;
+        }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="coalesce-agent"
+          observedState={ended}
+          resumeStopped={resumeStopped}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+
+    setValue.call(textarea, "first try");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    setValue.call(textarea, "second try");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    expect(resumeStopped, "the second send waits on the first resume").toHaveBeenCalledTimes(1);
+
+    await act(async () => finishResume(true));
+    await act(async () => undefined);
+    expect(sessionSend).not.toHaveBeenCalled();
+    expect(textarea.value, "the last text the person sent stays in the composer").toBe(
+      "second try",
+    );
+  });
+
   it("renders the replayed transcript for a recovered session: readable without resuming", async () => {
     const recovered: SessionState = {
       type: "recovered",
