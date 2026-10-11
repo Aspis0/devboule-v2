@@ -813,15 +813,16 @@ fn a_wake_starts_the_next_turn_of_every_provider_it_reaches() {
             None,
             None,
         );
-        assert!(
-            !creator.is_running_turn(),
-            "{kind:?}: the creator's turn ended"
-        );
-        registry.drain_wakes("wake-creator");
+        // The turn end hands the held wake over at once: it is the creator's
+        // next prompt, so the creator is running that next turn.
         let text = String::from_utf8_lossy(&written.lock().expect("written")).to_string();
         assert!(
             text.contains("child finished: all green"),
-            "{kind:?}: the wake became the creator's next prompt: {text}"
+            "{kind:?}: the wake became the creator's next prompt at the turn end: {text}"
+        );
+        assert!(
+            creator.is_running_turn(),
+            "{kind:?}: the wake started the creator's next turn"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
