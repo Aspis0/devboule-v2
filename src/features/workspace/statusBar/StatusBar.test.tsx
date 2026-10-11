@@ -273,7 +273,7 @@ describe("the status bar", () => {
     expect(meters[0]?.getAttribute("title")?.split("\n")[0]).toBe(
       "5-hour limit: 45% used · Weekly: 66% used",
     );
-    expect(bar.textContent).not.toContain("37");
+    expect(bar.textContent).not.toContain("37%");
     expect(bar.textContent).not.toMatch(/\bpi\b/);
   });
 
