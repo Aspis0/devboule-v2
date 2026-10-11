@@ -733,7 +733,8 @@ fn every_user_message_kind() -> Vec<UserMessageKind> {
         OutgoingA2a,
         IncomingA2a,
         SystemNotice,
-        Creation
+        Creation,
+        PlanOutcome
     )
 }
 

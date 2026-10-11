@@ -7,11 +7,11 @@ use super::*;
 /// The eighth argument is whether the `devices` capability was negotiated.
 /// `session_send` in this file already declines a parameter object for the
 /// same reason: one call shape, one place to read.
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 #[path = "dispatch_search_tests.rs"]
 mod search_tests;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch(
     state: &Arc<ServerState>,
     owner: &OwnerId,
