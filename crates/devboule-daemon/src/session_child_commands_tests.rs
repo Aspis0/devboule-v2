@@ -5,6 +5,7 @@
 //! gates: a registered caller, only one's own children, a bounded reply, and
 //! the push envelope's framing on every card it serves.
 
+use super::session_resume_fixture::{acp_row, ResumeFixture};
 use super::tests::{insert_live_agent, test_owner};
 use super::*;
 
@@ -737,4 +738,52 @@ fn a_child_its_creator_asked_to_hear_from_wakes_that_creator_only() {
     assert!(!registry.child_wakes_creator("someone-else", "wake-child"));
     assert!(!registry.child_wakes_creator("wake-parent", "no-such-child"));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_stopped_childs_stored_row_is_offered_to_its_creator_only_when_it_can_resume() {
+    // A message resumes a stopped or closed child only through its stored row,
+    // and only a row that can resume. A row with no provider handle keeps the
+    // refusal that says closed sessions do not reopen. Another agent's child
+    // reads as absent, the same answer a stranger gets.
+    let fixture = ResumeFixture::new("own-stored-child");
+    let creator = fixture.id("creator");
+    let child = fixture.id("resumable-child");
+    let birth_only = fixture.id("birth-only-child");
+    let mut resumable = acp_row(&child, &fixture.owner, "handle-child");
+    resumable.created_by = Some(creator.clone());
+    fixture.write_row(resumable);
+    let mut stuck = new_session_record(
+        &birth_only,
+        fixture.owner.user.clone(),
+        None,
+        SessionKind::Acp,
+        "No handle",
+    );
+    stuck.created_by = Some(creator.clone());
+    fixture.write_row(stuck);
+    let registry = fixture.registry();
+
+    assert_eq!(
+        registry
+            .own_stored_child_id(&creator, &fixture.owner, &child)
+            .expect("the row answers"),
+        Some(child.clone()),
+        "the creator's stopped child with a handle can resume"
+    );
+    assert_eq!(
+        registry
+            .own_stored_child_id(&creator, &fixture.owner, &birth_only)
+            .expect("the row answers"),
+        None,
+        "a row that cannot resume is refused as before"
+    );
+    assert_eq!(
+        registry
+            .own_stored_child_id("someone-else", &fixture.owner, &child)
+            .expect("the row answers"),
+        None,
+        "a child another agent created is not resumable by this caller"
+    );
+    fixture.finish();
 }
