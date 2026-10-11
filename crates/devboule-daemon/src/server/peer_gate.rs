@@ -170,8 +170,17 @@ pub(super) fn peer_refusal_before_mode(
         );
         let human = machine_peer
             && match request {
+                // A non-image file is uploaded in chunks, so the upload frames
+                // are the pairing human's road for it, as the inline send is
+                // for images. Each names its session, and the owner check
+                // below decides who may use that session.
                 ClientMessage::SessionSend { session_id, .. }
-                | ClientMessage::SessionQueueAdd { session_id, .. } => state
+                | ClientMessage::SessionQueueAdd { session_id, .. }
+                | ClientMessage::SessionUploadBegin { session_id, .. }
+                | ClientMessage::SessionUploadStatus { session_id, .. }
+                | ClientMessage::SessionUploadChunk { session_id, .. }
+                | ClientMessage::SessionUploadFinish { session_id, .. }
+                | ClientMessage::SessionUploadAbort { session_id, .. } => state
                     .sessions
                     .session_owner_user(session_id)
                     .is_some_and(|owner| {

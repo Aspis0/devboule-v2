@@ -287,6 +287,51 @@ fn the_pairing_humans_writes_skip_the_peer_only_refusals() {
     );
 }
 
+#[test]
+fn the_pairing_humans_file_uploads_pass_the_attachment_gate() {
+    // A non-image file reaches the daemon as chunked uploads, so the paired
+    // human's upload frames take the same road as their inline images, while a
+    // stranger's stay refused.
+    let state = ServerState::new("peer-gate-human-uploads".into());
+    let target_owner = OwnerId::new("local-user", "local-process").expect("owner");
+    let _runtime = crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        "s.human.uploads",
+        target_owner,
+        SessionKind::Claude,
+    );
+    let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("peer owner");
+    let human = remote_conn(&[CAP_VIEW, CAP_SEND]);
+    let stranger = ConnHandle::with_peer_caps(
+        9,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-peer-1".to_string(),
+            scope: PeerScope::PeerDevice,
+            paired_by_user: Some("other-user".to_string()),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_VIEW.to_string(), CAP_SEND.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    let begin = ClientMessage::SessionUploadBegin {
+        id: 3,
+        session_id: "s.human.uploads".to_string(),
+        upload_id: "u1".to_string(),
+        name: "notes.pdf".to_string(),
+        total_bytes: 1024,
+    };
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &begin, &human.conn_peer).is_none(),
+        "the pairing human's upload reaches the session layer"
+    );
+    let refused = peer_refusal_before_mode(&state, &owner, &begin, &stranger.conn_peer);
+    assert!(
+        matches!(refused, Some(DaemonMessage::Error(_))),
+        "a stranger's upload is refused: {refused:?}"
+    );
+}
+
 /// Agent-originated dials stay fully vetted even for the pairing human's own
 /// sessions: peer `AgentMessageSend` frames are always agent-originated (the
 /// one-shot `call_peer` dials — the human has no remote agent-message road),
