@@ -57,7 +57,6 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import { AgentChatSurface } from "./AgentChatSurface";
-import { setSendBehavior } from "../../lib/sendBehavior";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -149,14 +148,6 @@ async function pressSend() {
   await act(async () => {});
 }
 
-async function pressQueue() {
-  await act(async () => {
-    container.querySelector<HTMLButtonElement>('[data-testid="composer-queue-action"]')!.click();
-  });
-  await act(async () => {});
-  await act(async () => {});
-}
-
 function chipReady(): boolean {
   const chip = container.querySelector('[data-testid="composer-file-chip"]');
   return chip !== null && !chip.textContent?.includes("Uploading");
@@ -170,7 +161,6 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   harness.emit = null;
-  localStorage.removeItem("devboule.sendBehavior");
   harness.sessionDeposit.mockResolvedValue(IMAGE_REF);
   harness.sessionSend.mockResolvedValue(true);
   harness.sessionAttachmentRead.mockResolvedValue({ mimeType: "image/png", data: "aGk=" });
@@ -244,14 +234,11 @@ describe("chat surface files", () => {
       code: "invalid_request",
       message: "A queued message needs text or an attachment.",
     });
-    // While a turn runs the Send slot is Stop, so a queued add is the queue
-    // action, which queues under the queue send behaviour.
-    setSendBehavior("queue");
     await renderSurface({ activity: "working", queueSupported: true });
     await pickImage();
     await pickFile();
     await typeText("look at both");
-    await pressQueue();
+    await pressSend();
 
     expect(harness.sessionQueueAdd).toHaveBeenCalledTimes(1);
     const queueCall = harness.sessionQueueAdd.mock.calls[0]!;
@@ -259,7 +246,7 @@ describe("chat surface files", () => {
     expect(chipReady()).toBe(true);
 
     harness.sessionQueueAdd.mockResolvedValue(undefined);
-    await pressQueue();
+    await pressSend();
     expect(container.querySelector('[data-testid="composer-file-chip"]')).toBeNull();
   });
 });
