@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { archivedList, projectAdd, workspaceRestore } from "../../lib/tauri";
@@ -28,10 +28,6 @@ export function ArchivedWorkspaces({ onRestored }: ArchivedWorkspacesProps) {
       setError(errorSentence(cause));
     }
   }, []);
-
-  useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
 
   const restoreWorkspace = async (workspace: Workspace) => {
     setBusy(workspace.id);
@@ -72,7 +68,11 @@ export function ArchivedWorkspaces({ onRestored }: ArchivedWorkspacesProps) {
         type="button"
         className="history-archived-toggle"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          // Read when opened, from the press that opens it.
+          if (!open) void load();
+          setOpen(!open);
+        }}
       >
         Archived{count === null || count === 0 ? "" : ` · ${count}`}
       </button>

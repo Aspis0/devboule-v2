@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { memo, useEffect, useRef, useState, type FormEvent } from "react";
 import { getFocusableElements } from "../../lib/focusableElements";
 import { isImeComposition } from "../../lib/imeComposition";
 import { useModalOpen } from "../../lib/modalOpen";
@@ -115,27 +115,26 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
 
   const canCreate = projectId !== null && !submitting;
 
-  const handleSubmit = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (projectId === null || submittingRef.current) return;
-      submittingRef.current = true;
-      setSubmitting(true);
-      setError(null);
-      const trimmed = branch.trim();
-      const refusal = await onCreate({
-        projectId,
-        where,
-        isolation,
-        branch: isolation === "worktree" && trimmed !== "" ? trimmed : null,
-      });
-      submittingRef.current = false;
-      setSubmitting(false);
-      if (refusal === null) onClose();
-      else setError(refusal);
-    },
-    [branch, isolation, onClose, onCreate, projectId, where],
-  );
+  // Not memoized: it is the form's own submit, read once per submit, and a
+  // memo over these inputs cannot be kept (the compiler said so).
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (projectId === null || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    const trimmed = branch.trim();
+    const refusal = await onCreate({
+      projectId,
+      where,
+      isolation,
+      branch: isolation === "worktree" && trimmed !== "" ? trimmed : null,
+    });
+    submittingRef.current = false;
+    setSubmitting(false);
+    if (refusal === null) onClose();
+    else setError(refusal);
+  };
 
   return (
     <div
