@@ -1567,13 +1567,15 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     // daemon's own turn parameters — the case that proves a route-A-only
     // boolean under-reports.
     assert_eq!(prediction("codex", "full-access"), UnattendedState::Yes);
+    // Claude `auto` answers its own prompts with a classifier: nobody is asked,
+    // so the table says `yes`, the same fact the self-answer predicate reads.
+    assert_eq!(prediction("claude", "auto"), UnattendedState::Yes);
     // A mode that still asks the human says `no`, from the same tables
     // that admit the mode at all.
     for (provider, mode) in [
         ("codex", "read-only"),
         ("codex", "auto"),
         ("claude", "acceptEdits"),
-        ("claude", "auto"),
         ("claude", "default"),
         ("pi", "ask"),
     ] {
@@ -2375,4 +2377,23 @@ mod registry_path {
 IF NOT EXIST \"%NODE_EXE%\" ( SET \"NODE_EXE=node\" )\n\
 SET \"NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js\"\n\
 \"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n";
+}
+
+/// The Claude mode table and the self-answer predicate agree on every mode the
+/// CLI declares: a mode whose prompts the classifier or the broker answers is
+/// unattended, and no other is (review fix pass: `auto` read No in the table
+/// and Yes everywhere else).
+#[test]
+fn the_claude_table_agrees_with_the_self_answer_predicate() {
+    use devboule_protocol::{SessionKind, UnattendedState};
+    for mode in crate::claude_view::mode_state("default").available_modes {
+        let table = crate::claude_view::unattended_answer(Some(&mode.id));
+        let answers = super::mode_self_answers(Some(SessionKind::Claude), &mode.id);
+        assert_eq!(
+            table == UnattendedState::Yes,
+            answers,
+            "{}: the table and the predicate must agree",
+            mode.id
+        );
+    }
 }

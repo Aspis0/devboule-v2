@@ -60,7 +60,10 @@ const CLAUDE_MODES: &[ClaudeMode] = &[
         id: "auto",
         name: "Auto mode",
         description: "Uses a model classifier to review permission prompts automatically",
-        unattended: UnattendedState::No,
+        // The classifier answers the prompts itself; no human is asked. The
+        // creation card and the profile prediction read the same fact through
+        // `mode_self_answers`.
+        unattended: UnattendedState::Yes,
     },
     ClaudeMode {
         id: "bypassPermissions",
