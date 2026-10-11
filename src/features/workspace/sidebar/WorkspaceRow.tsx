@@ -237,7 +237,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   };
 
   const startRename = () => {
-    setDraft(workspace.displayTitle);
+    // The stored title, never the numbered display title: the suffix is not a name.
+    setDraft(workspace.title);
     setRefusal(null);
     closeMenu(false);
     setEditing(true);
@@ -294,6 +295,10 @@ export const WorkspaceRow = memo(function WorkspaceRow({
       setRefusal({ sentence: clientRefusal, detail: null });
       return;
     }
+    if (draft.trim() === workspace.title) {
+      closeEditor();
+      return;
+    }
     setSaving(true);
     const error = await onRename(workspace.id, draft.trim()).finally(() => setSaving(false));
     if (error !== null) {
@@ -325,7 +330,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     returnFocusRef.current = false;
     if (saving) return;
     const trimmed = draft.trim();
-    if (trimmed === "" || trimmed === workspace.displayTitle.trim()) {
+    if (trimmed === "" || trimmed === workspace.title) {
       closeEditor();
       return;
     }

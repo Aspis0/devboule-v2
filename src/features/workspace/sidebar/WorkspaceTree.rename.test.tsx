@@ -65,12 +65,12 @@ describe("the sidebar's workspace rows", () => {
     vi.clearAllMocks();
   });
 
-  async function renderTree() {
+  async function renderTree(projects: WorkspaceProject[] = [project]) {
     root = createRoot(container);
     await act(async () => {
       root.render(
         <WorkspaceTree
-          projects={[project]}
+          projects={projects}
           loading={false}
           error={null}
           providerError={null}
@@ -194,7 +194,39 @@ describe("the sidebar's workspace rows", () => {
     });
 
     expect(editInput()).not.toBeNull();
-    expect(editInput()?.value).toBe("devboule-v2 2");
+    expect(editInput()?.value).toBe("devboule-v2");
+  });
+
+  it("starts the editor from the stored title, not the duplicate's display suffix", async () => {
+    await renderTree();
+    const input = await openEditor(1);
+    expect(input.value).toBe("devboule-v2");
+
+    await press(input, "Enter");
+    expect(onRename, "an unchanged name saves nothing").not.toHaveBeenCalled();
+    expect(editInput()).toBeNull();
+  });
+
+  it("validates the typed name, so a long duplicate of a capped title saves unchanged", async () => {
+    const title = "t".repeat(60);
+    const row = (id: string, displayTitle: string) => ({
+      ...project.workspaces[0]!,
+      id,
+      title,
+      displayTitle,
+    });
+    await renderTree([
+      {
+        ...project,
+        workspaces: [row("workspace-1", title), row("workspace-2", `${title} 2`)],
+      },
+    ]);
+    const input = await openEditor(1);
+    await press(input, "Enter");
+
+    expect(onRename).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("A workspace title is 62 characters");
+    expect(editInput()).toBeNull();
   });
 
   it("cancels the edit with Escape, calling nothing", async () => {
