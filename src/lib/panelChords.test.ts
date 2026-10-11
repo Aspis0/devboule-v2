@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from "vitest";
-import { panelChordFor, type PanelChord } from "./keymap";
+import { panelChordFor, type PanelChord } from "./panelChords";
 
 interface ChordInput {
   key: string;

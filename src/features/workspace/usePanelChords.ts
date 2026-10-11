@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { commandModifier, panelChordFor } from "../../lib/keymap";
+import { commandModifier } from "../../lib/keymap";
+import { panelChordFor } from "../../lib/panelChords";
 
 interface PanelChordsOptions {
   leftCollapsed: boolean;
