@@ -535,6 +535,19 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     supported: fileUploadSupported,
     remove: (reference) => sessionAttachmentDelete(reference),
   });
+  // A queued add that the daemon accepted leaves the ready file chips behind,
+  // as a send does. The queue action reaches the queue directly, so this is
+  // the one place the chips clear for both roads.
+  const queueMessage = composerQueue.queueMessage;
+  const clearReady = fileAttachments.clearReady;
+  const queueFromComposer = useCallback(
+    async (...args: Parameters<typeof queueMessage>) => {
+      const queued = await queueMessage(...args);
+      if (queued) clearReady();
+      return queued;
+    },
+    [queueMessage, clearReady],
+  );
 
   // The composer takes the focus back when the queue hands it over (an emptied
   // track, a refused steer's or queue's text).
@@ -1000,7 +1013,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         backgroundPill={backgroundPill}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}
-        onQueue={queueSupported ? composerQueue.queueMessage : undefined}
+        onQueue={queueSupported ? queueFromComposer : undefined}
         enterQueues={enterQueues}
         sendWhileRunning={runningSend}
         captureTextarea={captureComposerTextarea}
@@ -1026,9 +1039,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // transfers and steers clear at once, a refused send keeps them.
           if (attachments.length > 0) {
             if (queueSupported && (turnActive || hasPendingPermission)) {
-              const queued = await composerQueue.queueMessage(text, attachments, fileReferences);
-              if (queued) fileAttachments.clearReady();
-              return queued;
+              return queueFromComposer(text, attachments, fileReferences);
             }
             // Images stay in the composer while sending; only the cleared
             // text rides a hand-back on failure, so the retry is whole. A
