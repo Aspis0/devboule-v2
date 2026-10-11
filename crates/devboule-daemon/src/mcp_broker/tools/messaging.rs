@@ -112,9 +112,13 @@ pub(in crate::mcp_broker) fn send(
             // app can say who the message went to without a session id. A child
             // whose finish wakes this caller also says so: the caller ends its
             // turn instead of polling the child.
+            let display_name = state
+                .sessions
+                .live_agent_session(&registration.owner, &target_id)
+                .and_then(|session| crate::session::roster_title(&session));
             let mut document = json!({
                 "state": "accepted",
-                "displayName": crate::session::roster_title(&target.session),
+                "displayName": display_name,
             });
             if state
                 .sessions

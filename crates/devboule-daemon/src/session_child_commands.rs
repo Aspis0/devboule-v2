@@ -175,6 +175,19 @@ impl super::SessionRegistry {
         )
     }
 
+    /// The live agent `id` names among the sessions `owner` can see, as its row.
+    pub(crate) fn live_agent_session(
+        &self,
+        owner: &OwnerId,
+        id: &str,
+    ) -> Option<devboule_protocol::Session> {
+        self.live_agent_entries(owner)
+            .ok()?
+            .into_iter()
+            .find(|entry| entry.session.id == id)
+            .map(|entry| entry.session)
+    }
+
     fn live_agent_title(&self, owner: &OwnerId, id: &str) -> Option<String> {
         self.live_agent_entries(owner)
             .ok()?

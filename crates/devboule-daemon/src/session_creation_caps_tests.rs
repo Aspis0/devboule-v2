@@ -562,6 +562,7 @@ fn a_report_to_a_running_creator_waits_for_the_turn_end_and_is_never_steered() {
     // The creator's turn ends: the held report becomes its next prompt.
     creator.publish_agent_event_with_seq(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "completed".to_string(),
             model_id: None,
             usage: None,
@@ -798,6 +799,7 @@ fn a_wake_starts_the_next_turn_of_every_provider_it_reaches() {
 
         creator.publish_agent_event_with_seq(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "completed".to_string(),
                 model_id: None,
                 usage: None,
@@ -843,6 +845,7 @@ fn a_refused_wake_is_held_and_delivered_at_the_next_turn_end() {
         Box::new(RecordingSteerer(Arc::new(Mutex::new(Vec::new())))),
     );
     let finish = || SessionEvent::AgentFinished {
+        at_ms: None,
         stop_reason: "completed".to_string(),
         model_id: None,
         usage: None,

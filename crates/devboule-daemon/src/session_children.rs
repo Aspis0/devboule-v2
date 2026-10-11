@@ -1397,6 +1397,7 @@ impl super::SessionRegistry {
             steer_origin: SteerOrigin::Agent,
             require_no_turn_running: true,
             require_queue_unfenced: false,
+            peer_title: None,
         })
         .map(|outcome| outcome.message_id)
     }
