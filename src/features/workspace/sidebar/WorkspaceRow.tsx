@@ -51,8 +51,9 @@ function focusSurvivor(target: HTMLElement | null, panel: Element | null): void 
 }
 
 /**
- * What a tooltip carries for a row: where the workspace lives, what branch it
- * sits on and what is uncommitted — the facts the row itself does not print.
+ * What a tooltip carries for a row: its whole title, where the workspace lives,
+ * what branch it sits on and what is uncommitted — what the row cuts or does
+ * not print.
  */
 function rowDetail(
   workspace: WorkspaceView,
@@ -63,7 +64,10 @@ function rowDetail(
     stat !== undefined && stat.additions + stat.deletions > 0
       ? `+${stat.additions} −${stat.deletions}`
       : null;
-  const parts = [workspace.path, branch, totals].filter((part): part is string => Boolean(part));
+  // The title leads: a long one is cut in the row, and the tooltip is where it reads whole.
+  const parts = [workspace.displayTitle, workspace.path, branch, totals].filter(
+    (part): part is string => Boolean(part),
+  );
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 

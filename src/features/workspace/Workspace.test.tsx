@@ -788,7 +788,7 @@ describe("Workspace sessions", () => {
     expect(row?.textContent).not.toContain("live session");
     expect(row?.querySelector(".workspace-row-status-running")).not.toBeNull();
     // Hover or focus says where the workspace lives and what it sits on.
-    expect(row?.title).toBe("C:\\devboule · main");
+    expect(row?.title).toBe("main · C:\\devboule · main");
   });
 
   it("draws one status bar under the three panels, and none inside them", async () => {
@@ -1412,10 +1412,10 @@ describe("Workspace sessions", () => {
 
     const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
     expect(rows.length).toBe(2);
-    expect(rows[0]?.title).toBe("C:\\devboule.worktrees\\feature-x-9f2e1a · main");
+    expect(rows[0]?.title).toBe("feature-x · C:\\devboule.worktrees\\feature-x-9f2e1a · main");
     expect(rows[0]?.textContent).not.toContain("C:\\devboule.worktrees\\feature-x-9f2e1a");
-    // No path was sent for this one, so the tooltip carries only the branch.
-    expect(rows[1]?.title).toBe("main");
+    // No path was sent for this one, so the tooltip carries the title and the branch.
+    expect(rows[1]?.title).toBe("no-path · main");
   });
 
   it("keeps the project-load failure visible on a connected daemon until the user retries", async () => {

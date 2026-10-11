@@ -95,6 +95,15 @@ describe("the workspace row", () => {
     });
   });
 
+  describe("tooltip", () => {
+    it("carries the whole title, so a name the row cuts still reads in full", async () => {
+      const long = "a workspace name long enough that the row has to cut it short";
+      const row = await render(workspace({ title: long, displayTitle: long }), { branch: "main" });
+
+      expect(row.getAttribute("title")).toContain(long);
+    });
+  });
+
   describe("status dot", () => {
     it("is the first child, in the slot the letter avatar used to hold", async () => {
       const row = await render(workspace());
