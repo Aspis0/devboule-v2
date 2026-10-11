@@ -72,6 +72,13 @@ pub(in crate::mcp_broker) fn send(
             {
                 return Ok(Some(rpc_error(id, -32602, &error.message)));
             }
+            // The child's own transcript names who started it again; a refused
+            // notice does not stop the message, which is the point of the send.
+            let _ = state.sessions.note_resumed_by(
+                &registration.owner,
+                &child,
+                &registration.session_id,
+            );
             target_id = state
                 .sessions
                 .live_agent_id(&registration.owner, &child)

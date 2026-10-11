@@ -52,6 +52,11 @@ fn card_kind(request: &SessionEvent) -> String {
     }
 }
 
+/// The muted line a resumed child carries: who resumed it.
+pub(crate) fn resumed_by_notice(parent_title: &str) -> String {
+    format!("Resumed by {parent_title}")
+}
+
 /// One card of the pending list: the same five fields wherever a card appears.
 /// Framed the way the push envelope frames it — the title through
 /// `single_line_header`, the excerpt through the cap and the neutraliser —
@@ -153,6 +158,35 @@ impl super::SessionRegistry {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// The line a resume leaves in the child's own transcript when its creator
+    /// started it again: a muted notice that names who did it.
+    pub(crate) fn note_resumed_by(&self, owner: &OwnerId, child: &str, creator: &str) -> bool {
+        let Some(runtime) = self.live_runtime(child, owner) else {
+            return false;
+        };
+        let title = self
+            .live_agent_title(owner, creator)
+            .unwrap_or_else(|| creator.to_string());
+        runtime.publish_session_notice(
+            resumed_by_notice(&title),
+            devboule_protocol::NoticeSeverity::Info,
+        )
+    }
+
+    fn live_agent_title(&self, owner: &OwnerId, id: &str) -> Option<String> {
+        self.live_agent_entries(owner)
+            .ok()?
+            .into_iter()
+            .find(|entry| entry.session.id == id)
+            .map(|entry| {
+                entry
+                    .session
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| entry.session.title.clone())
+            })
     }
 
     /// The id of the live agent `target` names (its id or its title) among the

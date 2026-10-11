@@ -787,3 +787,23 @@ fn a_stopped_childs_stored_row_is_offered_to_its_creator_only_when_it_can_resume
     );
     fixture.finish();
 }
+
+#[test]
+fn a_resumed_child_says_which_agent_resumed_it() {
+    // The resume that a creator's message starts leaves a muted notice in the
+    // child's own transcript, naming the creator, so the person can see who did it.
+    let (dir, registry) = registry();
+    let owner = test_owner("resume-note-user", "resume-note-client");
+    insert_live_agent(&registry, "resume-note-parent", owner.clone());
+    insert_live_agent(&registry, "resume-note-child", owner.clone());
+    assert!(
+        registry.note_resumed_by(&owner, "resume-note-child", "resume-note-parent"),
+        "the notice is written into the child's transcript"
+    );
+    assert_eq!(
+        session_child_commands::resumed_by_notice("Parent agent"),
+        "Resumed by Parent agent",
+        "the line names the creator"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
