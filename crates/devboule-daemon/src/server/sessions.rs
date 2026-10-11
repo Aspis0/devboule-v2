@@ -753,6 +753,9 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostAttach { .. }
         | ClientMessage::RemoteHostDetach { .. }
         | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceArchive { .. }
+        | ClientMessage::RemoteHostProjectRemove { .. }
         | ClientMessage::RemoteHostSend { .. }
         | ClientMessage::RemoteHostResize { .. }
         | ClientMessage::RemoteHostClaim { .. }

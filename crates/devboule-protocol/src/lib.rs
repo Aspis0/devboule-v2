@@ -276,6 +276,13 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// (its reply `Archived`) and `WorkspaceRestore`, both gated on
 /// `workspace.archive`. A workspace of a removed project is refused until its
 /// project is added again. Same new-variant rule.
+///
+/// Protocol 38 also adds the paired-host workspace operations:
+/// `RemoteHostWorkspaceCreate`, `RemoteHostWorkspaceArchive` and
+/// `RemoteHostProjectRemove`, with their replies `RemoteHostWorkspace` and
+/// `RemoteHostDone`. Each is relayed to the far side as its own frame, gated on
+/// that side advertising `workspace.archive` and `project.remove`. Same
+/// new-variant rule.
 pub const PROTOCOL_VERSION: u32 = 38;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).

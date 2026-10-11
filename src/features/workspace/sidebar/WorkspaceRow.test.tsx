@@ -245,10 +245,15 @@ describe("the workspace row", () => {
       expect(kebab?.getAttribute("aria-haspopup")).toBe("menu");
     });
 
-    it("has no kebab on a remote row: its menu would act on this machine", async () => {
+    it("has a kebab on a remote row whose menu offers Archive but no Rename", async () => {
       const row = await render(workspace(), { remote: true, hostName: "MacBookPro.lan" });
+      const kebab = row.parentElement?.querySelector<HTMLButtonElement>(".workspace-row-kebab");
+      expect(kebab).not.toBeNull();
 
-      expect(row.parentElement?.querySelector(".workspace-row-kebab")).toBeNull();
+      await act(async () => kebab?.click());
+
+      const items = [...(row.parentElement?.querySelectorAll('[role="menuitem"]') ?? [])];
+      expect(items.map((item) => item.textContent)).toEqual(["Archive workspace"]);
     });
   });
 });

@@ -12,6 +12,8 @@ export const THIS_PC = "this-pc";
 export interface SheetProject {
   id: string;
   name: string;
+  /** THIS_PC's device id, or the paired host the project lives on. */
+  hostId: string;
 }
 
 export interface SheetHost {
@@ -40,9 +42,6 @@ export interface NewWorkspaceSheetProps {
   onClose: () => void;
 }
 
-/** The refusal a host choice gets: creating on another PC is not built yet. */
-export const REMOTE_CREATE_UNAVAILABLE = "Creating a workspace on another PC is not available yet.";
-
 /**
  * One sheet for a new workspace, in the order the choices depend on: which
  * project, where (this PC or a paired host), how it is isolated, and the
@@ -57,10 +56,18 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
   onClose,
 }: NewWorkspaceSheetProps) {
   // Mounted fresh for each opening (the caller keys it), so the choices start
-  // from the preset project and the defaults every time.
+  // from the preset project and the defaults every time. The Where choice
+  // decides which projects are offered: the preset's own host first.
+  const presetHost = projects.find((project) => project.id === presetProjectId)?.hostId ?? THIS_PC;
+  const [chosenWhere, setChosenWhere] = useState<string | null>(null);
+  const where = chosenWhere ?? presetHost;
+  const hostProjects = projects.filter((project) => project.hostId === where);
   const [chosenProjectId, setProjectId] = useState<string | null>(null);
-  const projectId = chosenProjectId ?? presetProjectId ?? projects[0]?.id ?? null;
-  const [where, setWhere] = useState(THIS_PC);
+  const projectId =
+    hostProjects.find((project) => project.id === chosenProjectId)?.id ??
+    hostProjects.find((project) => project.id === presetProjectId)?.id ??
+    hostProjects[0]?.id ??
+    null;
   const [isolation, setIsolation] = useState<NewWorkspaceChoice["isolation"]>("local");
   const [branch, setBranch] = useState("");
   const [error, setError] = useState<ErrorSentence | null>(null);
@@ -106,17 +113,12 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const remoteChoice = where !== THIS_PC;
-  const canCreate = projectId !== null && !remoteChoice && !submitting;
+  const canCreate = projectId !== null && !submitting;
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (projectId === null || submittingRef.current) return;
-      if (remoteChoice) {
-        setError({ sentence: REMOTE_CREATE_UNAVAILABLE, detail: null });
-        return;
-      }
       submittingRef.current = true;
       setSubmitting(true);
       setError(null);
@@ -132,7 +134,7 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
       if (refusal === null) onClose();
       else setError(refusal);
     },
-    [branch, isolation, onClose, onCreate, projectId, remoteChoice, where],
+    [branch, isolation, onClose, onCreate, projectId, where],
   );
 
   return (
@@ -165,7 +167,14 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
         <form onSubmit={(event) => void handleSubmit(event)}>
           <fieldset className="new-workspace-group">
             <legend>Project</legend>
-            {projects.map((project, index) => (
+            {hostProjects.length === 0 ? (
+              <p className="new-workspace-note" role="note">
+                {where === THIS_PC
+                  ? "No project here yet. Add one first."
+                  : "That PC lists no project yet."}
+              </p>
+            ) : null}
+            {hostProjects.map((project, index) => (
               <label key={project.id} className="new-workspace-option">
                 <input
                   type="radio"
@@ -190,7 +199,10 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
                   name="new-workspace-where"
                   value={THIS_PC}
                   checked={where === THIS_PC}
-                  onChange={() => setWhere(THIS_PC)}
+                  onChange={() => {
+                    setChosenWhere(THIS_PC);
+                    setProjectId(null);
+                  }}
                   disabled={submitting}
                 />
                 This PC
@@ -202,18 +214,16 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
                     name="new-workspace-where"
                     value={host.id}
                     checked={where === host.id}
-                    onChange={() => setWhere(host.id)}
+                    onChange={() => {
+                      setChosenWhere(host.id);
+                      setProjectId(null);
+                    }}
                     disabled={submitting}
                   />
                   {host.name}
                   {host.online ? null : <span className="new-workspace-offline">offline</span>}
                 </label>
               ))}
-              {remoteChoice ? (
-                <p className="new-workspace-note" role="note">
-                  {REMOTE_CREATE_UNAVAILABLE}
-                </p>
-              ) : null}
             </fieldset>
           ) : null}
 

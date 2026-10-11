@@ -16,7 +16,7 @@ import { useMenuOpen } from "../../../lib/menuOpen";
 import { validateWorkspaceTitle } from "../../../lib/workspaceTitles";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
-import type { WorkspaceKey } from "../hosts/hostIdentity";
+import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
 import { compactLineCount } from "./diffCount";
 import { rowStatus } from "./rowStatus";
 import type { WorkspaceStat } from "./useWorkspaceStats";
@@ -83,7 +83,7 @@ export interface WorkspaceRowProps {
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Takes the workspace off the list (its folder stays) and answers with the
    * refusal, if one came back. */
-  onArchive: (workspaceId: string) => Promise<ErrorSentence | null>;
+  onArchive: (workspaceId: string, hostId: HostId) => Promise<ErrorSentence | null>;
   /** A workspace on another machine: read-only here until host-targeted
    * mutations land, and its second line may carry the offline label. */
   remote?: boolean;
@@ -200,9 +200,6 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   }, [confirming]);
 
   const openMenu = (event: { preventDefault: () => void }) => {
-    // A remote row has no local rename or delete to offer: the bare id would
-    // be sent to this machine's daemon, which is not the workspace's owner.
-    if (remote) return;
     event.preventDefault();
     setMenuOpen(true);
   };
@@ -247,7 +244,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     const target = row === null ? null : focusTargetAfterRemoval(row);
     const panel = row?.closest(".workspace-panel-open") ?? null;
     setConfirming(false);
-    const error = await onArchive(workspace.id);
+    const error = await onArchive(workspace.id, workspace.hostId);
     archivePendingRef.current = false;
     if (error !== null) {
       setArchiveRefusal(error);
@@ -422,7 +419,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           )}
         </>
       )}
-      {editing || remote ? null : (
+      {editing ? null : (
         <button
           type="button"
           ref={kebabRef}
@@ -443,9 +440,13 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           aria-label={`${workspace.displayTitle} actions`}
           onKeyDown={onMenuKeyDown}
         >
-          <button type="button" role="menuitem" onClick={startRename}>
-            Rename
-          </button>
+          {/* A remote row is renamed on its own machine: only the archive
+              travels the link from here. */}
+          {remote ? null : (
+            <button type="button" role="menuitem" onClick={startRename}>
+              Rename
+            </button>
+          )}
           {/* Archive takes the row off the list for every isolation; the
               folder stays, so a local row is no exception. */}
           <button type="button" role="menuitem" onClick={startArchive}>

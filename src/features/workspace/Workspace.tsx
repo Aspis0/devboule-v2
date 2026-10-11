@@ -20,6 +20,11 @@ import { ErrorText } from "../../components/ErrorText";
 import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
+import {
+  remoteHostProjectRemove,
+  remoteHostWorkspaceArchive,
+  remoteHostWorkspaceCreate,
+} from "../../lib/tauri";
 import type { AgentSession } from "../../lib/agentSession";
 import {
   DraftAgentComposer,
@@ -28,12 +33,7 @@ import {
   type DraftSelection,
 } from "./DraftAgentComposer";
 import { sendFirstMessageWhenReady } from "./firstMessage";
-import {
-  NewWorkspaceSheet,
-  REMOTE_CREATE_UNAVAILABLE,
-  THIS_PC,
-  type NewWorkspaceChoice,
-} from "./NewWorkspaceSheet";
+import { NewWorkspaceSheet, THIS_PC, type NewWorkspaceChoice } from "./NewWorkspaceSheet";
 import {
   SIDE_PANEL_REGISTRY,
   type AgentTasksContext,
@@ -525,7 +525,15 @@ export function Workspace({
     endedKey,
   });
   const handleArchiveWorkspace = useCallback(
-    async (workspaceId: string): Promise<ErrorSentence | null> => {
+    async (workspaceId: string, hostId: string = LOCAL_HOST_ID): Promise<ErrorSentence | null> => {
+      if (hostId !== LOCAL_HOST_ID) {
+        try {
+          await remoteHostWorkspaceArchive(hostId, workspaceId);
+          return null;
+        } catch (cause: unknown) {
+          return errorSentence(cause);
+        }
+      }
       const refusal = await archiveWorkspace(workspaceId);
       // The daemon's row is off the list; History can keep naming the id for
       // its sessions, so the cache is dropped here and never waits for History.
@@ -536,7 +544,15 @@ export function Workspace({
     [archiveWorkspace, evictWorkspaceStats],
   );
   const handleRemoveProject = useCallback(
-    async (projectId: string): Promise<ErrorSentence | null> => {
+    async (projectId: string, hostId: string = LOCAL_HOST_ID): Promise<ErrorSentence | null> => {
+      if (hostId !== LOCAL_HOST_ID) {
+        try {
+          await remoteHostProjectRemove(hostId, projectId);
+          return null;
+        } catch (cause: unknown) {
+          return errorSentence(cause);
+        }
+      }
       const refusal = await removeProject(projectId);
       // Every row the project listed is off the list with it.
       if (refusal === null) {
@@ -1899,11 +1915,14 @@ export function Workspace({
   );
   // The sheet creates the workspace and selects it; the workspace then waits
   // for its first message, with the provider chosen in its composer.
-  const localProjectsForSheet = useMemo(
+  // The sheet names this machine THIS_PC; a paired host's projects keep its id.
+  const sheetProjects = useMemo(
     () =>
-      projects
-        .filter((project) => project.hostId === LOCAL_HOST_ID)
-        .map((project) => ({ id: project.id, name: project.name })),
+      projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        hostId: project.hostId === LOCAL_HOST_ID ? THIS_PC : project.hostId,
+      })),
     [projects],
   );
   const pairedHostsForSheet = useMemo(
@@ -1922,8 +1941,23 @@ export function Workspace({
   const draftShowing = draftKey !== null && draftKey === selectedKey;
   const createFromSheet = useCallback(
     async (choice: NewWorkspaceChoice): Promise<ErrorSentence | null> => {
-      // Creating on another PC is not built: the sheet says so before it asks.
-      if (choice.where !== THIS_PC) return { sentence: REMOTE_CREATE_UNAVAILABLE, detail: null };
+      if (choice.where !== THIS_PC) {
+        // A paired host creates the workspace with its own checks; it shows up in
+        // the host's list when the host next publishes it.
+        try {
+          await remoteHostWorkspaceCreate(
+            choice.where,
+            choice.projectId,
+            choice.isolation,
+            choice.branch,
+          );
+        } catch (cause: unknown) {
+          return errorSentence(cause);
+        }
+        setSheet(null);
+        sheetTriggerRef.current?.focus({ preventScroll: true });
+        return null;
+      }
       const { key, refusal } = await createWorkspace(
         choice.projectId,
         choice.isolation,
@@ -3014,7 +3048,7 @@ export function Workspace({
       {sheet === null ? null : (
         <NewWorkspaceSheet
           key={sheet.nonce}
-          projects={localProjectsForSheet}
+          projects={sheetProjects}
           presetProjectId={sheet.projectId}
           pairedHosts={pairedHostsForSheet}
           onCreate={createFromSheet}

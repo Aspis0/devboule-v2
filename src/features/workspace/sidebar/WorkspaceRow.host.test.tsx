@@ -174,14 +174,48 @@ describe("the row of a remote host", () => {
     expect(row.querySelector(".workspace-row-offline")).toBeNull();
   });
 
-  it("offers no kebab and no menu on a remote row", async () => {
+  it("offers a menu on a remote row with Archive as its only entry", async () => {
     const row = await render({ remote: true, hostOffline: false });
-    expect(row.parentElement?.querySelector(".workspace-row-kebab")).toBeNull();
+    const kebab = row.parentElement?.querySelector<HTMLButtonElement>(".workspace-row-kebab");
+    expect(kebab).not.toBeNull();
 
+    await act(async () => kebab?.click());
+
+    const items = [...container.querySelectorAll('.workspace-row-menu [role="menuitem"]')];
+    expect(items.map((item) => item.textContent)).toEqual(["Archive workspace"]);
+  });
+
+  it("archives a remote row on its own host, naming the host's device id", async () => {
+    const onArchive = vi.fn(async () => null);
+    root = createRoot(container);
     await act(async () => {
-      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      root.render(
+        <WorkspaceRow
+          workspace={workspace({ hostId: "device-one" as HostId, isolation: "worktree" })}
+          workspaceKey={null}
+          hostName="Marcolenovo"
+          selected={false}
+          stat={undefined}
+          branch={undefined}
+          onSelect={vi.fn()}
+          onRename={vi.fn(async () => null)}
+          onArchive={onArchive}
+          remote
+          hostOffline={false}
+        />,
+      );
     });
+    const kebab = container.querySelector<HTMLButtonElement>(".workspace-row-kebab");
+    await act(async () => kebab?.click());
+    const archive = container.querySelector<HTMLButtonElement>(
+      '.workspace-row-menu [role="menuitem"]',
+    );
+    await act(async () => archive?.click());
+    const confirm = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent === "Archive",
+    );
+    await act(async () => confirm?.click());
 
-    expect(container.querySelector(".workspace-row-menu")).toBeNull();
+    expect(onArchive).toHaveBeenCalledWith("workspace-1", "device-one");
   });
 });

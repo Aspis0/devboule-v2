@@ -496,6 +496,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::RemoteHostAttach { .. }
         | ClientMessage::RemoteHostDetach { .. }
         | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceArchive { .. }
+        | ClientMessage::RemoteHostProjectRemove { .. }
         | ClientMessage::RemoteHostSend { .. }
         | ClientMessage::RemoteHostResize { .. }
         | ClientMessage::RemoteHostClaim { .. }
@@ -2119,6 +2122,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostUnwatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostCreate { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostWorkspaceCreate { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostWorkspaceArchive { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostProjectRemove { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostSend { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostResize { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostClaim { .. } => Some("remote_hosts"),
@@ -3043,6 +3049,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostAttach { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostDetach { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostCreate { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostWorkspaceCreate { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostWorkspaceArchive { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostProjectRemove { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostSend { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostResize { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostClaim { .. } => local("remote_hosts"),
@@ -3181,6 +3190,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostAttach { .. } => "RemoteHostAttach",
             ClientMessage::RemoteHostDetach { .. } => "RemoteHostDetach",
             ClientMessage::RemoteHostCreate { .. } => "RemoteHostCreate",
+            ClientMessage::RemoteHostWorkspaceCreate { .. } => "RemoteHostWorkspaceCreate",
+            ClientMessage::RemoteHostWorkspaceArchive { .. } => "RemoteHostWorkspaceArchive",
+            ClientMessage::RemoteHostProjectRemove { .. } => "RemoteHostProjectRemove",
             ClientMessage::RemoteHostSend { .. } => "RemoteHostSend",
             ClientMessage::RemoteHostResize { .. } => "RemoteHostResize",
             ClientMessage::RemoteHostClaim { .. } => "RemoteHostClaim",

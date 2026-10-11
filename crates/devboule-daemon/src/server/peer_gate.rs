@@ -534,6 +534,9 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::RemoteHostAttach { .. } => None,
         ClientMessage::RemoteHostDetach { .. } => None,
         ClientMessage::RemoteHostCreate { .. } => None,
+        ClientMessage::RemoteHostWorkspaceCreate { .. } => None,
+        ClientMessage::RemoteHostWorkspaceArchive { .. } => None,
+        ClientMessage::RemoteHostProjectRemove { .. } => None,
         ClientMessage::RemoteHostSend { .. } => None,
         ClientMessage::RemoteHostResize { .. } => None,
         ClientMessage::RemoteHostClaim { .. } => None,
@@ -828,6 +831,9 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::RemoteHostAttach { .. }
         | ClientMessage::RemoteHostDetach { .. }
         | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceArchive { .. }
+        | ClientMessage::RemoteHostProjectRemove { .. }
         | ClientMessage::RemoteHostSend { .. }
         | ClientMessage::RemoteHostResize { .. }
         | ClientMessage::RemoteHostClaim { .. }

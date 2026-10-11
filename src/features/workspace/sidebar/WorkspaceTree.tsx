@@ -25,9 +25,9 @@ export interface WorkspaceTreeProps {
   /** Persists a row's new title; answers with the refusal, if one came. */
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Takes a row's workspace off the list (its folder stays); answers with the refusal, if one came. */
-  onArchiveWorkspace: (workspaceId: string) => Promise<ErrorSentence | null>;
+  onArchiveWorkspace: (workspaceId: string, hostId: HostId) => Promise<ErrorSentence | null>;
   /** Takes a project off the list; its folder stays. Answers with the refusal, if one came. */
-  onRemoveProject: (projectId: string) => Promise<ErrorSentence | null>;
+  onRemoveProject: (projectId: string, hostId: HostId) => Promise<ErrorSentence | null>;
   /** The project whose anchor hosts the provider choice UI. */
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
@@ -139,23 +139,19 @@ export function WorkspaceTree({
               </span>
               <span className="workspace-project-name">{project.name}</span>
               {folder === null ? null : <span className="workspace-project-folder">{folder}</span>}
-              {project.hostId === LOCAL_HOST_ID ? (
-                <>
-                  <button
-                    type="button"
-                    className="workspace-project-new"
-                    onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                    aria-label={`New workspace in ${project.name}`}
-                    title="New workspace"
-                  >
-                    <span aria-hidden="true">+</span>
-                  </button>
-                  <ProjectMenu
-                    projectName={project.name}
-                    onRemove={() => onRemoveProject(project.id)}
-                  />
-                </>
-              ) : null}
+              <button
+                type="button"
+                className="workspace-project-new"
+                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                aria-label={`New workspace in ${project.name}`}
+                title="New workspace"
+              >
+                <span aria-hidden="true">+</span>
+              </button>
+              <ProjectMenu
+                projectName={project.name}
+                onRemove={() => onRemoveProject(project.id, project.hostId)}
+              />
             </div>
             {project.workspaceError !== undefined ? (
               <div className="workspace-project-error" role="alert">

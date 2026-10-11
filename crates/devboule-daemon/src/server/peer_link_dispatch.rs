@@ -12,7 +12,7 @@ use std::sync::Arc;
 use devboule_protocol::{ClientMessage, DaemonMessage, ErrorCode, RemoteHostState, WireError};
 
 use super::peer_link::{busy_sentence, MAX_HELD_LINKS};
-use super::peer_link_state::LinkAnswer;
+use super::peer_link_state::{LinkAnswer, LinkWorkspaceOp};
 use super::ServerState;
 use crate::session::ConnHandle;
 
@@ -145,6 +145,8 @@ pub(super) fn dispatch_remote_host(
                     WireError::new(ErrorCode::Internal, "an attach is not a list read").with_id(id),
                 ),
                 LinkAnswer::Created(_)
+                | LinkAnswer::Workspace(_)
+                | LinkAnswer::Done
                 | LinkAnswer::Sent(_)
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
@@ -187,6 +189,8 @@ pub(super) fn dispatch_remote_host(
                     WireError::new(ErrorCode::Internal, "a detach is not a list read").with_id(id),
                 ),
                 LinkAnswer::Created(_)
+                | LinkAnswer::Workspace(_)
+                | LinkAnswer::Done
                 | LinkAnswer::Sent(_)
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
@@ -231,6 +235,8 @@ pub(super) fn dispatch_remote_host(
                     .with_id(id),
                 ),
                 LinkAnswer::Created(_)
+                | LinkAnswer::Workspace(_)
+                | LinkAnswer::Done
                 | LinkAnswer::Sent(_)
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
@@ -278,6 +284,86 @@ pub(super) fn dispatch_remote_host(
                         id,
                         device_id: device_id.to_string(),
                         session: *session,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostWorkspaceCreate {
+            id,
+            device_id,
+            project_id,
+            isolation,
+            branch,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_workspace(
+                &device_id,
+                LinkWorkspaceOp::Create {
+                    project_id,
+                    isolation,
+                    branch,
+                },
+            );
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Workspace(workspace) => Some(DaemonMessage::RemoteHostWorkspace {
+                        id,
+                        device_id: device_id.to_string(),
+                        workspace: *workspace,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostWorkspaceArchive {
+            id,
+            device_id,
+            workspace_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_workspace(&device_id, LinkWorkspaceOp::Archive { workspace_id });
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Done => Some(DaemonMessage::RemoteHostDone {
+                        id,
+                        device_id: device_id.to_string(),
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostProjectRemove {
+            id,
+            device_id,
+            project_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_workspace(&device_id, LinkWorkspaceOp::ProjectRemove { project_id });
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Done => Some(DaemonMessage::RemoteHostDone {
+                        id,
+                        device_id: device_id.to_string(),
                     }),
                     _ => None,
                 },

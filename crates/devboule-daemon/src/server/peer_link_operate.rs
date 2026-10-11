@@ -20,7 +20,7 @@ use devboule_protocol::{caps, ClientMessage, DaemonMessage, RemoteHostState};
 use super::peer_link::{
     needs_pairing_sentence, offline_sentence, sentence_for, state_for, unsupported_sentence,
 };
-use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
+use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand, LinkWorkspaceOp};
 use super::peer_link_worker::{peer_row, LinkSession, PROBE_ID_BASE};
 use super::ServerState;
 use crate::error::DaemonError;
@@ -43,6 +43,23 @@ fn sessions_advertised(session: &LinkSession) -> bool {
         .capabilities
         .iter()
         .any(|agreed| agreed.as_str() == caps::SESSIONS)
+}
+
+/// The far daemon must advertise both workspace names before a workspace frame
+/// is written: an older reader cannot deserialize the new variants.
+fn workspace_ops_advertised(session: &LinkSession) -> bool {
+    [
+        devboule_protocol::caps::WORKSPACE_ARCHIVE,
+        devboule_protocol::caps::PROJECT_REMOVE,
+    ]
+    .iter()
+    .all(|name| {
+        session
+            .hello
+            .capabilities
+            .iter()
+            .any(|agreed| agreed.as_str() == *name)
+    })
 }
 
 /// The two checks every operate call makes before writing: the pairing row is
@@ -271,6 +288,84 @@ pub(crate) fn serve_create(
                 ..
             } if id == request_id => Some(LinkAnswer::Created(Box::new(created))),
             _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Run one workspace operation on the far side. The far daemon's own frame
+/// carries the request; its reply is the row (create) or an acknowledgement.
+/// A refusal of the far side travels back as its own sentence.
+pub(crate) fn serve_workspace(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Workspace {
+        generation,
+        op,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if !workspace_ops_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
+    let message = match op {
+        LinkWorkspaceOp::Create {
+            project_id,
+            isolation,
+            branch,
+        } => ClientMessage::WorkspaceCreate {
+            id: request_id,
+            project_id,
+            isolation,
+            branch,
+        },
+        LinkWorkspaceOp::Archive { workspace_id } => ClientMessage::WorkspaceArchive {
+            id: request_id,
+            workspace_id,
+        },
+        LinkWorkspaceOp::ProjectRemove { project_id } => ClientMessage::ProjectRemove {
+            id: request_id,
+            project_id,
+        },
+    };
+    if session.framed.send(&message).is_err() {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |reply| match reply {
+            DaemonMessage::Workspace { id, workspace } if id == request_id => {
+                Some(LinkAnswer::Workspace(Box::new(workspace)))
+            }
+            DaemonMessage::Ok { id } if id == request_id => Some(LinkAnswer::Done),
+            DaemonMessage::Error(error) if error.id == Some(request_id) => {
+                Some(LinkAnswer::Refused(error))
+            }
+            _ if reply_id(&reply) == Some(request_id) => Some(LinkAnswer::Failed(
                 RemoteHostState::Offline,
                 offline_sentence().to_string(),
             )),

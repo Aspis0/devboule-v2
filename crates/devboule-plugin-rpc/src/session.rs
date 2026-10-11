@@ -247,6 +247,8 @@ impl PluginSession {
                         | DaemonMessage::Workspaces { id, .. }
                         | DaemonMessage::Archived { id, .. }
                         | DaemonMessage::Workspace { id, .. }
+                        | DaemonMessage::RemoteHostWorkspace { id, .. }
+                        | DaemonMessage::RemoteHostDone { id, .. }
                         | DaemonMessage::JournalUsage { id, .. }
                         | DaemonMessage::JournalRetention { id, .. }
                         | DaemonMessage::Providers { id, .. }

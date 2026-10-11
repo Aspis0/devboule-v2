@@ -14,7 +14,7 @@ use std::time::Duration;
 use devboule_protocol::{RemoteHostList, RemoteHostState, RemoteHostStatus};
 
 use super::peer_dial::DialStep;
-use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
+use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand, LinkWorkspaceOp};
 use super::ServerState;
 use crate::session::ConnHandle;
 
@@ -603,6 +603,20 @@ impl PeerLinks {
                 idempotency_key,
                 cols,
                 rows,
+                answer,
+            }
+        })
+    }
+
+    /// Run one workspace operation on the host. The far side decides with its own
+    /// grants and checks; the create deadline covers a create that is slow to land.
+    pub(crate) fn operate_workspace(&self, device_id: &str, op: LinkWorkspaceOp) -> LinkAnswer {
+        let is_create = matches!(op, LinkWorkspaceOp::Create { .. });
+        let wait = self.operate_wait(is_create);
+        self.operate(device_id, wait, is_create, |generation, answer| {
+            LinkCommand::Workspace {
+                generation,
+                op,
                 answer,
             }
         })

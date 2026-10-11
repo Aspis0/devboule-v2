@@ -2893,6 +2893,11 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionDelete { .. } => None,
         ClientMessage::ProjectsList { .. } => None,
         ClientMessage::ProjectAdd { .. } => None,
+        // The paired-host frames name a device and a row of the far side: the
+        // far daemon checks them with its own ownership rules, not this table.
+        ClientMessage::RemoteHostWorkspaceCreate { .. }
+        | ClientMessage::RemoteHostWorkspaceArchive { .. }
+        | ClientMessage::RemoteHostProjectRemove { .. } => None,
         ClientMessage::WorkspacesList { .. } => None,
         ClientMessage::WorkspaceGitStatus { .. } => None,
         ClientMessage::WorkspaceGitDiff { .. } => None,

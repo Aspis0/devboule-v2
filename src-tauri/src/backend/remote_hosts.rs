@@ -219,6 +219,45 @@ pub async fn remote_host_list(
 /// Create one session in a workspace on a paired host. The owning daemon
 /// runs the provider and the process; this side only carries the ask.
 ///
+/// Create a workspace on a paired host, in one of its projects. The host's own
+/// grants and its own checks decide; the reply is the row it stored.
+#[tauri::command]
+pub async fn remote_host_workspace_create(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    project_id: String,
+    isolation: devboule_protocol::WorkspaceIsolation,
+    branch: Option<String>,
+) -> Result<devboule_protocol::Workspace, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_workspace_create(&device_id, &project_id, isolation, branch)
+    })
+    .await
+}
+
+/// Archive a workspace on a paired host; the folder stays on that PC.
+#[tauri::command]
+pub async fn remote_host_workspace_archive(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_workspace_archive(&device_id, &workspace_id)).await
+}
+
+/// Take a project off a paired host's list; its folder stays on that PC.
+#[tauri::command]
+pub async fn remote_host_project_remove(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    project_id: String,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_project_remove(&device_id, &project_id)).await
+}
+
 /// `idempotency_key` is the caller's retry identity: it travels with the
 /// host's own create, so an explicit retry after a lost reply answers with
 /// the same session. The UI mints one key per user intent and keeps it

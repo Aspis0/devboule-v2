@@ -127,6 +127,14 @@ export type CommandArgs = {
   workspace_delete: { workspaceId: Id };
   workspace_archive: { workspaceId: Id };
   workspace_restore: { workspaceId: Id };
+  remote_host_workspace_create: {
+    deviceId: Id;
+    projectId: Id;
+    isolation: Workspace["isolation"];
+    branch?: string | null;
+  };
+  remote_host_workspace_archive: { deviceId: Id; workspaceId: Id };
+  remote_host_project_remove: { deviceId: Id; projectId: Id };
   project_remove: { projectId: Id };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
@@ -472,6 +480,9 @@ type CommandResults = {
   workspace_delete: void;
   workspace_archive: void;
   workspace_restore: Workspace;
+  remote_host_workspace_create: Workspace;
+  remote_host_workspace_archive: void;
+  remote_host_project_remove: void;
   project_remove: void;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
@@ -712,6 +723,9 @@ export const COMMAND_ARG_KEYS = {
   workspace_delete: ["workspaceId"],
   workspace_archive: ["workspaceId"],
   workspace_restore: ["workspaceId"],
+  remote_host_workspace_create: ["deviceId", "projectId", "isolation", "branch"],
+  remote_host_workspace_archive: ["deviceId", "workspaceId"],
+  remote_host_project_remove: ["deviceId", "projectId"],
   project_remove: ["projectId"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
@@ -1293,6 +1307,25 @@ export const workspaceArchive = (workspaceId: Id) =>
 /** What the list took off: the removed projects and the archived workspace rows. */
 export const archivedList = () => invokeTyped("archived_list");
 /** Puts an archived workspace back on the list; a removed project is refused. */
+/** A workspace on a paired host, created there by the host's own checks. */
+export const remoteHostWorkspaceCreate = (
+  deviceId: Id,
+  projectId: Id,
+  isolation: Workspace["isolation"],
+  branch?: string | null,
+) =>
+  invokeTyped("remote_host_workspace_create", {
+    deviceId,
+    projectId,
+    isolation,
+    branch: branch ?? null,
+  });
+/** Archives a workspace on a paired host; its folder stays on that PC. */
+export const remoteHostWorkspaceArchive = (deviceId: Id, workspaceId: Id) =>
+  invokeTyped("remote_host_workspace_archive", { deviceId, workspaceId });
+/** Takes a project off a paired host's list; its folder stays on that PC. */
+export const remoteHostProjectRemove = (deviceId: Id, projectId: Id) =>
+  invokeTyped("remote_host_project_remove", { deviceId, projectId });
 export const workspaceRestore = (workspaceId: Id) =>
   invokeTyped("workspace_restore", { workspaceId });
 export const projectRemove = (projectId: Id) => invokeTyped("project_remove", { projectId });

@@ -1450,6 +1450,34 @@ pub enum ClientMessage {
         id: u64,
         workspace_id: String,
     },
+    /// Create a workspace on a paired host. Local-only: the daemon maps it to
+    /// the peer's own `WorkspaceCreate` on the held link, so the peer's grants
+    /// and its own checks decide, as they do for a local create. The reply is
+    /// [`DaemonMessage::RemoteHostWorkspace`]. Gated on the far side
+    /// advertising `workspace.archive` and `project.remove`.
+    RemoteHostWorkspaceCreate {
+        id: u64,
+        device_id: String,
+        project_id: String,
+        isolation: WorkspaceIsolation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Archive a workspace on a paired host, as [`ClientMessage::WorkspaceArchive`]
+    /// does here: the folder stays on that PC. The reply is
+    /// [`DaemonMessage::RemoteHostDone`].
+    RemoteHostWorkspaceArchive {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+    },
+    /// Remove a project from a paired host's list, as [`ClientMessage::ProjectRemove`]
+    /// does here. The reply is [`DaemonMessage::RemoteHostDone`].
+    RemoteHostProjectRemove {
+        id: u64,
+        device_id: String,
+        project_id: String,
+    },
     ProvidersList {
         id: u64,
     },
@@ -1891,6 +1919,9 @@ impl ClientMessage {
             | Self::ProjectRemove { id, .. }
             | Self::ArchivedList { id }
             | Self::WorkspaceRestore { id, .. }
+            | Self::RemoteHostWorkspaceCreate { id, .. }
+            | Self::RemoteHostWorkspaceArchive { id, .. }
+            | Self::RemoteHostProjectRemove { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersAuthCheck { id, .. }
             | Self::ProvidersRefresh { id }
@@ -2057,6 +2088,9 @@ impl ClientMessage {
             | Self::ProjectRemove { .. }
             | Self::ArchivedList { .. }
             | Self::WorkspaceRestore { .. }
+            | Self::RemoteHostWorkspaceCreate { .. }
+            | Self::RemoteHostWorkspaceArchive { .. }
+            | Self::RemoteHostProjectRemove { .. }
             | Self::Invoke { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -2181,6 +2215,9 @@ impl ClientMessage {
             Self::ProjectRemove { .. } => "ProjectRemove",
             Self::ArchivedList { .. } => "ArchivedList",
             Self::WorkspaceRestore { .. } => "WorkspaceRestore",
+            Self::RemoteHostWorkspaceCreate { .. } => "RemoteHostWorkspaceCreate",
+            Self::RemoteHostWorkspaceArchive { .. } => "RemoteHostWorkspaceArchive",
+            Self::RemoteHostProjectRemove { .. } => "RemoteHostProjectRemove",
             Self::ProvidersList { .. } => "ProvidersList",
             Self::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             Self::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -2301,6 +2338,9 @@ impl ClientMessage {
             | Self::ProjectRemove { .. }
             | Self::ArchivedList { .. }
             | Self::WorkspaceRestore { .. }
+            | Self::RemoteHostWorkspaceCreate { .. }
+            | Self::RemoteHostWorkspaceArchive { .. }
+            | Self::RemoteHostProjectRemove { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
             // The one act that destroys data — audited like the two writes
@@ -2464,6 +2504,19 @@ pub enum DaemonMessage {
         id: u64,
         projects: Vec<Project>,
         workspaces: Vec<Workspace>,
+    },
+    /// The reply to [`ClientMessage::RemoteHostWorkspaceCreate`]: the row the
+    /// paired host stored.
+    RemoteHostWorkspace {
+        id: u64,
+        device_id: String,
+        workspace: Workspace,
+    },
+    /// The reply to the paired host's archive and removal: the far side
+    /// accepted it.
+    RemoteHostDone {
+        id: u64,
+        device_id: String,
     },
     /// The reply to [`ClientMessage::WorkspaceGitStatus`].
     WorkspaceGit {

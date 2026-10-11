@@ -1881,6 +1881,68 @@ impl DaemonClient {
         }
     }
 
+    /// Create a workspace on a paired host. The far side decides with its own
+    /// grants and checks; the reply is the row it stored.
+    pub fn remote_host_workspace_create(
+        &self,
+        device_id: &str,
+        project_id: &str,
+        isolation: devboule_protocol::WorkspaceIsolation,
+        branch: Option<String>,
+    ) -> Result<devboule_protocol::Workspace, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostWorkspaceCreate {
+            id,
+            device_id: device_id.to_string(),
+            project_id: project_id.to_string(),
+            isolation,
+            branch,
+        })? {
+            DaemonMessage::RemoteHostWorkspace { workspace, .. } => Ok(workspace),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Archive a workspace on a paired host: its folder stays on that PC.
+    pub fn remote_host_workspace_archive(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostWorkspaceArchive {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::RemoteHostDone { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Take a project off a paired host's list; its folder stays on that PC.
+    pub fn remote_host_project_remove(
+        &self,
+        device_id: &str,
+        project_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostProjectRemove {
+            id,
+            device_id: device_id.to_string(),
+            project_id: project_id.to_string(),
+        })? {
+            DaemonMessage::RemoteHostDone { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Take a project off the list; its folder and rows stay where they are.
     pub fn project_remove(&self, project_id: &str) -> Result<(), DaemonError> {
         self.require_agreed(devboule_protocol::caps::PROJECT_REMOVE)?;
@@ -3795,6 +3857,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Projects { id, .. }
         | DaemonMessage::Project { id, .. }
         | DaemonMessage::Workspaces { id, .. }
+        | DaemonMessage::RemoteHostWorkspace { id, .. }
+        | DaemonMessage::RemoteHostDone { id, .. }
         | DaemonMessage::Archived { id, .. }
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }

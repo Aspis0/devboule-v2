@@ -6,18 +6,14 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  NewWorkspaceSheet,
-  REMOTE_CREATE_UNAVAILABLE,
-  THIS_PC,
-  type NewWorkspaceSheetProps,
-} from "./NewWorkspaceSheet";
+import { NewWorkspaceSheet, THIS_PC, type NewWorkspaceSheetProps } from "./NewWorkspaceSheet";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const PROJECTS = [
-  { id: "p-1", name: "devboule-v2" },
-  { id: "p-2", name: "kalsa-website" },
+  { id: "p-1", name: "devboule-v2", hostId: THIS_PC },
+  { id: "p-2", name: "kalsa-website", hostId: THIS_PC },
+  { id: "p-mac", name: "cart-web", hostId: "device-mac" },
 ];
 
 let container: HTMLDivElement;
@@ -54,6 +50,16 @@ async function render(over: Partial<NewWorkspaceSheetProps> = {}): Promise<{
     ),
   );
   return { onCreate, onClose };
+}
+
+function groupLegendsAll(): string[] {
+  return [...container.querySelectorAll("legend")].map((legend) => legend.textContent ?? "");
+}
+
+function projectRadios(): string[] {
+  return [
+    ...container.querySelectorAll<HTMLInputElement>('input[name="new-workspace-project"]'),
+  ].map((input) => input.value);
 }
 
 function groupLegends(): string[] {
@@ -195,17 +201,36 @@ describe("what the sheet sends", () => {
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses to create on another PC and says so beside the Where choice", async () => {
+  it("offers only the chosen host's projects, and creates on the host's own project", async () => {
     const { onCreate } = await render({
+      pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
+    });
+    expect(groupLegendsAll()).toContain("Where");
+    expect(projectRadios()).toEqual(["p-1", "p-2"]);
+
+    await choose(radio("new-workspace-where", "device-mac"));
+
+    expect(projectRadios()).toEqual(["p-mac"]);
+    expect(radio("new-workspace-project", "p-mac").checked).toBe(true);
+    await submit();
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: "p-mac",
+      where: "device-mac",
+      isolation: "local",
+      branch: null,
+    });
+  });
+
+  it("says so when the chosen host lists no project, and creates nothing", async () => {
+    const { onCreate } = await render({
+      projects: [{ id: "p-1", name: "devboule-v2", hostId: THIS_PC }],
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
     });
 
     await choose(radio("new-workspace-where", "device-mac"));
 
     expect(createButton().disabled).toBe(true);
-    expect(container.querySelector(".new-workspace-note")?.textContent).toBe(
-      REMOTE_CREATE_UNAVAILABLE,
-    );
+    expect(container.textContent).toContain("That PC lists no project yet.");
     expect(onCreate).not.toHaveBeenCalled();
   });
 });

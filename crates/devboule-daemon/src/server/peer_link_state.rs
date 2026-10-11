@@ -24,6 +24,22 @@ use crate::session::ConnHandle;
 ///
 /// Boxed where a body dwarfs the rest: a session row travels per create,
 /// and the union is carried per call.
+/// What a workspace operation asks the far side to do.
+#[derive(Debug)]
+pub(crate) enum LinkWorkspaceOp {
+    Create {
+        project_id: String,
+        isolation: devboule_protocol::WorkspaceIsolation,
+        branch: Option<String>,
+    },
+    Archive {
+        workspace_id: String,
+    },
+    ProjectRemove {
+        project_id: String,
+    },
+}
+
 #[derive(Debug)]
 pub(crate) enum LinkAnswer {
     /// The remote daemon's own body, carried through unchanged.
@@ -34,6 +50,10 @@ pub(crate) enum LinkAnswer {
     Created(Box<devboule_protocol::Session>),
     /// The host's answer to a send: whether a turn runs when it answers.
     Sent(bool),
+    /// The row the host stored for a workspace it created.
+    Workspace(Box<devboule_protocol::Workspace>),
+    /// The host accepted an archive or a removal.
+    Done,
     /// The host's own provider catalog, for the create picker.
     Providers {
         providers: Vec<devboule_protocol::ProviderInfo>,
@@ -95,6 +115,13 @@ pub(crate) enum LinkCommand {
         idempotency_key: Option<String>,
         cols: Option<u16>,
         rows: Option<u16>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// A workspace operation on the far side: a create, an archive, or a
+    /// project removal, each its own frame over the link.
+    Workspace {
+        generation: u64,
+        op: LinkWorkspaceOp,
         answer: SyncSender<LinkAnswer>,
     },
     /// Send text into one session on the far side.

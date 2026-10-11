@@ -141,6 +141,25 @@ describe("the tree's identity", () => {
     expect(errors.join("\n")).not.toContain("same key");
   });
 
+  it("offers the New workspace button on a remote project, keyed to that project", async () => {
+    const remoteHost = "device-one" as WorkspaceProject["hostId"];
+    const remoteProject: WorkspaceProject = {
+      id: "p-r",
+      name: "field-notes",
+      path: "C:\\remote\\field-notes",
+      hostId: remoteHost,
+      workspaces: [],
+    };
+    const onNewWorkspace = vi.fn();
+    await render({ projects: [remoteProject], onNewWorkspace });
+
+    const plus = container.querySelector<HTMLButtonElement>(".workspace-project-new");
+    expect(plus).not.toBeNull();
+    await act(async () => plus?.click());
+
+    expect(onNewWorkspace).toHaveBeenCalledWith(expect.any(HTMLButtonElement), "p-r");
+  });
+
   it("gives every project a header and closes it with a New workspace row", async () => {
     await render({ projects: [TWIN_A, SOLO] });
 
