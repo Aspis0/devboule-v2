@@ -236,9 +236,9 @@ describe("shortcutSections", () => {
 
   it("lists the three panel toggles under Layout with the command key of this host", () => {
     vi.stubGlobal("navigator", { platform: "Win32" });
-    expect(rows("queue")).toContain("Ctrl+B | Collapse sidebar |");
-    expect(rows("queue")).toContain("Ctrl+E | Collapse panel |");
-    expect(rows("queue")).toContain("Ctrl+. | Collapse both |");
+    expect(rows("queue")).toContain("Ctrl+B | Toggle left sidebar |");
+    expect(rows("queue")).toContain("Ctrl+E | Toggle right panel |");
+    expect(rows("queue")).toContain("Ctrl+. | Toggle both panels |");
   });
 
   it("lists the keys the matchers answer", () => {
@@ -274,10 +274,8 @@ describe("shortcutSections", () => {
 
   it("scopes the tab chord and the crescent arrows to what really happens", () => {
     const listed = rows("queue");
-    expect(listed).toContain(
-      "Not while typing in a field or terminal, or while a menu, list or dialog is open.",
-    );
-    expect(listed).toContain("While the surface list is open, outside text fields and dialogs.");
+    expect(listed).toContain("Skip while typing, in a terminal, or in a menu or dialog");
+    expect(listed).toContain("Step through surfaces outside fields and dialogs");
   });
 });
 

@@ -74,22 +74,18 @@ describe("ShortcutsPanel", () => {
 
   it("follows the send setting in the two Enter rows", async () => {
     await renderPanel();
-    expect(container.textContent).toContain(
-      "While the agent is working, Enter queues the message when queueing is available; otherwise it sends.",
-    );
+    expect(container.textContent).toContain("Queue it, or send if queueing is unavailable");
     expect(container.textContent).toContain("Interrupt and send");
 
     await act(async () => setSendBehavior("interrupt-and-send"));
 
-    expect(container.textContent).toContain(
-      "While the agent is working, Enter interrupts the turn and sends the message.",
-    );
+    expect(container.textContent).toContain("Interrupt the turn, then send");
     expect(container.textContent).toContain("Queue the message");
     expect(container.textContent).toContain(
-      "While the agent is working, this queues the message when queueing is available; otherwise the draft stays in the composer.",
+      "Queue it, or keep the draft if queueing is unavailable",
     );
-    expect(container.textContent).toContain("otherwise the draft stays in the composer");
-    expect(container.textContent).not.toContain("otherwise it sends");
+    expect(container.textContent).toContain("keep the draft if queueing is unavailable");
+    expect(container.textContent).not.toContain("Queue it, or send");
   });
 
   it("renders the one blocked-states note under the Composer group", async () => {

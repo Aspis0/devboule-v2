@@ -259,16 +259,20 @@ function tabStripRows(): readonly ShortcutRow[] {
   const chordRows = STRIP_CHORDS.map(({ chord, key }) => ({
     keys: `Alt+Shift+${key}`,
     title: chord === "next" ? "Next tab" : "Previous tab",
-    detail: "Not while typing in a field or terminal, or while a menu, list or dialog is open.",
+    detail: "Skip while typing, in a terminal, or in a menu or dialog",
   }));
   return [
     ...chordRows,
-    { keys: tabMoveKeys("next"), title: "Next tab", detail: "With the tab list focused." },
-    { keys: tabMoveKeys("previous"), title: "Previous tab", detail: "With the tab list focused." },
+    { keys: tabMoveKeys("next"), title: "Next tab", detail: "Move with the tab list focused" },
+    {
+      keys: tabMoveKeys("previous"),
+      title: "Previous tab",
+      detail: "Move with the tab list focused",
+    },
     {
       keys: `${tabMoveKeys("first")} / ${tabMoveKeys("last")}`,
       title: "First or last tab",
-      detail: "With the tab list focused.",
+      detail: "Move with the tab list focused",
     },
     { keys: CLOSE_TAB_KEYS.join(" / "), title: "Close the focused tab" },
   ];
@@ -282,24 +286,23 @@ function composerRows(behavior: SendBehavior): readonly ShortcutRow[] {
       keys: composerChordLabel("submit"),
       title: "Send the message",
       detail: queued
-        ? "While the agent is working, Enter queues the message when queueing is available; otherwise it sends."
+        ? "Queue it, or send if queueing is unavailable"
         : steers
-          ? "While the agent is working, Enter steers the message into the running turn."
-          : "While the agent is working, Enter interrupts the turn and sends the message.",
+          ? "Steer the running turn"
+          : "Interrupt the turn, then send",
     },
     { keys: composerChordLabel("newline"), title: "Start a new line" },
     {
       keys: composerChordLabel("alternate"),
       title: queued ? "Interrupt and send" : "Queue the message",
       detail: queued
-        ? "While the agent is working, this interrupts the turn and sends the message."
-        : "While the agent is working, this queues the message when queueing is available; otherwise the draft stays in the composer.",
+        ? "Interrupt the turn, then send"
+        : "Queue it, or keep the draft if queueing is unavailable",
     },
     {
       keys: COMMAND_MENU_KEY,
       title: "Open the command menu",
-      detail:
-        "Type it at the start of a message to see the commands this agent offers. While they show, Enter picks the highlighted command instead of sending.",
+      detail: "Open this agent's commands; Enter picks one",
     },
   ];
 }
@@ -308,7 +311,7 @@ function crescentRows(): readonly ShortcutRow[] {
   return CRESCENT_PAGE_KEYS.map(({ page, key }) => ({
     keys: key,
     title: page === "next" ? "Next surface" : "Previous surface",
-    detail: "While the surface list is open, outside text fields and dialogs.",
+    detail: "Step through surfaces outside fields and dialogs",
   }));
 }
 
@@ -317,7 +320,7 @@ function navigationRows(): readonly ShortcutRow[] {
     {
       keys: searchChordLabel(),
       title: "Search workspaces",
-      detail: "The workspaces panel opens first while it is collapsed.",
+      detail: "Open the workspaces panel first if collapsed",
     },
     ...crescentRows(),
   ];
@@ -336,9 +339,9 @@ function panelRows(): readonly ShortcutRow[] {
 
 function layoutRows(): readonly ShortcutRow[] {
   return [
-    { keys: `${commandKeyPrefix()}B`, title: "Collapse sidebar" },
-    { keys: `${commandKeyPrefix()}E`, title: "Collapse panel" },
-    { keys: `${commandKeyPrefix()}.`, title: "Collapse both" },
+    { keys: `${commandKeyPrefix()}B`, title: "Toggle left sidebar" },
+    { keys: `${commandKeyPrefix()}E`, title: "Toggle right panel" },
+    { keys: `${commandKeyPrefix()}.`, title: "Toggle both panels" },
   ];
 }
 
@@ -347,12 +350,12 @@ function browserRows(): readonly ShortcutRow[] {
     {
       keys: `${commandKeyPrefix()}L`,
       title: "Focus the address bar",
-      detail: "While a browser tab is in front.",
+      detail: "Act on the browser tab in front",
     },
     {
       keys: `${commandKeyPrefix()}R`,
       title: "Reload the page, or stop it while it loads",
-      detail: "While a browser tab is in front.",
+      detail: "Act on the browser tab in front",
     },
   ];
 }

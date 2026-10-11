@@ -64,14 +64,12 @@ function readyActs(behavior: SendBehavior, key: "submit" | "alternate"): readonl
 
 describe("the composer rows state the rule the composer runs", () => {
   it("swaps what Enter and the modifier do with the send setting", () => {
-    expect(composerRow("queue", "submit")).toContain("Enter queues the message");
+    expect(composerRow("queue", "submit")).toContain("Queue it");
     expect(composerRow("queue", "alternate")).toContain("Interrupt and send");
-    expect(composerRow("queue", "submit")).not.toContain("Enter interrupts");
-    expect(composerRow("interrupt-and-send", "submit")).toContain(
-      "Enter interrupts the turn and sends the message",
-    );
+    expect(composerRow("queue", "submit")).not.toContain("Interrupt the turn");
+    expect(composerRow("interrupt-and-send", "submit")).toContain("Interrupt the turn, then send");
     expect(composerRow("interrupt-and-send", "alternate")).toContain("Queue the message");
-    expect(composerRow("interrupt-and-send", "submit")).not.toContain("Enter queues");
+    expect(composerRow("interrupt-and-send", "submit")).not.toContain("Queue it");
   });
 
   it("names the queue condition on the row availability decides", () => {
@@ -79,9 +77,9 @@ describe("the composer rows state the rule the composer runs", () => {
       for (const key of ["submit", "alternate"] as const) {
         const copy = composerRow(behavior, key);
         if (new Set(readyActs(behavior, key)).size > 1) {
-          expect(copy).toContain("when queueing is available");
+          expect(copy).toContain("if queueing is unavailable");
         } else {
-          expect(copy).not.toContain("when queueing is available");
+          expect(copy).not.toContain("if queueing is unavailable");
         }
       }
     }
@@ -92,11 +90,11 @@ describe("the composer rows state the rule the composer runs", () => {
       for (const key of ["submit", "alternate"] as const) {
         const copy = composerRow(branch.behavior, key);
         const act = branch[key];
-        if (act === "queues") expect(copy).toContain("queues the message");
-        if (act === "sends") expect(copy).toContain("sends");
+        if (act === "queues") expect(copy).toMatch(/queue/i);
+        if (act === "sends") expect(copy).toMatch(/send/i);
         if (act === "nothing") {
-          expect(copy).not.toContain("sends");
-          expect(copy).toContain("the draft stays in the composer");
+          expect(copy).not.toMatch(/send/i);
+          expect(copy).toContain("keep the draft");
         }
       }
     }
@@ -118,9 +116,7 @@ describe("the composer rows state the rule the composer runs", () => {
       const row = composerSection(behavior).rows.find(
         (candidate) => candidate.keys === COMMAND_MENU_KEY,
       );
-      expect(row?.detail).toContain(
-        "While they show, Enter picks the highlighted command instead of sending.",
-      );
+      expect(row?.detail).toContain("Enter picks one");
     }
   });
 });
