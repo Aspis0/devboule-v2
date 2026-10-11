@@ -24,7 +24,13 @@ import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
 import { isInstalled, isRunOnDemand } from "../../lib/providerPredicates";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
-import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
+import {
+  fireAttentionToast,
+  forgetAttentionFor,
+  markAttentionSeen,
+  settleAttentionFor,
+} from "./attentionNotice";
+import { hasBusyChild } from "./attentionToastPolicy";
 import { markSessionOpened } from "./openedSessions";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
@@ -543,7 +549,12 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
  * again by the next roster. The controller stays neutral about toasts; the
  * observer decides what a raise means.
  */
-export type AttentionObserver = (session: Session, attention: Attention) => void;
+/** `roster` is the whole roster the raise was published with, so an observer can read the session's children. */
+export type AttentionObserver = (
+  session: Session,
+  attention: Attention,
+  roster: readonly Session[],
+) => void;
 
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
@@ -753,11 +764,15 @@ export function createWorkspaceSessionController(
     });
     // Fired after the state lands, so an observer reading the roster sees the
     // world the toast is about.
-    for (const { session, attention } of offers) notifyAttention?.(session, attention);
+    for (const { session, attention } of offers) notifyAttention?.(session, attention, sessions);
     // Raises already standing when this app came up are old news: claimed
     // without a toast, so no later application announces them as if they were
     // news the user never saw.
     markAttentionSeen(standing);
+    // A row with no attention has settled: its next raise is a new state to announce.
+    settleAttentionFor(
+      new Set(sessions.filter((row) => row.attention === undefined).map((row) => row.id)),
+    );
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
     forgetAttentionFor(new Set(sessions.map((session) => session.id)));
@@ -976,12 +991,19 @@ let sharedController: WorkspaceSessionController | null = null;
  */
 export function sharedSessionController(): WorkspaceSessionController {
   if (sharedController === null) {
-    sharedController = createWorkspaceSessionController(DEFAULT_SOURCE, (session, attention) =>
-      fireAttentionToast(
-        { sessionId: session.id, workspaceId: session.workspaceId },
-        sessionTitle(session),
-        attention,
-      ),
+    sharedController = createWorkspaceSessionController(
+      DEFAULT_SOURCE,
+      (session, attention, roster) =>
+        fireAttentionToast(
+          { sessionId: session.id, workspaceId: session.workspaceId },
+          sessionTitle(session),
+          attention,
+          undefined,
+          {
+            topLevel: session.createdBy === undefined,
+            childBusy: hasBusyChild(session.id, roster),
+          },
+        ),
     );
   }
   return sharedController;

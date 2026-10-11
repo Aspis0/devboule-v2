@@ -4,6 +4,7 @@ import { getShowMessagePreviews, getShowNotifications } from "../../lib/notifica
 import { lookedAtSessionId, onPresenceSettled } from "./presence";
 import { traceAttention, withinMs } from "../../lib/boundedWait";
 import { windowReaderFor } from "./windowReader";
+import { shouldToast, type RaiseContext } from "./attentionToastPolicy";
 
 /** How long the window state may take before the gate decides without it. A
  * window that cannot answer in this time is treated as not seen: the toast
@@ -273,7 +274,20 @@ const judging = new Map<string, Attention>();
  */
 function raiseIsOfferable(sessionId: string, attention: Attention): boolean {
   if (!attentionRaised(lastFired.get(sessionId), attention)) return false;
+  // Every card the agent raises while one permission state stands is the same
+  // state: one toast covers them until the attention settles.
+  if (attention.reason === "permission" && lastFired.get(sessionId)?.reason === "permission") {
+    return false;
+  }
   return attentionRaised(judging.get(sessionId), attention);
+}
+
+/**
+ * The roster shows these sessions with no attention: their state has settled, so
+ * the next raise of any of them is news and may toast again.
+ */
+export function settleAttentionFor(sessionIds: ReadonlySet<string>): void {
+  for (const id of sessionIds) lastFired.delete(id);
 }
 
 /**
@@ -306,6 +320,7 @@ interface HeldRaise {
   target: AttentionTarget;
   attention: Attention;
   deps?: Partial<ToastDeps>;
+  context: RaiseContext;
 }
 
 /**
@@ -325,7 +340,7 @@ const heldRaises = new Map<string, HeldRaise>();
 export function reconsiderHeldAttention(): void {
   for (const [sessionId, raise] of [...heldRaises]) {
     heldRaises.delete(sessionId);
-    fireAttentionToast(raise.target, raise.title, raise.attention, raise.deps);
+    fireAttentionToast(raise.target, raise.title, raise.attention, raise.deps, raise.context);
   }
 }
 
@@ -427,7 +442,8 @@ export function productionOnWindowFocusChange(
 /**
  * The production toast path, called by the roster controller with every
  * publication of a raise. The order: the gate runs
- * FIRST and the dedupe record only after it — a raise the gate held back is not
+ * FIRST, then the policy (`shouldToast`) decides whether the raise is the
+ * person's to answer, and the dedupe record only after both — a raise the gate held back is not
  * consumed, so a later publication announces it once the user looks away. A send
  * that throws waits once for `TOAST_RETRY_DELAY_MS` and tries again; a second
  * failure is dropped — the raise was announced as far as this app can push it.
@@ -437,6 +453,7 @@ export function fireAttentionToast(
   title: string,
   attention: Attention,
   deps?: Partial<ToastDeps>,
+  context: RaiseContext = { topLevel: true, childBusy: false },
 ): void {
   const sessionId = target.sessionId;
   // The Notifications page's master switch, read at fire time. A raise
@@ -483,9 +500,11 @@ export function fireAttentionToast(
     if (!mayAnnounce) {
       // Held back, and unrecorded: the daemon still owes this raise to someone,
       // and it is judged again when the presence reporter settles.
-      heldRaises.set(sessionId, { title, target, attention, deps });
+      heldRaises.set(sessionId, { title, target, attention, deps, context });
       return;
     }
+    // Only a raise the person must answer reaches the OS; the rest stays in the app.
+    if (!shouldToast({ ...context, reason: attention.reason, away: mayAnnounce })) return;
     // The dedupe records here — after
     // the gate, before the send, and with no await between the test and the
     // write, so two publications of one raise cannot both land: the first has

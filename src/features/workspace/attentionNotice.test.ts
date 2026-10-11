@@ -16,6 +16,7 @@ import {
   reconsiderHeldAttention,
   sendWithPermission,
   setAttentionHeldContentProvider,
+  settleAttentionFor,
   stripMarkdown,
   toastContent,
   toastGate,
@@ -1115,5 +1116,103 @@ describe("a raise the gate held back is judged again when the user looks away", 
     reconsiderHeldAttention();
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fireAttentionToast: only what the person must answer", () => {
+  const hidden = {
+    windowState: async () => ({ visible: false, focused: false, minimized: false }),
+  };
+  const topLevel = { topLevel: true, childBusy: false };
+  const child = { topLevel: false, childBusy: false };
+
+  it("never toasts a child's card: the agent that created the child answers it", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast(
+      target("child-card"),
+      "child",
+      attention("permission", 1000),
+      { send, ...hidden },
+      child,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("holds a top-level finish while a child runs, and announces it once the children are idle", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast(
+      target("orchestrator"),
+      "orchestrator",
+      attention("finished", 2000),
+      { send, ...hidden },
+      { topLevel: true, childBusy: true },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    fireAttentionToast(
+      target("orchestrator"),
+      "orchestrator",
+      attention("finished", 2000),
+      { send, ...hidden },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("raises one toast for an agent's cards while the first one still stands", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast(
+      target("agent-a"),
+      "agent a",
+      attention("permission", 3000),
+      { send, ...hidden },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    fireAttentionToast(
+      target("agent-a"),
+      "agent a",
+      attention("permission", 3100),
+      { send, ...hidden },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("raises the next card's toast once the agent's attention has settled", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast(
+      target("agent-b"),
+      "agent b",
+      attention("permission", 4000),
+      { send, ...hidden },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    settleAttentionFor(new Set(["agent-b"]));
+    fireAttentionToast(
+      target("agent-b"),
+      "agent b",
+      attention("permission", 5000),
+      { send, ...hidden },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });
