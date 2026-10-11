@@ -1014,8 +1014,9 @@ impl super::SessionRegistry {
         Ok(record.to_workspace())
     }
 
-    /// Takes a project off the list (`ProjectRemove`). Its folder and its
-    /// workspace rows stay where they are; adding the same path again lists it.
+    /// Takes a project off the list (`ProjectRemove`). Its folder stays on disk;
+    /// its active workspace rows are archived with it, and adding the same path
+    /// again lists the project without them.
     /// Refused while a session runs in one of its listed workspaces. Archived
     /// workspaces hold no live session: archiving refuses one, and a create
     /// cannot start into an archiving row.

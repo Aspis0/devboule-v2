@@ -1943,7 +1943,7 @@ impl DaemonClient {
         }
     }
 
-    /// Take a project off the list; its folder and rows stay where they are.
+    /// Take a project off the list; its folder stays and its active rows are archived with it.
     pub fn project_remove(&self, project_id: &str) -> Result<(), DaemonError> {
         self.require_agreed(devboule_protocol::caps::PROJECT_REMOVE)?;
         let id = self.alloc_id();

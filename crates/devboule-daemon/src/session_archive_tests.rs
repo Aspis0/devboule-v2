@@ -134,11 +134,37 @@ fn removing_a_project_takes_it_off_the_list_and_adding_its_folder_lists_it_again
         .iter()
         .any(|listed| listed.id == project.id));
     assert!(
-        listed_workspace_ids(&journal, &project.id).contains(&local.id),
-        "its rows come back with it"
+        listed_workspace_ids(&journal, &project.id).is_empty(),
+        "its active rows left the list with it, so the re-added project starts without them"
+    );
+    let (_, archived_workspaces) = journal.archived_list().expect("archived list");
+    assert!(
+        archived_workspaces.iter().any(|row| row.id == local.id),
+        "the removed row is kept in the archive, not deleted"
     );
 
     journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_removed_project_stays_off_the_list_after_the_journal_reopens() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, _local) = project_with_local_row(&dir, &journal);
+    registry.project_remove(&project.id).expect("remove");
+    journal.shutdown();
+
+    let reopened = Journal::open(&dir.join("journal.db")).expect("reopen journal");
+    assert!(
+        !reopened
+            .projects_list()
+            .expect("project list")
+            .iter()
+            .any(|listed| listed.id == project.id),
+        "a restart does not put the removed project back on the list"
+    );
+
+    reopened.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
 

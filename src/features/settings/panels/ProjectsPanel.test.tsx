@@ -295,6 +295,24 @@ describe("Settings projects", () => {
     expect(section.textContent).toContain("real-project");
   });
 
+  it("shows each project's workspaces inline, with no disclosure to fold them away", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([
+      {
+        id: "workspace-feature",
+        projectId: project.id,
+        title: "feature-x",
+        isolation: "worktree",
+        path: "D:\\real-project.worktrees\\feature-x-9f2e1a",
+      },
+    ]);
+    await renderProjects();
+
+    expect(container.querySelector("details")).toBeNull();
+    expect(
+      container.querySelector("[data-settings-project] .settings-card-meta")?.textContent,
+    ).toBe("feature-x");
+  });
+
   it("puts the Add action in the section head as a labelled glyph", async () => {
     await renderProjects();
 

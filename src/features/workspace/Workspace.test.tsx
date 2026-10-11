@@ -1631,7 +1631,10 @@ describe("Workspace sessions", () => {
     const initialWorkspaces = new Promise<IpcWorkspace[]>((resolve) => {
       releaseInitialWorkspaces = resolve;
     });
-    vi.mocked(projectsList).mockResolvedValue([project]);
+    // The read after the add lists the created project, as the daemon does.
+    vi.mocked(projectsList)
+      .mockResolvedValueOnce([project])
+      .mockResolvedValue([project, createdProject]);
     vi.mocked(workspacesList).mockImplementation((projectId) =>
       projectId === project.id ? initialWorkspaces : Promise.resolve([createdWorkspaceDuringLoad]),
     );

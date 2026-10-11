@@ -118,20 +118,19 @@ export function remoteProjectRecords(
   return records;
 }
 
+/**
+ * The listing is the whole truth: a project or workspace the daemon no longer
+ * lists is gone, and nothing held from an earlier read survives it. The one
+ * exception is a failed per-project read (workspaceError set), which keeps the
+ * workspaces it held and lets the error line ask for a Retry.
+ */
 export function reconcileProjectRecords(
   loaded: ProjectRecord[],
   current: ProjectRecord[],
 ): ProjectRecord[] {
   const currentById = new Map(current.map((project) => [project.id, project]));
-  const loadedIds = new Set(loaded.map((project) => project.id));
-  const reconciled = loaded.map((project) => {
+  return loaded.map((project) => {
     const currentProject = currentById.get(project.id);
-    // A failed per-project read (workspaceError set) must not be treated as
-    // "no workspaces": keep what was already held and let the error line ask
-    // for a Retry. A successful reply is authoritative per project: a
-    // workspace the daemon no longer lists is dropped (removed elsewhere),
-    // and a workspace created through this UI is in the reply, because the
-    // daemon minted it before the create returned.
     if (
       currentProject !== undefined &&
       project.workspaceError !== undefined &&
@@ -139,9 +138,8 @@ export function reconcileProjectRecords(
     ) {
       return { ...project, workspaces: currentProject.workspaces };
     }
-    return currentProject === undefined ? project : { ...project, workspaces: project.workspaces };
+    return project;
   });
-  return [...reconciled, ...current.filter((project) => !loadedIds.has(project.id))];
 }
 
 export function workspaceView(
@@ -460,7 +458,10 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     [loadProjects],
   );
 
-  /** Same contract as `archiveWorkspace`, for a project: off the list, folders kept. */
+  /**
+   * Same contract as `archiveWorkspace`, for a project: off the list, folders
+   * kept. The row leaves at once; the re-read only confirms what the daemon holds.
+   */
   const removeProject = useCallback(
     async (projectId: string): Promise<ErrorSentence | null> => {
       try {
@@ -468,6 +469,9 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
       } catch (cause: unknown) {
         return errorSentence(cause);
       }
+      setProjectRecords((currentProjects) =>
+        currentProjects.filter((project) => project.id !== projectId),
+      );
       await loadProjects();
       return null;
     },
@@ -479,28 +483,16 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     setProjectDialogOpen(false);
     newProjectTriggerRef.current?.focus();
   }, []);
-  const handleCreateProject = useCallback(async (project: Project): Promise<void> => {
-    try {
-      const workspaces = onLocalHost(await workspacesList(project.id));
-      setProjectRecords((currentProjects) => {
-        const next = { ...project, hostId: LOCAL_HOST_ID, workspaces };
-        const existingIndex = currentProjects.findIndex((current) => current.id === project.id);
-        if (existingIndex < 0) return [...currentProjects, next];
-        return currentProjects.map((current, index) => (index === existingIndex ? next : current));
-      });
-      // A project the daemon added has no workspace until one is created, so
-      // the list may be empty: the selection stays where it was.
-      const firstKey = workspaces.at(0);
-      setSelectedKey(
-        (current) => current ?? (firstKey === undefined ? null : keyOfWorkspace(firstKey)),
-      );
-      setSearch("");
-      setError(null);
-    } catch (cause: unknown) {
-      setError(errorSentence(cause));
-      throw cause;
-    }
-  }, []);
+  /**
+   * The list is re-read, never patched: a read that was already in flight
+   * before the add would otherwise answer without the new project and drop it.
+   * A project the daemon added has no workspace until one is created, so the
+   * selection stays where it was.
+   */
+  const handleCreateProject = useCallback(async (): Promise<void> => {
+    setSearch("");
+    await loadProjects();
+  }, [loadProjects]);
 
   function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
     setSearch(event.target.value);

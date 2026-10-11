@@ -1301,8 +1301,9 @@ export const workspaceDelete = (workspaceId: Id) =>
 export const workspaceArchive = (workspaceId: Id) =>
   invokeTyped("workspace_archive", { workspaceId });
 /**
- * Takes a project off the list. Its folder and its workspace rows stay where
- * they are; adding the same folder again lists it again.
+ * Takes a project off the list. Its folder stays on disk and its active
+ * workspace rows are archived with it; adding the same folder again lists the
+ * project without them.
  */
 /** What the list took off: the removed projects and the archived workspace rows. */
 export const archivedList = () => invokeTyped("archived_list");

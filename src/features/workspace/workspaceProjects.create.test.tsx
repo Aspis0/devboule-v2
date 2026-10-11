@@ -15,7 +15,7 @@ vi.mock("../../lib/tauri", () => ({
   workspacesList: vi.fn(async () => []),
 }));
 
-import { workspacesList } from "../../lib/tauri";
+import { projectsList, workspacesList } from "../../lib/tauri";
 import type { Project } from "../../types/ipc";
 import { useWorkspaceProjects, type WorkspaceProject } from "./workspaceProjects";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
@@ -78,6 +78,8 @@ describe("useWorkspaceProjects, creating a project", () => {
     });
     expect(latest.selectedKey).toBeNull();
 
+    // The add lands first; the list is re-read and then lists the new project.
+    vi.mocked(projectsList).mockResolvedValue([project]);
     await act(async () => {
       await latest.handleCreateProject(project);
     });

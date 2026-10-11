@@ -1428,8 +1428,9 @@ pub enum ClientMessage {
         id: u64,
         workspace_id: String,
     },
-    /// Remove a project from the list. Its folder and its workspace rows stay
-    /// where they are; a later `ProjectAdd` of the same path lists it again.
+    /// Remove a project from the list. Its folder stays where it is and its
+    /// active workspace rows are archived with it; a later `ProjectAdd` of the
+    /// same path lists the project again without them.
     /// Refused while a session runs in one of its workspaces. The client sends
     /// this only under `project.remove`.
     ProjectRemove {

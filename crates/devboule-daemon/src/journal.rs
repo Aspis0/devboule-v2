@@ -1609,7 +1609,7 @@ impl Journal {
         })
     }
 
-    /// Take a project off the list; its folder and rows stay in the journal.
+    /// Take a project and its active rows off the list; the folder stays on disk.
     pub fn project_remove(&self, id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::ProjectRemove {
             id: id.to_string(),
@@ -2535,7 +2535,7 @@ fn journal_loop(
                 let _ = reply.send(result);
             }
             JournalCmd::ProjectRemove { id, reply } => {
-                let result = stamp_archived(&conn, "projects", &id);
+                let result = stamp_project_removed(&conn, &id);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2972,6 +2972,19 @@ fn stamp_archived(conn: &Connection, table: &str, id: &str) -> Result<(), Journa
             }
         )));
     }
+    Ok(())
+}
+
+/// Takes a project and its active rows off the list in one transaction, so a
+/// crash cannot leave a row listed under a removed project.
+fn stamp_project_removed(conn: &Connection, id: &str) -> Result<(), JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    stamp_archived(&tx, "projects", id)?;
+    tx.execute(
+        "UPDATE workspaces SET archived_at_ms = ?2 WHERE project_id = ?1 AND archived_at_ms IS NULL",
+        params![id, now_ms() as i64],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

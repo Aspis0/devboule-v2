@@ -20,7 +20,7 @@ export interface ProjectMenuProps {
 
 /**
  * A project's kebab: one entry, Remove project. It asks first and takes the
- * project off the list only; the folder and the workspace rows stay on disk.
+ * project off the list; the folder stays on disk and its workspaces are archived.
  */
 export function ProjectMenu({ projectName, onRemove }: ProjectMenuProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -115,7 +115,7 @@ export function ProjectMenu({ projectName, onRemove }: ProjectMenuProps) {
       <ConfirmDialog
         open={confirming}
         title={`Remove “${projectName}”?`}
-        message="Takes the project off this list. Its folder and its workspaces stay on disk; adding the folder again lists it again."
+        message="Takes the project and its workspaces off this list. The folders stay on disk."
         confirmLabel="Remove"
         tone="accent"
         onConfirm={() => void confirmRemove()}

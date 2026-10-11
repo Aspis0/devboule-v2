@@ -182,6 +182,11 @@ describe("reconcileProjectRecords", () => {
     expect(next[0]!.workspaces).toEqual([]);
     expect(next[0]!.workspaceError).toEqual(pipeBusy);
   });
+
+  it("a project the daemon no longer lists is dropped, not kept from the previous read", () => {
+    const held = [project([mk("kept")])];
+    expect(reconcileProjectRecords([], held)).toEqual([]);
+  });
 });
 
 describe("projectView", () => {
