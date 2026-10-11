@@ -10,7 +10,7 @@ use devboule_protocol::SessionKind;
 /// What a mode lets its session do without asking the person, in terms every
 /// family shares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Posture {
+enum Posture {
     /// Nothing asks: the family's own bypass or full-access mode.
     Bypass,
     /// Edits are approved without asking; other tools may still ask.
@@ -23,7 +23,7 @@ pub(crate) enum Posture {
 
 /// The posture a mode of `kind` stands for, or `None` for a mode this table does
 /// not read.
-pub(crate) fn posture_of(kind: &SessionKind, mode_id: &str) -> Option<Posture> {
+fn posture_of(kind: &SessionKind, mode_id: &str) -> Option<Posture> {
     use Posture::{AcceptEdits, Asking, Bypass, ReadOnly};
     match (kind, mode_id) {
         (SessionKind::Claude, "bypassPermissions")
@@ -42,7 +42,7 @@ pub(crate) fn posture_of(kind: &SessionKind, mode_id: &str) -> Option<Posture> {
 
 /// The mode a child of `kind` starts in to hold `posture`, or `None` when the
 /// family has no mode for it.
-pub(crate) fn child_mode(kind: &SessionKind, posture: Posture) -> Option<&'static str> {
+fn child_mode(kind: &SessionKind, posture: Posture) -> Option<&'static str> {
     use Posture::{AcceptEdits, Asking, Bypass, ReadOnly};
     match (kind, posture) {
         (SessionKind::Claude, Bypass) => Some("bypassPermissions"),
@@ -61,7 +61,7 @@ pub(crate) fn child_mode(kind: &SessionKind, posture: Posture) -> Option<&'stati
 /// The mode an agent-created child of `child` starts in when the caller names
 /// none: the creator's posture, spelled in the child's family. `creator` is the
 /// creator's family and current mode, and `None` when the creator has neither.
-pub(crate) fn inherited_mode(
+pub(super) fn inherited_mode(
     creator: Option<(&SessionKind, &str)>,
     child: &SessionKind,
 ) -> Option<&'static str> {
