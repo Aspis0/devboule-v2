@@ -30,6 +30,7 @@ export interface A2aNameSource {
  */
 
 const UNNAMED_SENDER = "another agent";
+const UNNAMED_PAIRED_AGENT = "an agent on a paired device";
 
 // The same layout bound as the daemon notice's fields: an unbreakable
 // sender name or device id must not push the pane sideways. The full values
@@ -37,19 +38,28 @@ const UNNAMED_SENDER = "another agent";
 const NAME_LIMIT = 200;
 
 /**
- * The name a card shows for its sender, never a session id: the daemon's own
- * title on the event first, then this machine's roster for a local sender, else
- * "another agent". A far id belongs to another device and is never looked up.
+ * The name a card shows for its sender, resolved at render from the live roster
+ * and device names, never frozen into the event. A local sender is named by this
+ * machine's roster, then the title the daemon named on the event, else "another
+ * agent". A `peer:` sender is another device's agent, which no local roster holds:
+ * it reads as "an agent on <host name>", the host being the paired device as the
+ * device names give it. A session id never reaches the line.
  */
 function senderName(item: A2aMessageItem, names: A2aNameSource): string {
-  const title = item.peerTitle?.trim() ?? "";
-  if (title !== "") return title;
-  // A `peer:` id names another device's agent: never a local roster key.
-  if (item.fromAgent.startsWith("peer:")) return UNNAMED_SENDER;
+  if (item.fromAgent.startsWith("peer:")) return farAgentName(item, names);
   const session = names.sessionById.get(item.fromAgent);
   // `sessionTitle` is the app's one name rule (displayName, then title).
   const rostered = session === undefined ? "" : sessionTitle(session).trim();
-  return rostered === "" ? UNNAMED_SENDER : rostered;
+  if (rostered !== "") return rostered;
+  const title = item.peerTitle?.trim() ?? "";
+  return title === "" ? UNNAMED_SENDER : title;
+}
+
+/** An agent on a paired device, named by that device as the device names give it. */
+function farAgentName(item: A2aMessageItem, names: A2aNameSource): string {
+  const device = item.origin.kind === "peer" ? item.origin.device : null;
+  const host = device === null ? "" : (names.deviceNames.get(device) ?? "").trim();
+  return host === "" ? UNNAMED_PAIRED_AGENT : `an agent on ${host}`;
 }
 
 /** Whether the daemon vouches for the sender: this machine, or a paired device it names. */
