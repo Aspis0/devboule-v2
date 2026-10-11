@@ -59,17 +59,30 @@ fn agent_turns(events: &[SessionEvent]) -> Vec<String> {
 fn a_declined_plan_sends_the_refusal_and_the_agent_asks() {
     let state = plan_mode_state();
     let (runtime, conn) = capturing_runtime();
-    prompt_for(&state).answer_plan(HostDecision::Deny, "## Steps\n\n- Build", &runtime);
+    prompt_for(&state).answer_plan(
+        HostDecision::Deny,
+        "## Steps
 
+- Build",
+        &runtime,
+    );
+
+    // The person sees the outcome, not the instruction the agent receives.
     let turns = agent_turns(&published(&conn));
-    assert_eq!(turns.len(), 1, "the refusal starts one turn: {turns:?}");
+    assert_eq!(
+        turns,
+        vec!["Plan rejected".to_string()],
+        "the transcript shows one muted outcome line, agent-authored"
+    );
+    let instruction = super::rejected_plan_prompt();
     assert!(
-        turns[0].contains("did not approve the plan") && turns[0].contains("Do not implement"),
-        "the refusal says what happened: {turns:?}"
+        instruction.contains("did not approve the plan")
+            && instruction.contains("Do not implement"),
+        "the agent is told the plan was refused and not to implement it: {instruction}"
     );
     assert!(
-        turns[0].contains("what they want changed"),
-        "the agent is asked to ask what to change: {turns:?}"
+        instruction.contains("what they want changed"),
+        "the agent is asked to ask what to change: {instruction}"
     );
     assert!(
         state.plan_mode_enabled(),

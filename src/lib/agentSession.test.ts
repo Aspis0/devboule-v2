@@ -484,6 +484,23 @@ describe("ACP agent session", () => {
     expect(untimed.atMs).toBeUndefined();
   });
 
+  it("shows an agent-written composer line as a system line, never as the person's bubble", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "devboule-agent-1",
+      messageKind: "composer",
+      text: "Plan rejected",
+    });
+    const items = harness.session.getState().items;
+    expect(items.some((item) => item.role === "user")).toBe(false);
+    expect(items).toContainEqual(
+      expect.objectContaining({ role: "system", text: "Plan rejected" }),
+    );
+  });
+
   it("titles a bare command-carrying update by its command, keeping output in output", async () => {
     const harness = makeHarness();
     await harness.session.start();

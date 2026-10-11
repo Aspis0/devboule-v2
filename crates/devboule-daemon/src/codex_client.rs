@@ -1038,6 +1038,11 @@ fn approved_plan_prompt(plan: &str) -> String {
     .join("\n\n")
 }
 
+/// What the transcript shows for an approved and a refused plan. The prompts
+/// above are sent to the agent; these are what the person sees.
+const PLAN_APPROVED_LINE: &str = "Plan approved";
+const PLAN_REJECTED_LINE: &str = "Plan rejected";
+
 fn rejected_plan_prompt() -> String {
     "The user did not approve the plan. Do not implement it. Ask what they want changed in the plan."
         .to_string()
@@ -1077,7 +1082,9 @@ impl CodexStaticPrompt {
         if let Some(feature) = self.state.plan_feature_state() {
             let _ = runtime.publish_daemon_event(feature);
         }
-        if let Err(error) = self.send_follow_up(approved_plan_prompt(plan), runtime) {
+        if let Err(error) =
+            self.send_follow_up(approved_plan_prompt(plan), PLAN_APPROVED_LINE, runtime)
+        {
             let _ = self.state.set_plan_mode(true);
             if let Some(feature) = self.state.plan_feature_state() {
                 let _ = runtime.publish_daemon_event(feature);
@@ -1089,31 +1096,39 @@ impl CodexStaticPrompt {
     /// The refusal keeps plan mode on: the agent is still planning, and its
     /// next message is the question about what to change.
     fn send_rejected_plan(&self, runtime: &Arc<SessionRuntime>) {
-        if let Err(error) = self.send_follow_up(rejected_plan_prompt(), runtime) {
+        if let Err(error) = self.send_follow_up(rejected_plan_prompt(), PLAN_REJECTED_LINE, runtime)
+        {
             runtime.publish_agent_error(error.message);
         }
     }
 
     /// Sends one daemon-composed follow-up as a Codex turn. The line is
     /// journalled as the agent's own, never the person's words.
-    fn send_follow_up(&self, text: String, runtime: &Arc<SessionRuntime>) -> Result<(), WireError> {
-        let prompt = CodexPlannedPrompt {
+    /// Sends `prompt` to the agent as one turn. The transcript shows `line`
+    /// instead: the instruction is the agent's, and the person sees only the
+    /// outcome, as a muted system line.
+    fn send_follow_up(
+        &self,
+        prompt: String,
+        line: &str,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<(), WireError> {
+        let sent = CodexPlannedPrompt {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
             state: Arc::clone(&self.state),
             plan: CodexPromptPlan {
-                fallback_text: text.clone(),
+                fallback_text: prompt,
                 image_paths: Vec::new(),
                 command_input: None,
             },
         };
-        prompt.send().map_err(WireError::from)?;
-        // An implementation prompt shows no user-message item of its own
-        // (the follow-up path emits no timeline item), so the daemon-composed
-        // line is journalled as the agent's own, never the person's words.
+        sent.send().map_err(WireError::from)?;
+        // The follow-up path emits no timeline item of its own, so the line is
+        // journalled as the agent's own, never the person's words.
         if runtime
             .publish_agent_user_message(
-                text,
+                line.to_string(),
                 devboule_protocol::UserMessageAuthor::Agent,
                 devboule_protocol::UserMessageKind::Composer,
             )

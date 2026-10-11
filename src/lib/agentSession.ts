@@ -919,6 +919,12 @@ export class AgentSession {
   ): void {
     switch (event.messageKind) {
       case "composer":
+        // Written by the daemon for the agent (a plan decision's outcome):
+        // the person did not type it, so it is a system line, never a bubble.
+        if (event.author === "agent") {
+          this.appendSystemMessage(event.text);
+          return;
+        }
         this.appendComposerMessage(event);
         return;
       case "outgoing_a2a":
