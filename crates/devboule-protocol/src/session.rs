@@ -1725,8 +1725,8 @@ pub struct ToolLocation {
 pub enum AgentEditKind {
     /// The provider named the text it replaced between.
     Edit,
-    /// A whole-file write. The text before the write is not in the frame, so
-    /// its counts treat every line as added: an overwrite reads as a full add.
+    /// A whole-file write. Its removed side is the text the provider reports
+    /// the write replaced; a provider that reports none reads every line as added.
     Write,
     Delete,
 }

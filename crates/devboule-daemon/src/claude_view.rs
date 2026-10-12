@@ -68,6 +68,9 @@ pub(crate) struct ClaudeView {
     streamed: HashMap<(Option<String>, u64), StreamedBlock>,
     current_message_ids: HashMap<Option<String>, String>,
     plan_tool_ids: HashSet<String>,
+    /// `Write` call ids whose result has not arrived: the result's
+    /// `originalFile` is the text the write replaced.
+    write_tool_ids: HashSet<String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
     current_mode: Option<String>,
@@ -133,6 +136,7 @@ impl ClaudeView {
             streamed: HashMap::new(),
             current_message_ids: HashMap::new(),
             plan_tool_ids: HashSet::new(),
+            write_tool_ids: HashSet::new(),
             current_model: None,
             last_manifest_model: None,
             current_mode: None,

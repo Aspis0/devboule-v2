@@ -64,8 +64,8 @@ fn replace_or_none(
 }
 
 /// Claude's file tools: `Edit` (one replace), `MultiEdit` (one replace per
-/// entry, all on the named file) and `Write` (the whole file, whose previous
-/// text the frame does not carry).
+/// entry, all on the named file) and `Write` (the whole file's new text; the
+/// text it replaced comes from the result, see [`claude_write_result_edits`]).
 pub(crate) fn claude_tool_edits(
     name: &str,
     input: &Value,
@@ -106,6 +106,23 @@ pub(crate) fn claude_tool_edits(
         _ => return None,
     };
     capped(edits)
+}
+
+/// The edit a Claude `Write` result reports. `originalFile` is the text the
+/// write replaced and `null` when it created the file; the call's input holds
+/// only the new text, so the result is the one place the removed side comes from.
+pub(crate) fn claude_write_result_edits(
+    result: &Value,
+    cwd: Option<&Path>,
+) -> Option<Vec<AgentToolEdit>> {
+    let path = text_field(result, "filePath").filter(|path| !path.is_empty())?;
+    let new = text_field(result, "content")?;
+    capped(vec![replace_or_none(
+        edit_path(path, cwd),
+        AgentEditKind::Write,
+        text_field(result, "originalFile"),
+        Some(new),
+    )])
 }
 
 /// Codex's `fileChange` item: one entry per changed file, each with its own
@@ -197,7 +214,8 @@ const COMMA_BYTES: usize = 1;
 
 /// Pi's file tools, read from the arguments its `toolcall_end` carries: `edit`
 /// names one `oldText`/`newText` replace per `edits` entry on the file, and
-/// `write` names the whole file's `content`.
+/// `write` names the whole file's `content`. Pi's write result says only that
+/// the bytes were written, so a write reads as an addition.
 pub(crate) fn pi_tool_edits(
     name: &str,
     arguments: Option<&Value>,

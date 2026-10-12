@@ -5,8 +5,8 @@ use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit};
 use serde_json::json;
 
 use super::{
-    acp_diff_edits, claude_tool_edits, codex_file_change_edits, MAX_EDITS_PER_CALL,
-    MAX_EDIT_CALL_BYTES,
+    acp_diff_edits, claude_tool_edits, claude_write_result_edits, codex_file_change_edits,
+    MAX_EDITS_PER_CALL, MAX_EDIT_CALL_BYTES,
 };
 
 #[test]
@@ -67,6 +67,69 @@ fn claude_write_carries_only_the_new_text() {
             new: "hello\n".to_string(),
         })
     );
+}
+
+#[test]
+fn a_write_result_carries_the_text_it_replaced() {
+    let edits = claude_write_result_edits(
+        &json!({
+            "type": "update",
+            "filePath": "notes2.txt",
+            "content": "one two",
+            "originalFile": "one",
+        }),
+        None,
+    )
+    .expect("write result");
+    assert_eq!(edits[0].path, "notes2.txt");
+    assert_eq!(edits[0].kind, AgentEditKind::Write);
+    assert_eq!(
+        edits[0].text,
+        Some(AgentEditText::Replace {
+            old: "one".to_string(),
+            new: "one two".to_string(),
+        })
+    );
+    assert_eq!((edits[0].added, edits[0].removed), (1, 1));
+}
+
+#[test]
+fn a_create_result_with_no_original_file_is_a_pure_addition() {
+    let edits = claude_write_result_edits(
+        &json!({
+            "type": "create",
+            "filePath": "notes2.txt",
+            "content": "one",
+            "originalFile": null,
+        }),
+        None,
+    )
+    .expect("create result");
+    assert_eq!((edits[0].added, edits[0].removed), (1, 0));
+}
+
+#[test]
+fn a_rewrite_with_the_same_text_changes_no_line() {
+    let edits = claude_write_result_edits(
+        &json!({
+            "type": "update",
+            "filePath": "notes2.txt",
+            "content": "one\n",
+            "originalFile": "one\n",
+        }),
+        None,
+    )
+    .expect("rewrite result");
+    assert_eq!((edits[0].added, edits[0].removed), (0, 0));
+}
+
+#[test]
+fn a_write_result_without_its_new_text_carries_no_edit() {
+    assert!(claude_write_result_edits(
+        &json!({"type": "update", "filePath": "notes2.txt", "originalFile": "one"}),
+        None,
+    )
+    .is_none());
 }
 
 #[test]

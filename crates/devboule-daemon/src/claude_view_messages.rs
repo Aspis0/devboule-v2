@@ -8,6 +8,9 @@ use std::time::Instant;
 use devboule_protocol::{NoticeSeverity, SessionEvent, SessionModel};
 use serde_json::Value;
 
+use crate::agent_edit::claude_write_result_edits;
+use crate::claude_task_state::structured_result;
+
 use super::tasks::{parent_tool_use_id, spawn_depth};
 use super::tools::{tool_call_from_block, tool_update_from_result};
 use super::ClaudeView;
@@ -107,6 +110,7 @@ impl ClaudeView {
                     let is_question =
                         block.get("name").and_then(Value::as_str) == Some("AskUserQuestion");
                     let is_plan = block.get("name").and_then(Value::as_str) == Some("ExitPlanMode");
+                    let is_write = block.get("name").and_then(Value::as_str) == Some("Write");
                     if let Some(id) = block.get("id").and_then(Value::as_str) {
                         // Every call counts, carded or sidechain inner: the
                         // stamp is the latest start, so the grace always runs
@@ -118,6 +122,9 @@ impl ClaudeView {
                         }
                         if is_plan {
                             self.plan_tool_ids.insert(id.to_string());
+                        }
+                        if is_write {
+                            self.write_tool_ids.insert(id.to_string());
                         }
                     }
                     if let Some(event) = tool_call_from_block(
@@ -209,11 +216,30 @@ impl ClaudeView {
                 });
             }
         }
+        // The envelope's structured result belongs to its one tool result; with
+        // several, no block can be named as its owner.
+        let single_result = content
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .count()
+            == 1;
         content
             .iter()
             .filter_map(|block| {
                 let mut update =
                     tool_update_from_result(block, parent_tool_use_id.clone(), spawn_depth)?;
+                if let SessionEvent::AgentToolUpdate {
+                    tool_call_id,
+                    edits,
+                    ..
+                } = &mut update
+                {
+                    if self.write_tool_ids.remove(tool_call_id.as_str()) && single_result {
+                        *edits = structured_result(envelope).and_then(|result| {
+                            claude_write_result_edits(result, self.cwd.as_deref())
+                        });
+                    }
+                }
                 let question = block
                     .get("tool_use_id")
                     .and_then(Value::as_str)

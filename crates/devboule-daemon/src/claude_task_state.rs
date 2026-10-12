@@ -289,7 +289,7 @@ fn tool_result_id(message: &Value) -> Option<String> {
 /// model. The SDK's camelCase `toolUseResult` is read first, then the
 /// wire's `tool_use_result` — and a non-object under the first key does not
 /// hide an object under the second.
-fn structured_result(message: &Value) -> Option<&Value> {
+pub(crate) fn structured_result(message: &Value) -> Option<&Value> {
     message
         .get("toolUseResult")
         .filter(|value| value.is_object())

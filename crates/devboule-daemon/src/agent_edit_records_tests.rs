@@ -508,3 +508,145 @@ fn a_replayed_session_carries_no_edit_outside_the_workspace() {
         .collect();
     assert_eq!(carried, vec![vec!["src/lib.rs".to_string()]]);
 }
+
+/// A Claude `Write` call as the stream carries it: the new text, which is all
+/// the call's input holds.
+fn claude_write_call(tool_call_id: &str, path: &str, content: &str) -> serde_json::Value {
+    json!({
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-5",
+            "id": "msg_1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": tool_call_id,
+                "name": "Write",
+                "input": {"file_path": path, "content": content},
+            }],
+        }
+    })
+}
+
+/// The result envelope of a `Write`, its structured result under `key`: the
+/// transcript spells it `toolUseResult`, the live stream `tool_use_result`.
+fn claude_write_result(
+    tool_call_id: &str,
+    key: &str,
+    result: serde_json::Value,
+) -> serde_json::Value {
+    let mut frame = json!({
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_call_id}]}
+    });
+    frame[key] = result;
+    frame
+}
+
+fn append_envelope(journal: &Journal, session_id: &str, seq: u64, envelope: &serde_json::Value) {
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(session_id.to_string(), 1, seq, envelope)
+                .expect("row"),
+        )
+        .expect("append");
+}
+
+#[test]
+fn a_claude_overwrite_records_the_text_its_result_replaced() {
+    for key in ["toolUseResult", "tool_use_result"] {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        session(&journal, "s.a.1", "ws.1", "Ada", false);
+        let file = root().join("notes2.txt").to_string_lossy().into_owned();
+        append_envelope(&journal, "s.a.1", 1, &claude_write_call("c1", &file, "one"));
+        append_envelope(
+            &journal,
+            "s.a.1",
+            2,
+            &claude_write_result(
+                "c1",
+                key,
+                json!({"type": "create", "filePath": file, "content": "one",
+                    "structuredPatch": [], "originalFile": null}),
+            ),
+        );
+        append_envelope(
+            &journal,
+            "s.a.1",
+            3,
+            &claude_write_call("c2", &file, "one two"),
+        );
+        append_envelope(
+            &journal,
+            "s.a.1",
+            4,
+            &claude_write_result(
+                "c2",
+                key,
+                json!({"type": "update", "filePath": file, "content": "one two",
+                    "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1,
+                        "newLines": 1, "lines": ["-one", "\\ No newline at end of file",
+                        "+one two", "\\ No newline at end of file"]}],
+                    "originalFile": "one"}),
+            ),
+        );
+
+        let found = read(&journal, "ws.1", now_ms());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(found.error.is_none(), "{key}");
+        let overwrite = found
+            .records
+            .iter()
+            .find(|record| record.tool_call_id == "c2")
+            .expect("the overwrite is listed");
+        assert_eq!(overwrite.path, "notes2.txt", "{key}");
+        assert_eq!(
+            overwrite.text,
+            Some(AgentEditText::Replace {
+                old: "one".to_string(),
+                new: "one two".to_string(),
+            }),
+            "{key}"
+        );
+        assert_eq!((overwrite.added, overwrite.removed), (1, 1), "{key}");
+    }
+}
+
+#[test]
+fn a_claude_write_outside_the_workspace_root_is_listed_nowhere() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    session(&journal, "s.a.1", "ws.1", "Ada", false);
+    let outside = root()
+        .parent()
+        .expect("the fixture root has a parent")
+        .join("other.txt")
+        .to_string_lossy()
+        .into_owned();
+    append_envelope(
+        &journal,
+        "s.a.1",
+        1,
+        &claude_write_call("c1", &outside, "one two"),
+    );
+    append_envelope(
+        &journal,
+        "s.a.1",
+        2,
+        &claude_write_result(
+            "c1",
+            "toolUseResult",
+            json!({"type": "update", "filePath": outside, "content": "one two",
+                "originalFile": "one"}),
+        ),
+    );
+
+    let found = read(&journal, "ws.1", now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(found.records.is_empty());
+}
