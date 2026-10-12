@@ -22,7 +22,7 @@ pub(in crate::mcp_broker) enum CreationChoice {
     /// resolves to at the moment of the call.
     Profile(String),
     /// The provider and model the caller names. The mode is the caller's, or
-    /// the preset's (`design`, `worker`), which also carries the tool overlay.
+    /// the preset's (`worker`), which also carries the tool overlay.
     Direct {
         provider: String,
         /// Absent only with a preset: the provider's own default model answers.
@@ -180,6 +180,12 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
     let mode = optional_text("mode", object)?;
     let effort = optional_text("effort", object)?;
     let preset = optional_text("preset", object)?;
+    if preset.as_deref() == Some("design") {
+        return Err(format!(
+            "the design preset is retired; for a mockup create the agent with profile \"{}\"",
+            crate::design_profile::DESIGN_PROFILE_NAME
+        ));
+    }
     let Some(name) = profile else {
         let provider =
             provider.ok_or_else(|| "provider is required when no profile is named".to_string())?;
@@ -193,9 +199,7 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
                 );
             }
             if crate::provider_catalog::agent_preset(id).is_none() {
-                return Err(format!(
-                    "unknown preset {id}; the presets are design and worker"
-                ));
+                return Err(format!("unknown preset {id}; the only preset is worker"));
             }
         }
         if preset.is_none() && model.is_none() {

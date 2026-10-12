@@ -253,7 +253,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session and sends it an initial prompt. Name the provider, model and mode yourself, or name a profile the human enabled for agents (see devboule_list_profiles), which names the whole configuration; preset design gives a design child the design tools without the browser lane. Do not guess a model: a value the provider does not offer refuses the creation. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
+        "Creates a new Devboule agent session and sends it an initial prompt. Name the provider, model and mode yourself, or name a profile the human enabled for agents (see devboule_list_profiles), which names the whole configuration; For a mockup or page design, name the profile Design. Do not guess a model: a value the provider does not offer refuses the creation. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -718,8 +718,8 @@ pub const MCP_LIST_WORKSPACES_TOOL: &str = "devboule_list_workspaces";
 /// project, behind the first-use human card.
 ///
 /// Served to every MCP-capable provider, subject to the provider tool policy
-/// like `devboule_create_agent`, and denied to the design preset outright:
-/// a design child commissions no checkouts. The door judges it as the wire's
+/// like `devboule_create_agent`, and denied to the Design profile outright:
+/// a Design child commissions no checkouts. The door judges it as the wire's
 /// `WorkspaceCreate`, under the administrative capability.
 pub const MCP_CREATE_WORKSPACE_TOOL: &str = "devboule_create_workspace";
 /// The terminal roster tool: the terminals of the caller's own owner inside
@@ -755,8 +755,8 @@ pub const MCP_FILE_COLLISIONS_TOOL: &str = "devboule_file_collisions";
 /// session's own workspace, behind the terminal-write first-use card.
 ///
 /// Same policy subject as [`MCP_LIST_TERMINALS_TOOL`] — disableable per
-/// provider and per profile, never always-on — and denied to the design
-/// preset outright, which commissions no shells. The workspace is the
+/// provider and per profile, never always-on — and denied to the Design
+/// profile outright, which commissions no shells. The workspace is the
 /// caller's own row and is never an argument, so no argument can choose
 /// where the shell opens; the peer door judges the call as the wire's
 /// `SessionCreate`. The live-terminal cap per creator (beside the agent
@@ -881,8 +881,7 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
             },
             "preset": {
                 "type": "string",
-                "enum": ["design", "worker"],
-                "description": "A preset chooses the mode and the tool overlay for the provider: design gives the child the design tools without the browser lane; worker gives it no overlay. Leave out mode when you name one."
+                "description": "The only preset is worker: it chooses the mode and gives the child no tool overlay. Leave out mode when you name one. For a mockup or page design, use profile \"Design\" instead."
             },
             "profile": {
                 "type": "string",
@@ -1405,14 +1404,14 @@ impl Default for ToolOverlay {
     }
 }
 
-/// The `design` preset's deny list: the eleven names beside the whole browser
-/// lane. Spelled out because a preset's list has to stay `const` and a `const`
-/// cannot join two lists;
+/// The Design deny list, which the built-in Design profile publishes
+/// (`design_profile.rs`): the writes beside the whole browser lane. Spelled out
+/// because a `const` cannot join two lists;
 /// `the_design_overlay_hides_its_writes_and_the_whole_browser_lane_and_keeps_the_roster`
 /// compares it with the catalog's own browser names, so the lane cannot grow
 /// past the overlay.
 #[cfg(feature = "server")]
-const DESIGN_DENIED: &[&str] = &[
+pub(crate) const DESIGN_DENIED: &[&str] = &[
     MCP_SEND_MESSAGE_TOOL,
     MCP_CREATE_AGENT_TOOL,
     MCP_CREATE_WORKSPACE_TOOL,
@@ -1467,6 +1466,7 @@ impl ToolOverlay {
     /// The browser lane is denied whole, reads included: a snapshot is this
     /// machine's pages in the logins of the person at the keyboard, which is
     /// the person's own surface, not a child's assignment.
+    #[cfg(test)]
     pub(crate) const DESIGN: Self = Self {
         disabled: OverlayNames::Preset(DESIGN_DENIED),
     };
@@ -1546,14 +1546,12 @@ pub(crate) struct AgentPreset {
 }
 
 // The presets a direct creation names with `preset`: each one chooses the mode
-// and the tool overlay of the provider it runs on (owner bug #34: the Design
-// route was lost when creation moved to profiles only).
+// and the tool overlay of the provider it runs on. Design is not one of them.
 #[cfg(feature = "server")]
 pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
 #[cfg(feature = "server")]
-pub(crate) const AGENT_PRESET_DESIGN: &str = "design";
 
-/// The one preamble both presets carry.
+/// The one preamble the presets carry.
 ///
 /// It asks for the result in the final message and says nothing about files:
 /// the finish hook deposits that message by itself, so a
@@ -1606,61 +1604,14 @@ const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
     },
 ];
 
-/// The `design` cells: the same modes, with the design overlay.
-///
-/// There is no Design preamble to copy and none is invented here: the Design
-/// instructions are composed per request by the app and travel in
-/// `initialPrompt`. A frozen copy in the catalog would be a second source of
-/// truth for a prompt the app still owns.
-#[cfg(feature = "server")]
-const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
-    AgentPresetCell {
-        provider: "pi",
-        mode: "ask",
-        overlay: ToolOverlay::DESIGN,
-    },
-    AgentPresetCell {
-        provider: "codex",
-        mode: "auto",
-        overlay: ToolOverlay::DESIGN,
-    },
-    AgentPresetCell {
-        provider: "claude",
-        mode: "default",
-        overlay: ToolOverlay::DESIGN,
-    },
-    AgentPresetCell {
-        provider: "grok",
-        mode: "default",
-        overlay: ToolOverlay::DESIGN,
-    },
-    AgentPresetCell {
-        provider: "qwen",
-        mode: "default",
-        overlay: ToolOverlay::DESIGN,
-    },
-    AgentPresetCell {
-        provider: "gemini",
-        mode: "default",
-        overlay: ToolOverlay::DESIGN,
-    },
-];
-
 /// The closed preset table. A preset not in this list is an unknown
 /// preset and is refused by name rather than resolved by default.
 #[cfg(feature = "server")]
-pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
-    AgentPreset {
-        id: AGENT_PRESET_WORKER,
-        preamble: AGENT_PREAMBLE,
-        cells: PRESET_WORKER_CELLS,
-    },
-    AgentPreset {
-        id: AGENT_PRESET_DESIGN,
-        preamble: AGENT_PREAMBLE,
-        cells: PRESET_DESIGN_CELLS,
-    },
-];
+pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[AgentPreset {
+    id: AGENT_PRESET_WORKER,
+    preamble: AGENT_PREAMBLE,
+    cells: PRESET_WORKER_CELLS,
+}];
 
 /// Every provider row the catalog publishes, in catalog order, test-only
 /// rows included because a debug daemon serves them. This is the enumeration
@@ -1837,14 +1788,8 @@ fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
     };
     match (preset_id, provider) {
         (AGENT_PRESET_WORKER, "devboule-acp-stub") => cell("devboule-acp-stub", ToolOverlay::NONE),
-        (AGENT_PRESET_DESIGN, "devboule-acp-stub") => {
-            cell("devboule-acp-stub", ToolOverlay::DESIGN)
-        }
         (AGENT_PRESET_WORKER, "devboule-absent-probe") => {
             cell("devboule-absent-probe", ToolOverlay::NONE)
-        }
-        (AGENT_PRESET_DESIGN, "devboule-absent-probe") => {
-            cell("devboule-absent-probe", ToolOverlay::DESIGN)
         }
         _ => None,
     }

@@ -1308,7 +1308,7 @@ fn the_named_exclusions_are_unattended_and_the_allowed_modes_are_not() {
 /// Every catalog provider has a cell in every preset, and the `design`
 /// overlay is the only one that removes tools.
 #[test]
-fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
+fn every_catalog_provider_has_a_cell_and_the_worker_preset_has_no_overlay() {
     let providers = super::catalog_provider_ids();
     for preset in super::AGENT_PRESETS {
         for provider in &providers {
@@ -1323,11 +1323,10 @@ fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
             );
         }
         for cell in preset.cells {
-            let design = preset.id == super::AGENT_PRESET_DESIGN;
-            assert_eq!(
+            assert!(
                 cell.overlay.denied().is_empty(),
-                !design,
-                "only the design preset may carry an overlay"
+                "the worker preset carries no overlay: {}",
+                preset.id
             );
         }
     }
@@ -1442,7 +1441,6 @@ fn the_release_table_never_names_a_test_provider() {
         }
     }
     assert!(super::test_only_cell(super::AGENT_PRESET_WORKER, "devboule-acp-stub").is_some());
-    assert!(super::test_only_cell(super::AGENT_PRESET_DESIGN, "devboule-absent-probe").is_some());
     assert!(super::test_only_cell("nowhere", "devboule-acp-stub").is_none());
 }
 
@@ -1825,10 +1823,13 @@ fn the_create_agent_schema_names_the_direct_settings_and_the_profile() {
             "{forbidden} is not a creation parameter"
         );
     }
-    assert_eq!(
-        properties["preset"]["enum"],
-        serde_json::json!(["design", "worker"]),
-        "the presets are the closed table"
+    assert_eq!(properties["preset"]["type"], "string");
+    let preset_text = properties["preset"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        preset_text.contains("worker") && preset_text.contains("profile \"Design\""),
+        "the preset text names worker and sends mockups to the Design profile: {preset_text}"
     );
     assert_eq!(schema["additionalProperties"], serde_json::json!(false));
 }

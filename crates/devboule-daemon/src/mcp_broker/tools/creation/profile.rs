@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use super::posture::{agent_child_mode, ModeNote};
 use super::request::CreationChoice;
+use crate::design_profile;
 
 /// The name a profile's labels and the creation record are keyed on: the
 /// catalog's own spelling of the name, trimmed exactly as the store trims it.
@@ -198,9 +199,15 @@ pub(in crate::mcp_broker) fn resolve_creation(
     store: &crate::agent_profiles::AgentProfilesStore,
     choice: &CreationChoice,
     creator: Option<(&SessionKind, &str)>,
+    caller_provider: Option<&str>,
 ) -> Result<ResolvedProfile, String> {
     let (provider, model, mode, effort, preset) = match choice {
-        CreationChoice::Profile(name) => return resolve_profile(store, name),
+        CreationChoice::Profile(name) => {
+            if design_profile::is_unstored_design(&store.document().profiles, name) {
+                return resolve_design(creator, caller_provider);
+            }
+            return resolve_profile(store, name);
+        }
         CreationChoice::Direct {
             provider,
             model,
@@ -244,6 +251,47 @@ pub(in crate::mcp_broker) fn resolve_creation(
     })
 }
 
+/// The built-in Design profile's resolution: the calling agent's provider, its
+/// own default model (empty: the provider answers), its worker mode, and the
+/// Design deny list. A caller that names no provider cannot run it.
+fn resolve_design(
+    creator: Option<(&SessionKind, &str)>,
+    caller_provider: Option<&str>,
+) -> Result<ResolvedProfile, String> {
+    let caller = caller_provider.ok_or_else(|| {
+        "the Design profile runs on the provider of the agent that creates it, and this caller names none"
+            .to_string()
+    })?;
+    let catalog_id = crate::provider_catalog::catalog_provider_id_for(
+        &crate::session::catalog_registry(),
+        caller,
+    )
+    .ok_or_else(|| format!("provider {caller} is not installed"))?;
+    let requested = crate::provider_catalog::resolve_agent_preset(
+        crate::provider_catalog::AGENT_PRESET_WORKER,
+        &catalog_id,
+    )
+    .ok()
+    .map(|(_, cell)| cell.mode);
+    let child = crate::provider_catalog::session_kind_for(&catalog_id);
+    let chosen = agent_child_mode(&child, requested, creator)?;
+    Ok(ResolvedProfile {
+        id: design_profile::DESIGN_PROFILE_ID.to_string(),
+        name: design_profile::DESIGN_PROFILE_NAME.to_string(),
+        provider: catalog_id,
+        model: String::new(),
+        model_provider: None,
+        mode: chosen.mode,
+        mode_note: chosen.note,
+        thinking_option_id: None,
+        features: serde_json::Map::new(),
+        spawn_prompt: design_profile::DESIGN_SPAWN_PROMPT.to_string(),
+        overlay: crate::provider_catalog::ToolOverlay::from_profile_names(
+            &design_profile::denied_names(),
+        ),
+    })
+}
+
 /// One `devboule_list_profiles` call (`create-from-profile`).
 ///
 /// The ticked profiles, in the human's stored order and never sorted, as
@@ -261,7 +309,7 @@ pub(in crate::mcp_broker) fn list_profiles(
     store: &crate::agent_profiles::AgentProfilesStore,
     id: &Value,
 ) -> Value {
-    let document = store.document();
+    let document = design_profile::with_builtin(store.document());
     let profiles: Vec<Value> = document
         .profiles
         .iter()
@@ -278,7 +326,12 @@ pub(in crate::mcp_broker) fn list_profiles(
                 // family that mode would be delivered in. `unknown` is a
                 // value here — an agent picking a profile *because it will
                 // not ask* must get `unknown`, never a false `no`.
-                "unattended": predicted_unattended(&profile.provider, &profile.mode_id),
+                // The built-in names no provider, so no answer about one is predicted.
+                "unattended": if profile.provider.is_empty() {
+                    devboule_protocol::UnattendedState::Unknown
+                } else {
+                    predicted_unattended(&profile.provider, &profile.mode_id)
+                },
             })
         })
         .collect();
@@ -326,6 +379,7 @@ mod tests {
             &store(),
             &direct("claude", None),
             Some((&SessionKind::Codex, "auto-review")),
+            None,
         )
         .expect("the posture carries over");
         assert_eq!(resolved.mode, "auto");
@@ -338,6 +392,7 @@ mod tests {
             &store(),
             &direct("claude", Some("acceptEdits")),
             Some((&SessionKind::Codex, "full-access")),
+            None,
         )
         .expect("the named mode");
         assert_eq!(resolved.mode, "acceptEdits");
@@ -352,6 +407,7 @@ mod tests {
             &store(),
             &direct("claude", Some("default")),
             Some((&SessionKind::Codex, "auto-review")),
+            None,
         )
         .expect("the posture is taken");
         assert_eq!(resolved.mode, "auto");
@@ -377,6 +433,7 @@ mod tests {
             &store(),
             &choice,
             Some((&SessionKind::Codex, "auto-review")),
+            None,
         )
         .expect("the preset resolves under the posture");
         assert_eq!(resolved.mode, "auto");
@@ -385,8 +442,153 @@ mod tests {
     /// Nothing to inherit from: the caller is told to name a mode.
     #[test]
     fn a_child_with_no_mode_and_no_creator_mode_is_refused() {
-        let refused = resolve_creation(&store(), &direct("claude", None), None)
+        let refused = resolve_creation(&store(), &direct("claude", None), None, None)
             .expect_err("no posture to take");
         assert!(refused.contains("mode is required"), "{refused}");
+    }
+}
+
+#[cfg(test)]
+mod design_tests {
+    use super::resolve_creation;
+    use crate::agent_profiles::AgentProfilesStore;
+    use crate::mcp_broker::tools::creation::request::CreationChoice;
+    use devboule_protocol::{AgentProfile, AgentProfilesDocument, SessionKind};
+    use serde_json::json;
+
+    fn design_choice() -> CreationChoice {
+        CreationChoice::Profile("Design".to_string())
+    }
+
+    fn store(name: &str, profiles: Vec<AgentProfile>) -> AgentProfilesStore {
+        let store = AgentProfilesStore::load(&crate::test_dirs::test_temp_dir(name));
+        store
+            .set(AgentProfilesDocument {
+                profiles,
+                standing_instructions: String::new(),
+            })
+            .expect("the store admits the document");
+        store
+    }
+
+    fn person_design_row(provider: &str, enabled: bool) -> AgentProfile {
+        AgentProfile {
+            id: "p-design".to_string(),
+            name: "Design".to_string(),
+            icon: None,
+            note: String::new(),
+            spawn_prompt: String::new(),
+            provider: provider.to_string(),
+            model: "m-1".to_string(),
+            model_provider: None,
+            mode_id: "ask".to_string(),
+            thinking_option_id: None,
+            features: serde_json::Map::new(),
+            tool_overlay: Vec::new(),
+            enabled_for_agents: enabled,
+            idle_close_minutes: None,
+        }
+    }
+
+    /// With no row of the person's own, Design runs on the calling agent's
+    /// provider, with the provider's own default model and the Design deny list.
+    #[test]
+    fn the_builtin_design_profile_runs_on_the_callers_codex_provider() {
+        let resolved = resolve_creation(
+            &store("devboule-design-builtin-codex", Vec::new()),
+            &design_choice(),
+            Some((&SessionKind::Codex, "auto")),
+            Some("codex"),
+        )
+        .expect("the built-in Design resolves for a codex caller");
+        assert_eq!(resolved.provider, "codex");
+        assert_eq!(resolved.mode, "auto");
+        assert!(
+            resolved.model.is_empty(),
+            "the provider's default model answers"
+        );
+        for name in crate::provider_catalog::DESIGN_DENIED {
+            assert!(!resolved.overlay.allows(name), "{name} must be denied");
+        }
+    }
+
+    #[test]
+    fn the_builtin_design_profile_runs_on_the_callers_claude_provider() {
+        let resolved = resolve_creation(
+            &store("devboule-design-builtin-claude", Vec::new()),
+            &design_choice(),
+            Some((&SessionKind::Claude, "default")),
+            Some("claude"),
+        )
+        .expect("the built-in Design resolves for a claude caller");
+        assert_eq!(resolved.provider, "claude");
+        assert_eq!(resolved.mode, "default");
+    }
+
+    #[test]
+    fn the_builtin_design_profile_is_refused_without_a_caller_provider() {
+        let refused = resolve_creation(
+            &store("devboule-design-builtin-none", Vec::new()),
+            &design_choice(),
+            Some((&SessionKind::Codex, "auto")),
+            None,
+        )
+        .expect_err("no provider to run on");
+        assert!(refused.contains("provider"), "{refused}");
+    }
+
+    /// A Design row the person enabled overrides the built-in: their provider wins.
+    #[test]
+    fn a_design_row_of_the_persons_own_overrides_the_builtin() {
+        let resolved = resolve_creation(
+            &store(
+                "devboule-design-override",
+                vec![person_design_row("pi", true)],
+            ),
+            &design_choice(),
+            Some((&SessionKind::Codex, "auto")),
+            Some("codex"),
+        )
+        .expect("the person's Design resolves");
+        assert_eq!(resolved.provider, "pi");
+        assert_eq!(resolved.mode, "ask");
+    }
+
+    /// A Design row the person switched off hides the built-in too: it is not usable.
+    #[test]
+    fn a_switched_off_design_row_hides_the_builtin_from_creation() {
+        let mut coder = person_design_row("codex", true);
+        coder.id = "p-coder".to_string();
+        coder.name = "Coder".to_string();
+        let refused = resolve_creation(
+            &store(
+                "devboule-design-off",
+                vec![coder, person_design_row("pi", false)],
+            ),
+            &design_choice(),
+            Some((&SessionKind::Codex, "auto")),
+            Some("codex"),
+        )
+        .expect_err("switched off");
+        assert!(refused.contains("unknown profile"), "{refused}");
+    }
+
+    /// The listing an agent reads offers the built-in with its note, and makes
+    /// no prediction about a provider it does not name.
+    #[test]
+    fn the_listing_offers_the_builtin_design_profile() {
+        let answer = super::list_profiles(&store("devboule-design-listing", Vec::new()), &json!(9));
+        let profiles = answer["result"]["structuredContent"]["profiles"]
+            .as_array()
+            .expect("the list");
+        let design = profiles
+            .iter()
+            .find(|profile| profile["name"] == "Design")
+            .expect("Design is listed");
+        assert_eq!(design["unattended"], "unknown");
+        assert!(design["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Mockups"));
     }
 }

@@ -5688,7 +5688,7 @@ fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
 }
 
 /// `S5` block 2's overlay, measured on the child's *own* broker connection:
-/// the design preset hides both tools from `tools/list` and refuses them at
+/// the Design overlay hides both tools from `tools/list` and refuses them at
 /// `tools/call`, while the creator keeps all three.
 ///
 /// One daemon, two stub processes, two MCP connections: the first line of each

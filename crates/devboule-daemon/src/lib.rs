@@ -99,6 +99,8 @@ mod daemon_record;
 #[cfg(feature = "server")]
 mod delegation_store;
 #[cfg(feature = "server")]
+mod design_profile;
+#[cfg(feature = "server")]
 mod device_identity;
 #[cfg(feature = "server")]
 mod device_recovery;

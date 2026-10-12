@@ -243,11 +243,15 @@ fn run_creation(
     let creator_posture_ref = creator_posture
         .as_ref()
         .map(|(kind, mode)| (kind, mode.as_str()));
-    let profile =
-        match resolve_creation(&state.agent_profiles, &request.choice, creator_posture_ref) {
-            Ok(profile) => profile,
-            Err(message) => return tool_error(id, &message),
-        };
+    let profile = match resolve_creation(
+        &state.agent_profiles,
+        &request.choice,
+        creator_posture_ref,
+        registration.provider_id.as_deref(),
+    ) {
+        Ok(profile) => profile,
+        Err(message) => return tool_error(id, &message),
+    };
     let creator = match state
         .sessions
         .agent_creator(&creator_id, &registration.owner)

@@ -1321,6 +1321,57 @@ fn a_refused_tool_policy_set_is_an_invalid_request_not_an_io_failure() {
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
+/// An empty document is offered the built-in Design profile, and the reply
+/// keeps the shape an older app reads: no field beyond the profile document.
+#[test]
+fn the_profile_reply_offers_the_builtin_design_profile() {
+    let path = crate::test_dirs::test_temp_dir("devboule-agent-profiles-builtin");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(path.clone()),
+    )
+    .expect("state");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = ConnHandle::new(26);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::AgentProfilesGet { id: 70 },
+        &conn,
+        false,
+        false,
+        false,
+        false,
+    )
+    .expect("get reply");
+    let json = serde_json::to_value(&reply).expect("json");
+    let mut top: Vec<&str> = json
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort_unstable();
+    assert_eq!(top, ["document", "id", "type"]);
+    let mut document_keys: Vec<&str> = json["document"]
+        .as_object()
+        .expect("document")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    document_keys.sort_unstable();
+    assert_eq!(document_keys, ["profiles", "standingInstructions"]);
+    let profiles = json["document"]["profiles"].as_array().expect("profiles");
+    assert_eq!(profiles.len(), 1, "{json}");
+    assert_eq!(profiles[0]["name"], "Design");
+    assert_eq!(profiles[0]["enabledForAgents"], true);
+    assert_eq!(
+        profiles[0]["toolOverlay"].as_array().map(Vec::len),
+        Some(crate::provider_catalog::DESIGN_DENIED.len())
+    );
+    let _ = std::fs::remove_dir_all(&path);
+}
+
 #[test]
 fn agent_profiles_set_then_get_round_trips_through_dispatch() {
     let path = crate::test_dirs::test_temp_dir("devboule-agent-profiles-dispatch");
@@ -1395,12 +1446,16 @@ fn agent_profiles_set_then_get_round_trips_through_dispatch() {
         panic!("AgentProfilesGet must reply with AgentProfiles, got {reply:?}");
     };
     assert_eq!(id, 22);
+    // The built-in Design row comes after the person's own rows, which come back
+    // exactly as they were sent.
     assert_eq!(
-        document, sent,
-        "the whole document comes back, in the order it was sent"
+        &document.profiles[..sent.profiles.len()],
+        &sent.profiles[..]
     );
+    assert_eq!(document.profiles.len(), sent.profiles.len() + 1);
     assert_eq!(document.profiles[0].name, "Reviewer");
     assert_eq!(document.profiles[1].name, "Second opinion");
+    assert_eq!(document.standing_instructions, sent.standing_instructions);
 
     // The file lives beside the journal, and a store loaded fresh from the
     // same directory sees the write — which is what a restart does.
@@ -1476,7 +1531,9 @@ fn a_refused_agent_profiles_set_is_an_invalid_request_not_an_io_failure() {
     let DaemonMessage::AgentProfiles { document, .. } = reply else {
         panic!("got {reply:?}");
     };
-    assert!(document.profiles.is_empty());
+    // Nothing the person saved: the only row is the built-in Design profile.
+    assert_eq!(document.profiles.len(), 1);
+    assert_eq!(document.profiles[0].name, "Design");
     assert!(document.standing_instructions.is_empty());
 
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();

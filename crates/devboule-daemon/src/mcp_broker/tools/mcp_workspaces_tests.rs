@@ -491,7 +491,7 @@ fn the_policy_removes_each_workspace_tool_and_design_keeps_only_the_read() {
         );
     }
 
-    // The design preset denies the write and keeps the read.
+    // The Design overlay denies the write and keeps the read.
     let listed = enabled_tool_list(
         crate::provider_catalog::MCP_BROKER_TOOLS,
         None,

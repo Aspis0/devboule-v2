@@ -55,7 +55,7 @@ pub(super) fn agent_profiles_get(
 ) -> DaemonMessage {
     DaemonMessage::AgentProfiles {
         id,
-        document: state.agent_profiles.document(),
+        document: crate::design_profile::with_builtin(state.agent_profiles.document()),
     }
 }
 

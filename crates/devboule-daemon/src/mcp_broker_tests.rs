@@ -4141,6 +4141,22 @@ fn session_exit_wakes_an_mcp_readiness_waiter() {
     assert!(error.message.contains("process exited"));
 }
 
+/// The retired design preset is refused whatever else the call names, and the
+/// refusal sends the caller to the Design profile.
+#[test]
+fn the_retired_design_preset_is_refused_and_names_the_design_profile() {
+    for arguments in [
+        json!({"title": "b", "initialPrompt": "x", "preset": "design"}),
+        json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "design"}),
+    ] {
+        let refused = AgentCreateRequest::parse(&arguments).expect_err("refused");
+        assert_eq!(
+            refused,
+            "the design preset is retired; for a mockup create the agent with profile \"Design\""
+        );
+    }
+}
+
 /// The closed schema is the first bound: nothing beyond the seven
 /// parameters the tool publishes, no way to name a mode, and no way to name a
 /// provider or a preset (`create-from-profile`).
@@ -4253,7 +4269,7 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             "unknown preset",
         ),
         (
-            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "design", "mode": "plan"}),
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "worker", "mode": "plan"}),
             "a preset chooses the mode",
         ),
         (
@@ -5863,7 +5879,8 @@ fn the_profile_list_is_the_humans_order_with_verbatim_notes() {
         .as_array_mut()
         .expect("an array of profiles")
         .clone();
-    assert_eq!(profiles.len(), 2, "only the ticked ones");
+    // The two ticked rows, then the built-in Design, which the list offers last.
+    assert_eq!(profiles.len(), 3, "only the ticked ones and the built-in");
     assert_eq!(profiles[0]["name"], "second");
     assert_eq!(
         profiles[1]["name"], "first",
@@ -6724,6 +6741,7 @@ fn a_create_names_its_provider_and_model_without_a_profile() {
         &store,
         &request.choice,
         Some((&SessionKind::Claude, "default")),
+        Some("claude"),
     )
     .expect("a direct creation resolves");
     assert_eq!(resolved.provider, "claude");
@@ -6732,40 +6750,6 @@ fn a_create_names_its_provider_and_model_without_a_profile() {
     assert_eq!(resolved.thinking_option_id.as_deref(), Some("high"));
     assert!(resolved.id.is_empty(), "no stored profile was named");
     assert_eq!(resolved.overlay, ToolOverlay::NONE);
-}
-
-/// The Design route (owner bug #34, the regression): `preset: "design"` on a
-/// workspace agent's create gives the child the design overlay, which keeps
-/// the browser lane and the design-only denials as the preset always did.
-#[test]
-fn a_workspace_agent_can_create_a_design_child() {
-    let request = AgentCreateRequest::parse(&json!({
-        "title": "Design pass",
-        "provider": "codex",
-        "model": "gpt-6-luna",
-        "preset": "design",
-        "initialPrompt": "Draft the landing page.",
-    }))
-    .expect("a design creation parses");
-    let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice, Some((&SessionKind::Codex, "auto")))
-        .expect("design resolves for codex");
-    assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
-    assert_eq!(resolved.mode, "auto", "the design cell's own mode");
-    assert!(
-        !resolved
-            .overlay
-            .allows(crate::provider_catalog::MCP_BROWSER_NEW_TAB_TOOL),
-        "the design child is denied the browser lane"
-    );
-    assert!(
-        resolved.overlay.allows(MCP_ROSTER_TOOL),
-        "a design child keeps the roster of agents it can see"
-    );
-    assert!(
-        !resolved.overlay.allows(MCP_CREATE_AGENT_TOOL),
-        "a design child creates no agents of its own"
-    );
 }
 
 /// The schema publishes what the create tool takes: a provider, a model, a
@@ -6867,34 +6851,9 @@ fn the_broker_names_the_callers_workspace_at_initialize() {
     drop(server);
 }
 
-/// A workspace agent's design child needs only a provider and the preset, as
-/// it did before the profile rework (owner bug #34, review fix pass): the model
-/// is the provider's own default and the preset gives the mode and overlay.
-#[test]
-fn a_design_child_needs_only_a_provider_and_the_preset() {
-    let request = AgentCreateRequest::parse(&json!({
-        "provider": "codex",
-        "preset": "design",
-        "title": "Design pass",
-        "initialPrompt": "Draft the landing page.",
-    }))
-    .expect("a provider and the preset are enough");
-    let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice, Some((&SessionKind::Codex, "auto")))
-        .expect("design resolves");
-    assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
-    assert_eq!(resolved.mode, "auto", "the design cell's own mode");
-    assert!(
-        resolved.model.is_empty(),
-        "no model named: the provider's default answers"
-    );
-}
-
-/// A workspace agent creates a design child with the preset alone, and the
-/// child is what the preset promises, end to end (owner bug #34, the Design
-/// route restored): it spawns on the provider the caller named, and its own
-/// tool list keeps the roster while losing the creation tool and the browser
-/// lane.
+/// A workspace agent creates a Design child from the built-in profile, end to
+/// end: it spawns on the caller's provider, and its own tool list keeps the
+/// roster while losing the creation tool and the browser lane.
 #[test]
 fn a_workspace_agent_spawns_a_design_child_end_to_end() {
     let stub = crate::session::session_resume_fixture::acp_stub();
@@ -6942,8 +6901,7 @@ fn a_workspace_agent_spawns_a_design_child_end_to_end() {
     };
     let server = state.mcp.start(&state).expect("MCP server");
     let request = AgentCreateRequest::parse(&json!({
-        "provider": "devboule-acp-stub",
-        "preset": "design",
+        "profile": "Design",
         "title": "Design pass",
         "initialPrompt": "Draft the landing page.",
     }))

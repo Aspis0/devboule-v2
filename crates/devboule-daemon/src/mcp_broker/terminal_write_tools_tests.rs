@@ -1166,7 +1166,7 @@ fn the_writes_are_served_with_closed_schemas_and_design_hides_them() {
     assert_eq!(kill["required"], json!(["terminalId"]));
     assert_eq!(kill["additionalProperties"], json!(false));
 
-    // The design preset denies all three and keeps the reads.
+    // The Design overlay denies all three and keeps the reads.
     let design = enabled_tool_list(
         crate::provider_catalog::MCP_BROKER_TOOLS,
         None,

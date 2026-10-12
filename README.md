@@ -107,8 +107,8 @@ What works today:
   siblings cannot be steered at all. The policy is per machine — paired devices
   do not inherit one another's.
 - **Agents that create agents** — an agent can call `devboule_create_agent` to
-  create a child from one of two presets (`worker`, `design`) in a fixed,
-  non-bypass provider mode, and it must ask you first: once per creator session,
+  create a child from the built-in `Design` profile (a mockup, on the caller's
+  provider) or from the `worker` preset, in a fixed, non-bypass provider mode, and it must ask you first: once per creator session,
   on a card that states the provider, the preset, the mode and every cap as
   `n of m`. The caps are real and are checked before the card is drawn — three
   live children per creator, ten creations an hour, eight live agent sessions

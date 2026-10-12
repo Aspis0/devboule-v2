@@ -253,6 +253,10 @@ impl AgentProfilesStore {
     /// nothing here sorts, and nothing here keys a profile by its name.
     pub(crate) fn set(&self, document: AgentProfilesDocument) -> Result<(), ProfilesError> {
         let mut next = document;
+        // The built-in Design row, echoed back by a reader that did not change
+        // it, comes from the daemon's own table and is never stored.
+        next.profiles
+            .retain(|profile| !crate::design_profile::is_echoed(profile));
         let mut held = self
             .document
             .lock()
@@ -485,28 +489,32 @@ fn check_profile(
     // the catalog's own spelling: a session registered as `CLAUDE` and a profile
     // stored as `claude` are one provider. The predicate is the catalog's, not a
     // second list — the same shape `tool_policy.rs` uses for its own gate.
-    let provider = profile.provider.trim();
-    if provider.is_empty() {
-        return Err(format!("profile {position} names no provider"));
-    }
-    if provider.len() > MAX_PROFILE_FIELD_BYTES {
-        return Err(format!(
-            "the provider of profile {position} is {} bytes, over the {MAX_PROFILE_FIELD_BYTES}-byte cap",
-            provider.len()
-        ));
-    }
-    match crate::provider_catalog::catalog_provider_id_for(registry, provider) {
-        Some(canonical) => profile.provider = canonical,
-        None if keep_unpublished => {}
-        None => {
+    // A row that only switches the built-in off holds no provider, model or
+    // mode to check: it is never a creation's answer.
+    if !crate::design_profile::is_switched_off(profile) {
+        let provider = profile.provider.trim();
+        if provider.is_empty() {
+            return Err(format!("profile {position} names no provider"));
+        }
+        if provider.len() > MAX_PROFILE_FIELD_BYTES {
             return Err(format!(
-                "'{provider}' is not installed: the catalog does not publish it, so pick a provider that is"
+                "the provider of profile {position} is {} bytes, over the {MAX_PROFILE_FIELD_BYTES}-byte cap",
+                provider.len()
             ));
         }
-    }
+        match crate::provider_catalog::catalog_provider_id_for(registry, provider) {
+            Some(canonical) => profile.provider = canonical,
+            None if keep_unpublished => {}
+            None => {
+                return Err(format!(
+                    "'{provider}' is not installed: the catalog does not publish it, so pick a provider that is"
+                ));
+            }
+        }
 
-    check_required_field(&mut profile.model, "model", position)?;
-    check_required_field(&mut profile.mode_id, "mode id", position)?;
+        check_required_field(&mut profile.model, "model", position)?;
+        check_required_field(&mut profile.mode_id, "mode id", position)?;
+    }
     // The serving provider beside the bare id: trimmed and capped like the
     // other ids, and optional — `None` is what older builds wrote, matched
     // by the bare id alone. An empty string is refused for the reason the
@@ -883,6 +891,38 @@ mod tests {
             profiles,
             standing_instructions: String::new(),
         }
+    }
+
+    /// The built-in Design row the panel echoes back unchanged is not stored:
+    /// the built-in is derived, so only a row the person changed is kept.
+    #[test]
+    fn the_echoed_builtin_design_row_is_not_stored() {
+        let store = AgentProfilesStore::load(&temp_dir());
+        let mut echo = profile("design-builtin", "Design");
+        echo.provider.clear();
+        echo.model.clear();
+        echo.mode_id.clear();
+        echo.enabled_for_agents = true;
+        store
+            .set(document(vec![profile("p-1", "Coder"), echo]))
+            .expect("the save");
+        assert_eq!(names(&store.document()), vec!["Coder"]);
+    }
+
+    /// A Design row the person switched off names no provider and is kept, so
+    /// it still hides the built-in.
+    #[test]
+    fn a_switched_off_design_row_is_kept_without_a_provider() {
+        let store = AgentProfilesStore::load(&temp_dir());
+        let mut off = profile("design-builtin", "Design");
+        off.provider.clear();
+        off.model.clear();
+        off.mode_id.clear();
+        off.enabled_for_agents = false;
+        store.set(document(vec![off])).expect("the switch-off save");
+        let kept = store.document();
+        assert_eq!(names(&kept), vec!["Design"]);
+        assert!(!kept.profiles[0].enabled_for_agents);
     }
 
     fn names(document: &AgentProfilesDocument) -> Vec<&str> {
