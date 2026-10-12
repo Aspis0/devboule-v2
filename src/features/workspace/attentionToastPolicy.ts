@@ -1,4 +1,5 @@
 import type { AttentionReason, Session } from "../../types/ipc";
+import { isDescendantOf } from "./sessionAncestry";
 
 /**
  * Which raises become an OS toast. The toast is for the person: a card they
@@ -10,7 +11,7 @@ export interface ToastCandidate {
   reason: AttentionReason;
   /** A session a person started. An agent created the others. */
   topLevel: boolean;
-  /** A child of this session runs or waits on a card. */
+  /** A session below this one runs or waits on a card, at any depth. */
   childBusy: boolean;
   /** The person is not looking at this session: unfocused, hidden, or showing another. */
   away: boolean;
@@ -36,13 +37,15 @@ export function shouldToast(candidate: ToastCandidate): boolean {
 /** What the roster says about the session a raise is about. */
 export type RaiseContext = Pick<ToastCandidate, "topLevel" | "childBusy">;
 
-/** Whether a child of `sessionId` runs or waits on a card, judged from the roster. */
-export function hasBusyChild(sessionId: string, roster: readonly Session[]): boolean {
-  return roster.some(
-    (child) =>
-      child.createdBy === sessionId &&
-      (child.activity === "working" ||
-        child.activity === "blocked" ||
-        child.attention?.reason === "permission"),
+/** Whether a session below `sessionId` runs or waits on a card, at any depth. */
+export function hasBusyDescendant(sessionId: string, roster: readonly Session[]): boolean {
+  return roster.some((row) => isBusy(row) && isDescendantOf(row, sessionId, roster));
+}
+
+function isBusy(row: Session): boolean {
+  return (
+    row.activity === "working" ||
+    row.activity === "blocked" ||
+    row.attention?.reason === "permission"
   );
 }

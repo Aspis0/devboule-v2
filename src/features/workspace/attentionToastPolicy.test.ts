@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attention, AttentionReason, Session } from "../../types/ipc";
-import { hasBusyChild, shouldToast, type ToastCandidate } from "./attentionToastPolicy";
+import { hasBusyDescendant, shouldToast, type ToastCandidate } from "./attentionToastPolicy";
 
 /** One row of the filter: the raise, who it is about, and whether a toast goes out. */
 interface Row {
@@ -88,23 +88,23 @@ function session(id: string, patch: Partial<Session> = {}): Session {
 
 const PERMISSION: Attention = { reason: "permission", atMs: 1 };
 
-describe("hasBusyChild", () => {
+describe("hasBusyDescendant", () => {
   it("is busy while a child works or waits on a card", () => {
     const roster = [
       session("parent"),
       session("child-a", { createdBy: "parent", activity: "working" }),
     ];
-    expect(hasBusyChild("parent", roster)).toBe(true);
+    expect(hasBusyDescendant("parent", roster)).toBe(true);
     const waiting = [
       session("parent"),
       session("child-b", { createdBy: "parent", activity: "blocked" }),
     ];
-    expect(hasBusyChild("parent", waiting)).toBe(true);
+    expect(hasBusyDescendant("parent", waiting)).toBe(true);
     const card = [
       session("parent"),
       session("child-c", { createdBy: "parent", activity: "idle", attention: PERMISSION }),
     ];
-    expect(hasBusyChild("parent", card)).toBe(true);
+    expect(hasBusyDescendant("parent", card)).toBe(true);
   });
 
   it("is idle when every child is idle, and when it has no children", () => {
@@ -113,7 +113,25 @@ describe("hasBusyChild", () => {
       session("child-d", { createdBy: "parent", activity: "idle" }),
       session("other", { createdBy: "someone-else", activity: "working" }),
     ];
-    expect(hasBusyChild("parent", roster)).toBe(false);
-    expect(hasBusyChild("parent", [session("parent")])).toBe(false);
+    expect(hasBusyDescendant("parent", roster)).toBe(false);
+    expect(hasBusyDescendant("parent", [session("parent")])).toBe(false);
+  });
+
+  it("is busy while a grandchild runs, even when the child between them is idle", () => {
+    const roster = [
+      session("parent"),
+      session("child", { createdBy: "parent", activity: "idle" }),
+      session("grandchild", { createdBy: "child", activity: "working" }),
+    ];
+    expect(hasBusyDescendant("parent", roster)).toBe(true);
+  });
+
+  it("is busy for a legacy grandchild that names only the parent's context", () => {
+    const roster = [
+      session("parent"),
+      session("legacy-child", { contextId: "parent", activity: "idle" }),
+      session("legacy-grandchild", { contextId: "parent", activity: "working" }),
+    ];
+    expect(hasBusyDescendant("parent", roster)).toBe(true);
   });
 });

@@ -30,8 +30,9 @@ import {
   markAttentionSeen,
   settleAttentionFor,
 } from "./attentionNotice";
-import { hasBusyChild } from "./attentionToastPolicy";
+import { hasBusyDescendant } from "./attentionToastPolicy";
 import { markSessionOpened } from "./openedSessions";
+import { isTopLevel } from "./sessionAncestry";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
 export interface WorkspaceSessionSource {
@@ -1000,8 +1001,8 @@ export function sharedSessionController(): WorkspaceSessionController {
           attention,
           undefined,
           {
-            topLevel: session.createdBy === undefined,
-            childBusy: hasBusyChild(session.id, roster),
+            topLevel: isTopLevel(session),
+            childBusy: hasBusyDescendant(session.id, roster),
           },
         ),
     );
