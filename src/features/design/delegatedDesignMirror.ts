@@ -63,9 +63,6 @@ export function delegatedDesignCardId(childSessionId: string): string {
 }
 
 let mirrorSequence = 0;
-// Every child whose card is on the canvas. Dedupe is by membership, not by the
-// last child: a replayed finish of an earlier child is skipped without a read.
-const mirroredChildIds = new Set<string>();
 let writtenSequence = 0;
 
 const DESIGN_PROFILE_NAME = "Design";
@@ -124,7 +121,6 @@ export function clearDelegatedMirrorPin(): void {
 /** Resets all mirror state. Tests only; production state lives for the run. */
 export function resetDelegatedMirrorForTests(): void {
   mirrorSequence = 0;
-  mirroredChildIds.clear();
   childProfiles.clear();
   writtenSequence = 0;
   humanPin = null;
@@ -195,7 +191,6 @@ async function writeDelegatedArtifact(
   // The human pinned an entry while the read was in flight, or a duplicate
   // arrival's read finished second: neither may write.
   if (pinHolds(childSessionId, finishedAtMs)) return false;
-  if (mirroredChildIds.has(childSessionId)) return false;
   let host = store.getState().designSession.host;
   if (host === null) {
     const fresh = await ensureHost();
@@ -261,10 +256,10 @@ async function writeDelegatedArtifact(
 /**
  * Schedules the mirror for one finished child, fire-and-forget from
  * `AgentSession.handleEvent`. The synchronous prefix is the `completed`
- * gate, the sequence bump and the known-finish record — no store reads, no
+ * gate, the Design-profile gate and the sequence bump — no store reads, no
  * daemon I/O. Every other check runs after the store resolves; a cleared
- * session first drops the pin and the mirror record, and an arrival the pin
- * holds performs no daemon read at all. Failures warn and change nothing.
+ * session first drops the pin, and an arrival the pin holds performs no daemon
+ * read at all. Failures warn and change nothing.
  */
 export function scheduleDelegatedDesignMirror(
   event: ChildFinishedEvent,
@@ -285,17 +280,16 @@ export function scheduleDelegatedDesignMirror(
     try {
       const store = deps?.store ?? (await import("../../store/appStore")).useAppStore;
       const ensureHost = deps?.ensureHost ?? defaultEnsureHost;
-      // A cleared session drops the pin and the mirror record with it: the
-      // entry the human was reading and the card the mirror wrote are both
-      // gone, so stale state must neither block the next delegation nor skip
-      // re-mirroring the same child after its card was cleared.
+      // A cleared session drops the pin with it: the entry the human was reading
+      // is gone, so the pin must not block the next delegation.
       if (store.getState().designSession.host === null) {
         humanPin = null;
-        mirroredChildIds.clear();
         writtenSequence = 0;
       }
       if (pinHolds(childSessionId, event.atMs)) return;
-      if (mirroredChildIds.has(childSessionId)) return;
+      // The canvas already holds this child's card: a replay is skipped without a read.
+      const cardId = delegatedDesignCardId(childSessionId);
+      if (hasDelegatedCard(store.getState().designSession.messages, cardId)) return;
       const readStored =
         deps?.readStored ?? (await import("../../lib/tauri")).sessionAttachmentRead;
       const { extractFencedHtml } = await import("./agentHost");
@@ -318,7 +312,6 @@ export function scheduleDelegatedDesignMirror(
         )
       ) {
         writtenSequence = sequence;
-        mirroredChildIds.add(childSessionId);
       }
     } catch (error) {
       console.warn(`Could not mirror the finish of child session ${childSessionId}.`, error);

@@ -400,6 +400,26 @@ describe("delegated design mirror", () => {
     expect(captured).toHaveLength(0);
   });
 
+  it("mirrors a child again once its card has left the canvas, since nothing else remembers it", async () => {
+    const captured: CapturedRead[] = [];
+    const deps = { readStored: fakeRead(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-1", "Landing page"), deps);
+    await flush();
+    captured[0]?.resolve(storedMarkdown("```html\n<main>First</main>\n```"));
+    await flush();
+
+    useAppStore.getState().setDesignMessages(HOST, []);
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-1", "Landing page"), deps);
+    await flush();
+    expect(captured).toHaveLength(2);
+    captured[1]?.resolve(storedMarkdown("```html\n<main>Again</main>\n```"));
+    await flush();
+
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Again</main>",
+    });
+  });
+
   it("lets a newer child finish land over a human-pinned entry, which stays in the transcript", async () => {
     useAppStore.setState({
       designSession: {
@@ -549,7 +569,7 @@ describe("delegated design mirror", () => {
     });
   });
 
-  it("remembers every mirrored child, so an earlier one is not read again after a later one", async () => {
+  it("does not read again an earlier child whose card is still on the canvas", async () => {
     const captured: CapturedRead[] = [];
     const deps = { readStored: fakeRead(captured), store: useAppStore };
     scheduleDelegatedDesignMirror(finishedWithMarkdown("child-a", "First"), deps);
