@@ -144,3 +144,13 @@ describe("the Changes tree's renders", () => {
     expect(fileRowRenders()).toBe(2);
   });
 });
+
+describe("the Changes row's acts", () => {
+  it("name their path in a tooltip, the overflow menu included", async () => {
+    await renderPanel();
+    const menu = container.querySelector<HTMLButtonElement>(
+      `button[aria-label="${ROWS[0]!.path} actions"]`,
+    );
+    expect(menu?.getAttribute("title")).toBe(`${ROWS[0]!.path} actions`);
+  });
+});

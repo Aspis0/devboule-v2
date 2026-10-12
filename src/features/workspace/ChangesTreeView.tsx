@@ -233,6 +233,7 @@ const FileNode = memo(function FileNode({
               type="button"
               className="workspace-tree-menu-trigger"
               aria-label={`${path} actions`}
+              title={`${path} actions`}
               aria-expanded={menuOpen}
               disabled={acting}
               onClick={() => onToggleMenu(path)}
