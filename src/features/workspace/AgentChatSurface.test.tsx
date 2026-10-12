@@ -4311,7 +4311,7 @@ describe("creator permission-request message", () => {
     "",
   ].join("\n");
 
-  it("draws a child's permission request that nothing has answered yet", async () => {
+  it("keeps a child's permission request out of the parent chat, answered or not", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
@@ -4327,9 +4327,9 @@ describe("creator permission-request message", () => {
       });
     });
 
-    // Nothing answered this card, so the person still sees it.
-    expect(container.querySelector("[data-testid='agent-permission-request']")).not.toBeNull();
-    expect(container.textContent).toContain("card-77");
+    // The card is answered in the child's own tab; the relay is not drawn here.
+    expect(container.querySelector("[data-testid='agent-permission-request']")).toBeNull();
+    expect(container.textContent).not.toContain("card-77");
   });
 
   it("walks the excerptState table: an out-of-union state takes the visible unknown arm (re-audit F7)", () => {

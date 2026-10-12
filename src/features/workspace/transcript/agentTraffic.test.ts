@@ -78,12 +78,12 @@ describe("isAgentTraffic", () => {
     });
     expect(isAgentTraffic(failed("mcp__devboule__devboule_agent_activity", ""))).toBe(false);
     expect(
-      isAgentTraffic(failed("mcp__devboule__devboule_answer_permissions", "Mcp error -32602")),
+      isAgentTraffic(failed("mcp__devboule__devboule_answer_permission", "Mcp error -32602")),
     ).toBe(false);
   });
 
   it("hides the orchestrator's answer and listing calls for children's cards", () => {
-    expect(isAgentTraffic(tool("mcp__devboule__devboule_answer_permissions"))).toBe(true);
+    expect(isAgentTraffic(tool("mcp__devboule__devboule_answer_permission"))).toBe(true);
     expect(isAgentTraffic(tool("mcp__devboule__devboule_list_pending_permissions"))).toBe(true);
     expect(isAgentTraffic(tool("Read index.html"))).toBe(false);
   });
@@ -108,7 +108,7 @@ describe("isAgentTraffic", () => {
     expect(isAgentTraffic(system("Codex declined an out-of-scope request."))).toBe(false);
   });
 
-  it("keeps a child's permission request, which the person may have to act on", () => {
+  it("hides a child's permission relay: the person answers the card in the child's tab", () => {
     expect(
       isAgentTraffic({
         id: "p",
@@ -119,7 +119,7 @@ describe("isAgentTraffic", () => {
         excerpt: "",
         excerptState: "absent",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("hides an idle-close notice and keeps other notices", () => {
@@ -193,7 +193,7 @@ describe("dropAgentAnsweredCards", () => {
     return {
       id: `answer-${output}`,
       role: "tool",
-      title: "mcp__devboule__devboule_answer_permissions",
+      title: "mcp__devboule__devboule_answer_permission",
       output,
       toolCallId: "answer",
       status,

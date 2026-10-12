@@ -9,7 +9,7 @@ import { isFailedToolCall } from "./toolFailure";
  */
 
 // Calls the orchestrator makes to answer or poll for its children's cards.
-const PLUMBING_TOOLS = new Set(["answer_permissions", "list_pending_permissions"]);
+const PLUMBING_TOOLS = new Set(["answer_permission", "list_pending_permissions"]);
 
 export function isAgentTraffic(item: AgentChatItem): boolean {
   switch (item.role) {
@@ -27,6 +27,10 @@ export function isAgentTraffic(item: AgentChatItem): boolean {
       if (name === "agent_activity") return devbouleActivity(item.output) !== "blocked";
       return PLUMBING_TOOLS.has(name);
     }
+    // The relay of a child's card is what the orchestrator reads to answer it.
+    // The person answers that card in the child's own tab.
+    case "permission_request":
+      return true;
     case "daemon_notice":
       return item.notice.recognized && item.notice.kind === "agent_idle_closed";
     default:
@@ -55,7 +59,7 @@ export function dropAgentAnsweredCards(items: AgentChatItem[]): AgentChatItem[] 
   const answered = new Set<string>();
   for (const item of items) {
     if (item.role !== "tool" || isFailedToolCall(item)) continue;
-    if (devbouleToolName(item.title) !== "answer_permissions") continue;
+    if (devbouleToolName(item.title) !== "answer_permission") continue;
     const cardId = cardAnsweredBy(item.output);
     if (cardId !== null) answered.add(cardId);
   }

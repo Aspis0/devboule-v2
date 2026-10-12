@@ -112,7 +112,7 @@ describe("agent-to-agent traffic is not drawn", () => {
   it("drops the answer and poll calls of the orchestrator, grouped or not", async () => {
     // Two calls in a row would form a group; the group's own markup must be absent too.
     await show([
-      devbouleTool("tool-1", "mcp__devboule__devboule_answer_permissions", '{"answered":true}'),
+      devbouleTool("tool-1", "mcp__devboule__devboule_answer_permission", '{"answered":true}'),
       devbouleTool("tool-2", "mcp__devboule__devboule_list_pending_permissions", "[]"),
     ]);
 
@@ -122,7 +122,7 @@ describe("agent-to-agent traffic is not drawn", () => {
     expect(host.textContent).not.toContain("mcp__devboule__");
   });
 
-  it("keeps a child's permission request that still waits for an answer", async () => {
+  it("drops a child's permission request that still waits, the person answers it in the child's tab", async () => {
     await show([
       {
         id: "permission-1",
@@ -135,7 +135,9 @@ describe("agent-to-agent traffic is not drawn", () => {
       },
     ]);
 
-    expect(host.querySelector("[data-testid='agent-permission-request']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='agent-permission-request']")).toBeNull();
+    expect(host.textContent).not.toContain("Relayed");
+    expect(host.textContent).not.toContain("toolu_01Covr");
   });
 
   it("drops a child's permission request that an agent answered, with the answer", async () => {
@@ -151,7 +153,7 @@ describe("agent-to-agent traffic is not drawn", () => {
       },
       devbouleTool(
         "tool-1",
-        "mcp__devboule__devboule_answer_permissions",
+        "mcp__devboule__devboule_answer_permission",
         '{"state":"answered","cardId":"toolu_01Covr"}',
       ),
     ]);
