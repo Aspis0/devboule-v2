@@ -515,7 +515,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::RemoteHostFileVersion { .. }
         | ClientMessage::RemoteHostFileWrite { .. }
         | ClientMessage::RemoteHostFilesList { .. }
-        | ClientMessage::RemoteHostGitStatus { .. } => PeerDecision::Deny("remote_hosts"),
+        | ClientMessage::RemoteHostGitStatus { .. }
+        | ClientMessage::RemoteHostAgentEdits { .. }
+        | ClientMessage::RemoteHostAgentDiff { .. } => PeerDecision::Deny("remote_hosts"),
         // Being the place agents' browser commands run is the local app's job.
         // A paired device reaches a browser only through the per-device grant
         // the MCP tools check (a later slice), never by registering as a host
@@ -1825,6 +1827,17 @@ pub(crate) mod tests {
                 device_id: "b".to_string(),
                 workspace_id: "ws.1".to_string(),
             },
+            ClientMessage::RemoteHostAgentEdits {
+                id: 20,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::RemoteHostAgentDiff {
+                id: 21,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "a.txt".to_string(),
+            },
             // The browser host, all three frames: local-only like the link
             // above, refused to a peer by name.
             ClientMessage::BrowserHostRegister {
@@ -2153,6 +2166,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostFileWrite { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostFilesList { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostGitStatus { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostAgentEdits { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostAgentDiff { .. } => Some("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => Some("browser.host"),
             ClientMessage::BrowserHostUnregister { .. } => Some("browser.host"),
             ClientMessage::BrowserExecuteResponse { .. } => Some("browser.host"),
@@ -3082,6 +3097,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostFileWrite { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostFilesList { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostGitStatus { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostAgentEdits { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostAgentDiff { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
@@ -3097,7 +3114,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 117;
+    pub(crate) const VARIANT_COUNT: usize = 119;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -3225,6 +3242,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostFileWrite { .. } => "RemoteHostFileWrite",
             ClientMessage::RemoteHostFilesList { .. } => "RemoteHostFilesList",
             ClientMessage::RemoteHostGitStatus { .. } => "RemoteHostGitStatus",
+            ClientMessage::RemoteHostAgentEdits { .. } => "RemoteHostAgentEdits",
+            ClientMessage::RemoteHostAgentDiff { .. } => "RemoteHostAgentDiff",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
             ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",
@@ -3826,6 +3845,17 @@ pub(crate) mod tests {
                 id: 19,
                 device_id: "b".to_string(),
                 workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::RemoteHostAgentEdits {
+                id: 20,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::RemoteHostAgentDiff {
+                id: 21,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "a.txt".to_string(),
             },
             ClientMessage::BrowserHostRegister {
                 id: 1,

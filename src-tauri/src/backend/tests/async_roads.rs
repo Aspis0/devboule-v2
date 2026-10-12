@@ -122,12 +122,12 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 122,
+        scan.helper_calls, 124,
         "one helper call per waiting road, plus the thread test below that calls the helper itself; \
          the 114th and 115th are workspace_archive and project_remove, the 116th and 117th are \
          archived_list and workspace_restore, the last three are the paired-host workspace roads; \
-         workspace_agent_edits and workspace_agent_diff (the agent-edit reads, after \
-         workspace_git_diff) are the two added since 120"
+         the agent-edit reads add four: workspace_agent_edits and workspace_agent_diff (after \
+         workspace_git_diff), then remote_host_agent_edits and remote_host_agent_diff"
     );
 }
 

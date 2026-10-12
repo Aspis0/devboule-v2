@@ -153,7 +153,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::FileVersion(_)
                 | LinkAnswer::FileWrite(_)
                 | LinkAnswer::Files(_)
-                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
+                | LinkAnswer::GitStatus(_)
+                | LinkAnswer::AgentEdits(_)
+                | LinkAnswer::AgentDiff(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "an attach is not an operate call")
                         .with_id(id),
                 ),
@@ -197,7 +199,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::FileVersion(_)
                 | LinkAnswer::FileWrite(_)
                 | LinkAnswer::Files(_)
-                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
+                | LinkAnswer::GitStatus(_)
+                | LinkAnswer::AgentEdits(_)
+                | LinkAnswer::AgentDiff(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a detach is not an operate call")
                         .with_id(id),
                 ),
@@ -243,7 +247,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::FileVersion(_)
                 | LinkAnswer::FileWrite(_)
                 | LinkAnswer::Files(_)
-                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
+                | LinkAnswer::GitStatus(_)
+                | LinkAnswer::AgentEdits(_)
+                | LinkAnswer::AgentDiff(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a list read is not an operate call")
                         .with_id(id),
                 ),
@@ -727,6 +733,57 @@ pub(super) fn dispatch_remote_host(
                 },
             )
         }
+        ClientMessage::RemoteHostAgentEdits {
+            id,
+            device_id,
+            workspace_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_agent_edits(&device_id, workspace_id);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::AgentEdits(edits) => Some(DaemonMessage::RemoteHostAgentEdits {
+                        id,
+                        device_id: device_id.to_string(),
+                        edits,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostAgentDiff {
+            id,
+            device_id,
+            workspace_id,
+            path,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_agent_diff(&device_id, workspace_id, path);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::AgentDiff(diff) => Some(DaemonMessage::RemoteHostAgentDiff {
+                        id,
+                        device_id: device_id.to_string(),
+                        diff,
+                    }),
+                    _ => None,
+                },
+            )
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("{} is not a remote-host frame", other.name()),
@@ -760,5 +817,7 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
             | ClientMessage::RemoteHostFileWrite { .. }
             | ClientMessage::RemoteHostFilesList { .. }
             | ClientMessage::RemoteHostGitStatus { .. }
+            | ClientMessage::RemoteHostAgentEdits { .. }
+            | ClientMessage::RemoteHostAgentDiff { .. }
     )
 }

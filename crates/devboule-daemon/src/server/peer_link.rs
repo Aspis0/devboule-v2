@@ -815,6 +815,36 @@ impl PeerLinks {
         })
     }
 
+    /// The agent-edit list of a host's workspace, read over the held link.
+    pub(crate) fn operate_agent_edits(&self, device_id: &str, workspace_id: String) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::AgentEdits {
+                generation,
+                workspace_id,
+                answer,
+            }
+        })
+    }
+
+    /// One file's agent-edit diff on a host, read over the held link.
+    pub(crate) fn operate_agent_diff(
+        &self,
+        device_id: &str,
+        workspace_id: String,
+        path: String,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::AgentDiff {
+                generation,
+                workspace_id,
+                path,
+                answer,
+            }
+        })
+    }
+
     /// Switch the model of one session on the host.
     pub(crate) fn operate_set_model(
         &self,

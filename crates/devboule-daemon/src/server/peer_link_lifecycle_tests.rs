@@ -119,6 +119,8 @@ fn closing_the_far_end_unblocks_the_read() {
         | LinkAnswer::FileWrite(_)
         | LinkAnswer::Files(_)
         | LinkAnswer::GitStatus(_)
+        | LinkAnswer::AgentEdits(_)
+        | LinkAnswer::AgentDiff(_)
         | LinkAnswer::Providers { .. }
         | LinkAnswer::Workspace(_)
         | LinkAnswer::Done => {}

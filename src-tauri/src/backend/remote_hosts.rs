@@ -17,8 +17,8 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     AttachmentReference, ErrorCode, PermissionOutcome, PromptAttachment, RemoteHostList,
     RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage, Session, SessionKind, SubscriptionId,
-    WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
-    WorkspaceGitStatus,
+    WorkspaceAgentEdits, WorkspaceAgentFileDiff, WorkspaceDirectory, WorkspaceEditableFile,
+    WorkspaceFileVersion, WorkspaceFileWriteResult, WorkspaceGitStatus,
 };
 
 use super::blocking::off_main_thread;
@@ -575,4 +575,29 @@ pub async fn remote_host_git_status(
 ) -> Result<WorkspaceGitStatus, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.remote_host_git_status(&device_id, &workspace_id)).await
+}
+
+/// The files a paired host's workspace agents changed, for the Changes panel of a
+/// host folder that is not a repository. The host answers from its own journal.
+#[tauri::command]
+pub async fn remote_host_agent_edits(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+) -> Result<WorkspaceAgentEdits, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_agent_edits(&device_id, &workspace_id)).await
+}
+
+/// One file's diff as a paired host's agents made it. `path` is matched against
+/// the host's recorded paths and is never opened.
+#[tauri::command]
+pub async fn remote_host_agent_diff(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceAgentFileDiff, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_agent_diff(&device_id, &workspace_id, &path)).await
 }

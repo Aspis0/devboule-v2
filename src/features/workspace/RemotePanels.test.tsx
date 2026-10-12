@@ -15,6 +15,8 @@ vi.mock("../../lib/tauri", () => ({
   daemonStatus: vi.fn(),
   remoteHostFilesList: vi.fn(),
   remoteHostGitStatus: vi.fn(),
+  remoteHostAgentEdits: vi.fn(),
+  remoteHostAgentDiff: vi.fn(),
   remoteHostFileOpen: vi.fn(),
   remoteHostFileVersion: vi.fn(),
   remoteHostFileWrite: vi.fn(),
@@ -26,6 +28,8 @@ vi.mock("../../lib/tauri", () => ({
 
 import {
   daemonStatus,
+  remoteHostAgentDiff,
+  remoteHostAgentEdits,
   remoteHostFilesList,
   remoteHostFileOpen,
   remoteHostFileWrite,
@@ -172,6 +176,67 @@ describe("remote panels", () => {
     expect(container.textContent).toContain("note.txt");
     expect(container.querySelector(".workspace-tree-menu-trigger")).toBeNull();
     expect(container.textContent).not.toContain("Stage");
+  });
+
+  it("shows a paired folder that is not a repository as its agents' edits, never as a clean tree", async () => {
+    vi.mocked(remoteHostGitStatus).mockResolvedValue({
+      isGit: false,
+      dirty: false,
+      branch: null,
+      totals: { additions: 0, deletions: 0 },
+      rows: [],
+      error: null,
+    });
+    vi.mocked(remoteHostAgentEdits).mockResolvedValue({
+      files: [
+        {
+          path: "site.css",
+          additions: 12,
+          deletions: 30,
+          lastAgent: "cia",
+          lastAtMs: 0,
+          calls: [{ sessionId: "s", toolCallId: "t" }],
+          truncated: false,
+        },
+      ],
+      totals: { additions: 12, deletions: 30 },
+      truncated: false,
+      error: null,
+    });
+
+    vi.mocked(remoteHostAgentDiff).mockResolvedValue({
+      path: "site.css",
+      status: "ok",
+      error: null,
+      lines: [],
+    });
+
+    await render(
+      <ChangesSurface workspaceKey={remoteKeyFor(DEVICE, WORKSPACE)} canListCommits={false} />,
+    );
+
+    expect(remoteHostAgentEdits).toHaveBeenCalledWith(DEVICE, WORKSPACE);
+    expect(container.textContent).toContain("site.css");
+    expect(container.textContent).toContain("Not a git folder — showing what agents edited here.");
+    expect(container.textContent).not.toContain("No uncommitted changes.");
+  });
+
+  it("says a paired repository with no rows has no uncommitted changes, and reads no agent edits", async () => {
+    vi.mocked(remoteHostGitStatus).mockResolvedValue({
+      isGit: true,
+      dirty: false,
+      branch: "main",
+      totals: { additions: 0, deletions: 0 },
+      rows: [],
+      error: null,
+    });
+
+    await render(
+      <ChangesSurface workspaceKey={remoteKeyFor(DEVICE, WORKSPACE)} canListCommits={false} />,
+    );
+
+    expect(container.textContent).toContain("No uncommitted changes.");
+    expect(remoteHostAgentEdits).not.toHaveBeenCalled();
   });
 
   it("edits a remote file end to end through the relay", async () => {

@@ -1135,3 +1135,110 @@ pub(crate) fn serve_git_status(
         },
     ));
 }
+
+/// Reads a host's agent-edit list over the held link, as `serve_git_status` reads its status.
+pub(crate) fn serve_agent_edits(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::AgentEdits {
+        generation,
+        workspace_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceAgentEdits {
+            id: request_id,
+            workspace_id,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceAgentEdits { id, edits } if id == request_id => {
+                Some(LinkAnswer::AgentEdits(edits))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Reads one file's agent-edit diff over the held link, as `serve_git_status` reads its status.
+pub(crate) fn serve_agent_diff(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::AgentDiff {
+        generation,
+        workspace_id,
+        path,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceAgentDiff {
+            id: request_id,
+            workspace_id,
+            path,
+            call: None,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceAgentDiff { id, diff } if id == request_id => {
+                Some(LinkAnswer::AgentDiff(diff))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}

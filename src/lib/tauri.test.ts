@@ -30,6 +30,8 @@ import {
   remoteHostFileVersion,
   remoteHostFileWrite,
   remoteHostFilesList,
+  remoteHostAgentDiff,
+  remoteHostAgentEdits,
   remoteHostGitStatus,
   remoteHostInterrupt,
   remoteHostPermissionRespond,
@@ -1010,6 +1012,8 @@ describe("file editor command wrappers", () => {
     expect(COMMAND_ARG_KEYS.remote_host_file_version).toEqual(["deviceId", "workspaceId", "path"]);
     expect(COMMAND_ARG_KEYS.remote_host_files_list).toEqual(["deviceId", "workspaceId", "path"]);
     expect(COMMAND_ARG_KEYS.remote_host_git_status).toEqual(["deviceId", "workspaceId"]);
+    expect(COMMAND_ARG_KEYS.remote_host_agent_edits).toEqual(["deviceId", "workspaceId"]);
+    expect(COMMAND_ARG_KEYS.remote_host_agent_diff).toEqual(["deviceId", "workspaceId", "path"]);
   });
 
   it("lists a remote directory and reads remote status", async () => {
@@ -1040,6 +1044,25 @@ describe("file editor command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("remote_host_git_status", {
       deviceId: "d.1",
       workspaceId: "w.9",
+    });
+
+    vi.mocked(invoke).mockResolvedValue({
+      files: [],
+      totals: { additions: 0, deletions: 0 },
+      truncated: false,
+      error: null,
+    } as never);
+    await remoteHostAgentEdits("d.1", "w.9");
+    expect(invoke).toHaveBeenCalledWith("remote_host_agent_edits", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+    });
+
+    await remoteHostAgentDiff("d.1", "w.9", "site.css");
+    expect(invoke).toHaveBeenCalledWith("remote_host_agent_diff", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+      path: "site.css",
     });
   });
 });

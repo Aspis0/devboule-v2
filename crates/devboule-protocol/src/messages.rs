@@ -746,6 +746,26 @@ pub enum ClientMessage {
         device_id: String,
         workspace_id: String,
     },
+    /// The files a paired host's workspace agents changed, for the Changes
+    /// panel of a host folder that is not a git repository. Local-only: the
+    /// daemon maps it to the peer's own `WorkspaceAgentEdits` on the held link.
+    /// Read-only, like [`Self::RemoteHostGitStatus`]. The reply is
+    /// [`DaemonMessage::RemoteHostAgentEdits`].
+    RemoteHostAgentEdits {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+    },
+    /// One file's diff as a paired host's agents made it. Local-only and
+    /// read-only, like [`Self::RemoteHostAgentEdits`]; `path` is matched against
+    /// the host's recorded paths and never opened. The reply is
+    /// [`DaemonMessage::RemoteHostAgentDiff`].
+    RemoteHostAgentDiff {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+        path: String,
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1880,6 +1900,8 @@ impl ClientMessage {
             | Self::RemoteHostFileWrite { id, .. }
             | Self::RemoteHostFilesList { id, .. }
             | Self::RemoteHostGitStatus { id, .. }
+            | Self::RemoteHostAgentEdits { id, .. }
+            | Self::RemoteHostAgentDiff { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -2068,6 +2090,8 @@ impl ClientMessage {
             | Self::RemoteHostFileWrite { .. }
             | Self::RemoteHostFilesList { .. }
             | Self::RemoteHostGitStatus { .. }
+            | Self::RemoteHostAgentEdits { .. }
+            | Self::RemoteHostAgentDiff { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -2180,6 +2204,8 @@ impl ClientMessage {
             Self::RemoteHostFileWrite { .. } => "RemoteHostFileWrite",
             Self::RemoteHostFilesList { .. } => "RemoteHostFilesList",
             Self::RemoteHostGitStatus { .. } => "RemoteHostGitStatus",
+            Self::RemoteHostAgentEdits { .. } => "RemoteHostAgentEdits",
+            Self::RemoteHostAgentDiff { .. } => "RemoteHostAgentDiff",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -2306,6 +2332,8 @@ impl ClientMessage {
             | Self::RemoteHostFileVersion { .. }
             | Self::RemoteHostFilesList { .. }
             | Self::RemoteHostGitStatus { .. }
+            | Self::RemoteHostAgentEdits { .. }
+            | Self::RemoteHostAgentDiff { .. }
             | Self::RemoteHostProviders { .. }
             // An answer to a call the daemon made: it changes no durable state,
             // and a row per answer would be a disk sink a busy host drives.
@@ -2928,6 +2956,20 @@ pub enum DaemonMessage {
         id: u64,
         device_id: String,
         status: WorkspaceGitStatus,
+    },
+    /// The reply to [`ClientMessage::RemoteHostAgentEdits`]: the host's own
+    /// agent-edit list, carried through unchanged.
+    RemoteHostAgentEdits {
+        id: u64,
+        device_id: String,
+        edits: WorkspaceAgentEdits,
+    },
+    /// The reply to [`ClientMessage::RemoteHostAgentDiff`]: the host's own
+    /// file diff as its agents made it, carried through unchanged.
+    RemoteHostAgentDiff {
+        id: u64,
+        device_id: String,
+        diff: WorkspaceAgentFileDiff,
     },
     /// Everything the Devices panel needs in one reply, already projected for
     /// the connection's role: a local client sees the full rows, a remote peer

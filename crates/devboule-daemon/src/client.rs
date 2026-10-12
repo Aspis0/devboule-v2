@@ -2744,6 +2744,46 @@ impl DaemonClient {
         }
     }
 
+    /// The files a paired host's workspace agents changed, over the held link.
+    pub fn remote_host_agent_edits(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+    ) -> Result<WorkspaceAgentEdits, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostAgentEdits {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::RemoteHostAgentEdits { edits, .. } => Ok(edits),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// One file's diff as a paired host's agents made it, over the held link.
+    pub fn remote_host_agent_diff(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceAgentFileDiff, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostAgentDiff {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::RemoteHostAgentDiff { diff, .. } => Ok(diff),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Write one such file, with the caller's expected version carried
     /// through to the host's own write.
     #[allow(clippy::too_many_arguments)]
@@ -3940,6 +3980,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::RemoteHostFileWrite { id, .. }
         | DaemonMessage::RemoteHostFiles { id, .. }
         | DaemonMessage::RemoteHostGitStatus { id, .. }
+        | DaemonMessage::RemoteHostAgentEdits { id, .. }
+        | DaemonMessage::RemoteHostAgentDiff { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

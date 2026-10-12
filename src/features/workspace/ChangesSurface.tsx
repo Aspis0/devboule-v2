@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type { WorkspaceGitStatus } from "../../types/ipc";
 import { parseWorkspaceKey, LOCAL_HOST_ID, type WorkspaceKey } from "./hosts/hostIdentity";
 import { RemoteChangesSurface } from "./RemoteChangesSurface";
@@ -15,6 +15,7 @@ import { DiffCard } from "./DiffCard";
 import { RefreshButton } from "./RefreshButton";
 import { useRevealedPath, type RevealRequest } from "./useRevealedPath";
 import { AgentChanges } from "./agentChanges/AgentChanges";
+import { localAgentChangeReads } from "./agentChanges/agentChangeReads";
 import { CommittedEdit } from "./agentChanges/CommittedEdit";
 import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
@@ -220,6 +221,11 @@ export const ChangesSurface = memo(function ChangesSurface({
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(
     remote ? null : workspaceKey,
   );
+  // This machine's agent-edit reads; a paired host's workspace reads its own.
+  const agentReads = useMemo(
+    () => (workspaceKey === null ? null : localAgentChangeReads(workspaceKey)),
+    [workspaceKey],
+  );
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({
     workspaceId: remote ? null : workspaceId,
     refresh,
@@ -422,7 +428,9 @@ export const ChangesSurface = memo(function ChangesSurface({
             </div>
           ) : null}
           {reply.error === null ? (
-            <AgentChanges workspaceKey={workspaceKey} onRefresh={refresh} revealPath={revealPath} />
+            agentReads === null ? null : (
+              <AgentChanges reads={agentReads} onRefresh={refresh} revealPath={revealPath} />
+            )
           ) : (
             <div className="workspace-changes-refresh-line">
               <RefreshButton onRefresh={refresh} />

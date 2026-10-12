@@ -311,7 +311,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// git found no repository. An older daemon sends no field, which reads as
 /// unknown — the option stays, and the daemon's live check at create time is
 /// still what refuses it.
-pub const PROTOCOL_VERSION: u32 = 43;
+/// Protocol 44 adds the paired-host agent-edit reads, `RemoteHostAgentEdits` and
+/// `RemoteHostAgentDiff`, relayed over the held peer link like
+/// `RemoteHostGitStatus`: local-only and read-only. Same new-variant rule.
+pub const PROTOCOL_VERSION: u32 = 44;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

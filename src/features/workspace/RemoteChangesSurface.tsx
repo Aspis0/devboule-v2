@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
@@ -6,6 +6,8 @@ import { REMOTE_PANELS_MIN_DIALECT } from "./RemoteFilesSurface";
 import { StaleDaemonNote } from "./WorkspaceFileTab";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { useRemoteWorkspaceChanges } from "./useRemoteWorkspaceChanges";
+import { AgentChanges } from "./agentChanges/AgentChanges";
+import { remoteAgentChangeReads } from "./agentChanges/agentChangeReads";
 import "./panel/changes.css";
 
 /**
@@ -36,6 +38,10 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
     gated ? null : workspaceId,
   );
   const [selection, setSelection] = useState<string | null>(null);
+  const agentReads = useMemo(
+    () => remoteAgentChangeReads(deviceId, workspaceId),
+    [deviceId, workspaceId],
+  );
 
   const openPath = (path: string): void => {
     setSelection(path);
@@ -98,6 +104,23 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
             Loading changes…
           </div>
         ) : null
+      ) : !reply.isGit ? (
+        // A folder with no repository on the host: its agents' edits, read from the
+        // host's journal, stand in for a clean tree, which this folder never has.
+        <>
+          {reply.gitMissing === true ? (
+            <div className="workspace-changes-state">
+              git is not installed: install Git for Windows, or put git on PATH.
+            </div>
+          ) : null}
+          {reply.error === null ? (
+            <AgentChanges reads={agentReads} onRefresh={refresh} />
+          ) : (
+            <div className="workspace-changes-error" role="alert">
+              {reply.error}
+            </div>
+          )}
+        </>
       ) : reply.rows.length === 0 ? (
         <div className="workspace-changes-state">No uncommitted changes.</div>
       ) : (

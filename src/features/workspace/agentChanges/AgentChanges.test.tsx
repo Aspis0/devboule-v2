@@ -16,6 +16,7 @@ vi.mock("../../../lib/tauri", () => ({
 import { workspaceAgentDiff, workspaceAgentEdits } from "../../../lib/tauri";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 import { AGENT_CHANGES_NOTE, AgentChanges } from "./AgentChanges";
+import { localAgentChangeReads } from "./agentChangeReads";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -82,7 +83,9 @@ afterEach(async () => {
 async function render(over: Partial<React.ComponentProps<typeof AgentChanges>> = {}) {
   const onRefresh = vi.fn();
   await act(async () => {
-    root.render(<AgentChanges workspaceKey={KEY} onRefresh={onRefresh} {...over} />);
+    root.render(
+      <AgentChanges reads={localAgentChangeReads(KEY)} onRefresh={onRefresh} {...over} />,
+    );
   });
   return { onRefresh };
 }

@@ -237,6 +237,8 @@ pub fn run() {
             backend::remote_hosts::remote_host_file_write,
             backend::remote_hosts::remote_host_files_list,
             backend::remote_hosts::remote_host_git_status,
+            backend::remote_hosts::remote_host_agent_edits,
+            backend::remote_hosts::remote_host_agent_diff,
             backend::tool_policy::tool_policy_get,
             backend::tool_policy::tool_policy_set,
             backend::agent_profiles::agent_profiles_get,

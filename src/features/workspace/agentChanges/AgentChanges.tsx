@@ -2,7 +2,6 @@
 // workspace's agents edited, their totals, and the chosen file's diff.
 import { ErrorText } from "../../../components/ErrorText";
 import type { WorkspaceAgentEditFile } from "../../../types/ipc";
-import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { ChangeCounts } from "../ChangeCounts";
 import { FileIcon } from "../ChangesTreeView";
 import { RefreshButton } from "../RefreshButton";
@@ -12,20 +11,22 @@ import { useRevealedPath, type RevealRequest } from "../useRevealedPath";
 import { useTaskClock } from "../useTaskClock";
 import { editedAgo, editsText, filesText, splitPath } from "./agentChangesView";
 import { useAgentChanges } from "./useAgentChanges";
+import type { AgentChangeReads } from "./agentChangeReads";
 import "./agentChanges.css";
 
 export const AGENT_CHANGES_NOTE = "Not a git folder — showing what agents edited here.";
 
 interface AgentChangesProps {
-  workspaceKey: WorkspaceKey;
+  /** Where the agent edits are read from: this machine's folder, or a paired host's. */
+  reads: AgentChangeReads;
   /** The panel's own status read: a folder can become a repository while this panel is open. */
   onRefresh: () => void;
   /** A file a transcript row asked to show. */
   revealPath?: RevealRequest | null;
 }
 
-export function AgentChanges({ workspaceKey, onRefresh, revealPath }: AgentChangesProps) {
-  const { edits, files, selection, select, diff, refresh } = useAgentChanges(workspaceKey, true);
+export function AgentChanges({ reads, onRefresh, revealPath }: AgentChangesProps) {
+  const { edits, files, selection, select, diff, refresh } = useAgentChanges(reads);
   useRevealedPath(revealPath, select);
   const refreshAll = () => {
     onRefresh();

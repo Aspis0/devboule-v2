@@ -2980,6 +2980,42 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
         "a non-repository answers not-a-repo, never rows: {status:?}"
     );
 
+    // A folder with no agent edits answers an empty list and no refusal: the
+    // host's own journal read, carried over the link, not a repository check.
+    let edits = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostAgentEdits {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostAgentEdits { edits, .. } => Some(edits.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote agent edits never answered");
+    assert!(edits.files.is_empty(), "no agent edited here: {edits:?}");
+    assert_eq!(
+        edits.error, None,
+        "the host answers, it does not refuse: {edits:?}"
+    );
+    let diff = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostAgentDiff {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostAgentDiff { diff, .. } => Some(diff.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote agent diff never answered");
+    assert!(diff.lines.is_empty(), "no agent edited note.txt: {diff:?}");
+
     // Inside a repository the created file dirties the host tree: init
     // where the project lives (hard-requires git, like the read unit
     // fixture — a silent skip would prove the relay carries nothing).

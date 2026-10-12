@@ -382,6 +382,8 @@ export type CommandArgs = {
   remote_host_file_version: { deviceId: string; workspaceId: string; path: string };
   remote_host_files_list: { deviceId: string; workspaceId: string; path: string };
   remote_host_git_status: { deviceId: string; workspaceId: string };
+  remote_host_agent_edits: { deviceId: string; workspaceId: string };
+  remote_host_agent_diff: { deviceId: string; workspaceId: string; path: string };
   remote_host_file_write: {
     deviceId: string;
     workspaceId: string;
@@ -641,6 +643,8 @@ type CommandResults = {
   remote_host_files_list: WorkspaceDirectory;
   /** The host's own working-tree status: the remote Changes rows. */
   remote_host_git_status: WorkspaceGitStatus;
+  remote_host_agent_edits: WorkspaceAgentEdits;
+  remote_host_agent_diff: WorkspaceAgentFileDiff;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -900,6 +904,8 @@ export const COMMAND_ARG_KEYS = {
   remote_host_file_version: ["deviceId", "workspaceId", "path"],
   remote_host_files_list: ["deviceId", "workspaceId", "path"],
   remote_host_git_status: ["deviceId", "workspaceId"],
+  remote_host_agent_edits: ["deviceId", "workspaceId"],
+  remote_host_agent_diff: ["deviceId", "workspaceId", "path"],
   remote_host_file_write: [
     "deviceId",
     "workspaceId",
@@ -1970,6 +1976,12 @@ export const remoteHostFilesList = (deviceId: string, workspaceId: string, path:
  */
 export const remoteHostGitStatus = (deviceId: string, workspaceId: string) =>
   invokeTyped("remote_host_git_status", { deviceId, workspaceId });
+/** The files a paired host's workspace agents changed; the host answers from its journal. */
+export const remoteHostAgentEdits = (deviceId: string, workspaceId: string) =>
+  invokeTyped("remote_host_agent_edits", { deviceId, workspaceId });
+/** One file's diff as a paired host's agents made it; `path` is a path the edits reply named. */
+export const remoteHostAgentDiff = (deviceId: string, workspaceId: string, path: string) =>
+  invokeTyped("remote_host_agent_diff", { deviceId, workspaceId, path });
 /** Write one such file, with the caller's expected version and create
  * intent carried through. */
 export const remoteHostFileWrite = (

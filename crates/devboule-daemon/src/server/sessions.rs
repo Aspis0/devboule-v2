@@ -773,6 +773,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostFileWrite { .. }
         | ClientMessage::RemoteHostFilesList { .. }
         | ClientMessage::RemoteHostGitStatus { .. }
+        | ClientMessage::RemoteHostAgentEdits { .. }
+        | ClientMessage::RemoteHostAgentDiff { .. }
         // The editor's frames are journal frames, not session frames: they
         // are answered by the journal dispatcher, so one arriving here is
         // a routing bug and says only that.
