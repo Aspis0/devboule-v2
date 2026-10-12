@@ -1549,7 +1549,6 @@ pub(crate) struct AgentPreset {
 // and the tool overlay of the provider it runs on. Design is not one of them.
 #[cfg(feature = "server")]
 pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
-#[cfg(feature = "server")]
 
 /// The one preamble the presets carry.
 ///
