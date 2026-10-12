@@ -355,31 +355,41 @@ pub(crate) fn mcp_launch(
     // 24 days matches Claude's ~24.86-day ceiling. The u32::MAX bound keeps
     // Codex's Instant deadline in a portable monotonic-clock range.
     const TOOL_TIMEOUT_SECONDS: u64 = 2_073_600;
+    let mut arg_additions = vec![
+        "-c".to_string(),
+        format!(
+            "mcp_servers.{}.url=\"{}\"",
+            crate::mcp_broker::MCP_SERVER_NAME,
+            config.url
+        ),
+        "-c".to_string(),
+        format!(
+            "mcp_servers.{}.bearer_token_env_var=\"{}\"",
+            crate::mcp_broker::MCP_SERVER_NAME,
+            crate::mcp_broker::MCP_TOKEN_ENV
+        ),
+        "-c".to_string(),
+        format!(
+            "mcp_servers.{}.tool_timeout_sec={}",
+            crate::mcp_broker::MCP_SERVER_NAME,
+            TOOL_TIMEOUT_SECONDS
+        ),
+    ];
+    // Codex asks the person before any MCP tool it was not told to approve; the
+    // read-only list is the set that never needs that question.
+    for tool in crate::provider_catalog::MCP_READ_ONLY_TOOLS {
+        arg_additions.push("-c".to_string());
+        arg_additions.push(format!(
+            "mcp_servers.{}.tools.{tool}.approval_mode=\"approve\"",
+            crate::mcp_broker::MCP_SERVER_NAME
+        ));
+    }
     Ok(crate::mcp_broker::McpProviderConfig {
         env_additions: vec![(
             crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
             config.bearer().to_string(),
         )],
-        arg_additions: vec![
-            "-c".to_string(),
-            format!(
-                "mcp_servers.{}.url=\"{}\"",
-                crate::mcp_broker::MCP_SERVER_NAME,
-                config.url
-            ),
-            "-c".to_string(),
-            format!(
-                "mcp_servers.{}.bearer_token_env_var=\"{}\"",
-                crate::mcp_broker::MCP_SERVER_NAME,
-                crate::mcp_broker::MCP_TOKEN_ENV
-            ),
-            "-c".to_string(),
-            format!(
-                "mcp_servers.{}.tool_timeout_sec={}",
-                crate::mcp_broker::MCP_SERVER_NAME,
-                TOOL_TIMEOUT_SECONDS
-            ),
-        ],
+        arg_additions,
         owned_paths: Vec::new(),
         owned_dirs: Vec::new(),
     })
