@@ -878,7 +878,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | quick-xml | 0.41.0 | Rust transitive (lockfile) | MIT |
 | quick_cache | 0.6.24 | Rust transitive (lockfile) | MIT |
 | quinn | 0.11.11 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| quinn-proto | 0.11.17 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| quinn-proto | 0.11.18 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | quinn-udp | 0.5.15 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | quote | 1.0.47 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | r-efi | 5.3.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
