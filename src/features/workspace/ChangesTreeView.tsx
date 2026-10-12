@@ -70,12 +70,11 @@ function indent(depth: number): { paddingLeft: string } {
   return { paddingLeft: `${6 + depth * 14}px` };
 }
 
-/** A group id from a folder path: every unsafe character becomes its
- * hex code, so distinct paths can never share an id (`a b` → `a-20-b`
- * beside `a-b`). Dots, dashes, underscores and colons pass through —
- * legal in ids, escaped at lookup time. */
+/** A group id from a folder path. Every character outside the safe set becomes
+ * its hex code between dashes, dashes included, so the encoding is injective:
+ * `a b` → `a-20-b`, and the literal `a-20-b` → `a-2d-20-2d-b`. */
 function groupIdFor(path: string): string {
-  return `changes-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, (glyph) => `-${glyph.charCodeAt(0).toString(16)}-`)}`;
+  return `changes-group-${path.replace(/[^a-zA-Z0-9_.:]/g, (glyph) => `-${glyph.charCodeAt(0).toString(16)}-`)}`;
 }
 
 export const FileIcon = (

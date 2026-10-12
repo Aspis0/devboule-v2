@@ -154,3 +154,23 @@ describe("the Changes row's acts", () => {
     expect(menu?.getAttribute("title")).toBe(`${ROWS[0]!.path} actions`);
   });
 });
+
+describe("the Changes tree's group ids", () => {
+  it("never give two folders the same id, even when a name holds hex-like text", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusWith([row("a b/x.ts", 1), row("a-20-b/y.ts", 1)]),
+    );
+    await act(async () => {
+      root.render(
+        <ChangesSurface workspaceKey={localWorkspaceKey("ws-renders")!} canListCommits={false} />,
+      );
+    });
+    await act(async () => undefined);
+
+    const ids = Array.from(container.querySelectorAll("ul.workspace-changes-group"), (group) =>
+      group.getAttribute("id"),
+    );
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+});
