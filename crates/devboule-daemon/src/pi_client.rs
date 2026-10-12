@@ -1030,7 +1030,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_list_workspaces",
     label: "List Devboule workspaces",
-    description: `Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.`,
+    description: `Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. current is true on the one workspace the calling session runs in. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.`,
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_toolCallId, _params, signal) {
       await brokerSession(signal);
