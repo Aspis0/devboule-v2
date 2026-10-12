@@ -1232,3 +1232,60 @@ describe("fireAttentionToast: only what the person must answer", () => {
     vi.useRealTimers();
   });
 });
+
+describe("fireAttentionToast: stale holds and retries", () => {
+  const topLevel = { topLevel: true, childBusy: false };
+
+  it("drops a held raise once its attention has settled, so a later look away does not toast it", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    reportSelection("held-session");
+    const send = vi.fn(async () => undefined);
+    const looking = {
+      windowState: async () => ({ visible: true, focused: true, minimized: false }),
+    };
+    fireAttentionToast(
+      target("held-session"),
+      "held",
+      attention("permission", 7000),
+      { send, ...looking },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    settleAttentionFor(new Set(["held-session"]));
+    reportSelection(null);
+    reconsiderHeldAttention();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("does not retry a failed toast once the person is looking at its session", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    reportSelection(null);
+    let looking = false;
+    const windowState = async () => ({ visible: true, focused: looking, minimized: false });
+    const send = vi.fn(async () => {
+      throw new Error("the toast did not land");
+    });
+    fireAttentionToast(
+      target("retry-session"),
+      "retry",
+      attention("finished", 8000),
+      { send, windowState },
+      topLevel,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    looking = true;
+    reportSelection("retry-session");
+    await vi.advanceTimersByTimeAsync(TOAST_RETRY_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(1);
+    reportSelection(null);
+    vi.useRealTimers();
+  });
+});

@@ -287,7 +287,10 @@ function raiseIsOfferable(sessionId: string, attention: Attention): boolean {
  * the next raise of any of them is news and may toast again.
  */
 export function settleAttentionFor(sessionIds: ReadonlySet<string>): void {
-  for (const id of sessionIds) lastFired.delete(id);
+  for (const id of sessionIds) {
+    lastFired.delete(id);
+    heldRaises.delete(id);
+  }
 }
 
 /**
@@ -312,6 +315,41 @@ export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
       if (!sessionIds.has(id)) map.delete(id);
     }
   }
+}
+
+/** The window state the gate reads: a read that cannot answer counts as not seen. */
+async function readWindow(state: () => Promise<WindowState>): Promise<WindowState> {
+  const answer = await windowReaderFor(state).read(WINDOW_READ_TIMEOUT_MS, "the window state");
+  return answer.state ?? { visible: false, focused: false, minimized: false };
+}
+
+/**
+ * The one retry of a failed toast, judged again as the first send was judged: the
+ * person may have reached the session, or the policy may no longer want the toast,
+ * during the delay. The content is rebuilt here, never resent frozen.
+ */
+async function resendIfStillDue(
+  sessionId: string,
+  title: string,
+  attention: Attention,
+  target: AttentionTarget,
+  context: RaiseContext,
+  state: () => Promise<WindowState>,
+  send: ToastDeps["send"],
+): Promise<void> {
+  if (lastFired.get(sessionId) !== attention) return;
+  if (!getShowNotifications()) return;
+  const away = toastGate(await readWindow(state), sessionId, lookedAtSessionId());
+  if (!away) return;
+  if (
+    !shouldToast({ ...context, reason: attention.reason, away, always: attention.always === true })
+  )
+    return;
+  if (lastFired.get(sessionId) !== attention) return;
+  // A master that is off now drops the retry, and so does a switch moved inside the delay.
+  if (!getShowNotifications()) return;
+  const retryHeld = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
+  await send({ ...toastContent(title, attention.reason, retryHeld), target }).catch(() => {});
 }
 
 /** What the toast needs to judge a raise again: the call `fireAttentionToast` got. */
@@ -481,12 +519,7 @@ export function fireAttentionToast(
     // The read is bounded and shared (see windowReader): a stale answer is the
     // last one the window gave, and a refused or never-answered read counts as
     // not seen, so the toast is never held on a read that cannot come back.
-    const answer = await windowReaderFor(state).read(WINDOW_READ_TIMEOUT_MS, "the window state");
-    const snapshot: WindowState = answer.state ?? {
-      visible: false,
-      focused: false,
-      minimized: false,
-    };
+    const snapshot = await readWindow(state);
     // The gate: both halves read at the moment of decision —
     // the user may have reached this session, or left it, while the window was being asked.
     const mayAnnounce = toastGate(snapshot, sessionId, lookedAtSessionId());
@@ -538,14 +571,7 @@ export function fireAttentionToast(
       // flight: a stale retry must not land after the newer toast.
       if (lastFired.get(sessionId) !== attention) return;
       setTimeout(() => {
-        if (lastFired.get(sessionId) !== attention) return;
-        // Rebuilt at retry time, never resent frozen: either switch may
-        // have moved inside the 1.5 s window, and a retry that lands
-        // preview text the user just switched off breaks the privacy the
-        // switch promises. A master that is off now drops the retry.
-        if (!getShowNotifications()) return;
-        const retryHeld = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
-        void send({ ...toastContent(title, attention.reason, retryHeld), target }).catch(() => {});
+        void resendIfStillDue(sessionId, title, attention, target, context, state, send);
       }, TOAST_RETRY_DELAY_MS);
     }
   })();
