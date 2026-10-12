@@ -180,3 +180,27 @@ fn first_tool_call_frame_without_readable_content_is_one_event() {
         [SessionEvent::AgentToolCall { .. }]
     ));
 }
+
+/// A tool result whose image was stored before journaling carries the
+/// reference on its row: the marker is not text, and the picture is its own.
+#[test]
+fn a_stored_tool_result_image_rides_its_row() {
+    let content = json!([wrapped(json!({
+        "devboule_image": {"reference": {
+            "sessionId": "s.acp.images.1",
+            "digest": "b".repeat(64),
+            "storedBytes": 68,
+            "name": "agent-image.png",
+        }}
+    }))]);
+    let events = view_from_envelope(&envelope("tool_call_update", content), "s1");
+    match events.as_slice() {
+        [SessionEvent::AgentToolUpdate { images, text, .. }] => {
+            assert_eq!(images.len(), 1, "{events:?}");
+            assert_eq!(images[0].digest, "b".repeat(64));
+            assert_eq!(images[0].stored_bytes, 68);
+            assert_eq!(*text, None, "a marker is not a line of text: {events:?}");
+        }
+        other => panic!("expected one tool update, got {other:?}"),
+    }
+}

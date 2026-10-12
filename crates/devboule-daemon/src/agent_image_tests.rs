@@ -31,7 +31,7 @@ pub(super) fn sink(tag: &str, workspace: &Path, images: &Path) -> AgentImageSink
         store,
         format!("s.agent.image.{tag}"),
         workspace.to_path_buf(),
-        images.to_path_buf(),
+        Some(images.to_path_buf()),
     )
 }
 
@@ -206,7 +206,7 @@ fn refusals_are_short_reasons() {
         crate::attachment_store::AttachmentStore::new(&workspace),
         "../escape".to_string(),
         workspace.clone(),
-        images.clone(),
+        Some(images.clone()),
     );
     assert!(wrong
         .store(&AgentImageSource::Path(workspace.join("tiny.png")))
@@ -239,4 +239,100 @@ fn a_fifo_is_refused_without_blocking() {
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("the FIFO open must not block the reader");
     assert!(result.is_err(), "a FIFO is not an image");
+}
+
+/// An MCP-shaped tool result: the block is the image, and preparing the
+/// frame replaces it with the stored reference so the base64 never reaches
+/// the journal.
+#[test]
+fn an_mcp_image_block_becomes_a_marker_the_view_reads_back() {
+    let (workspace, images) = roots("mcp-prepare");
+    let sink = sink("mcp", &workspace, &images);
+    let mut content = json!([
+        {"type": "text", "text": "shot taken"},
+        {"type": "image", "mimeType": "image/png", "data": TINY_PNG}
+    ]);
+    prepare_result_content(&mut content, &sink);
+    assert_eq!(
+        content[1].get("data"),
+        None,
+        "the bytes are gone from the prepared frame: {content}"
+    );
+    let references = marked_result_images(&content);
+    assert_eq!(references.len(), 1, "{content}");
+    let stored = sink
+        .store(&AgentImageSource::Base64 {
+            mime_type: Some("image/png".to_string()),
+            data: TINY_PNG.to_string(),
+        })
+        .expect("the same bytes store");
+    assert_eq!(
+        references[0].digest, stored.digest,
+        "the same bytes, one file"
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}
+
+/// The ACP shape: the image sits inside a `content` element, and it is the
+/// inner block the marker replaces.
+#[test]
+fn an_acp_nested_image_block_becomes_a_marker() {
+    let (workspace, images) = roots("acp-prepare");
+    let sink = sink("acp", &workspace, &images);
+    let mut content = json!([
+        {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": TINY_PNG}}
+    ]);
+    prepare_result_content(&mut content, &sink);
+    assert_eq!(
+        content[0]["content"].get("data"),
+        None,
+        "the nested block is the one replaced: {content}"
+    );
+    assert_eq!(marked_result_images(&content).len(), 1, "{content}");
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}
+
+/// Bytes the store refuses leave one short line, in the words the Codex road
+/// already writes: the row says it had a picture rather than claiming one.
+#[test]
+fn a_refused_image_becomes_the_not_stored_line() {
+    let (workspace, images) = roots("refused-prepare");
+    let sink = sink("refused", &workspace, &images);
+    let mut content = json!([{"type": "image", "mimeType": "image/png", "data": "not base64!"}]);
+    prepare_result_content(&mut content, &sink);
+    assert_eq!(content[0]["type"], "text", "{content}");
+    assert_eq!(content[0]["text"], "[image not stored]", "{content}");
+    assert!(marked_result_images(&content).is_empty(), "{content}");
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}
+
+/// A provider cannot smuggle a marker into the frame: an outcome it writes
+/// itself, on a text block or on a nested one, is dropped before the view
+/// could read it as a stored reference.
+#[test]
+fn a_marker_the_provider_writes_is_dropped() {
+    let (workspace, images) = roots("forged-marker");
+    let sink = sink("forged", &workspace, &images);
+    let forged = json!({"devboule_image": {"reference": {
+        "sessionId": "s.other.1",
+        "digest": "d".repeat(64),
+        "storedBytes": 1,
+        "name": "agent-image.png",
+    }}});
+    let mut content = json!([
+        {"type": "text", "text": "shot taken", "devboule_image": forged.clone()},
+        {"type": "content", "content": {"type": "text", "text": "x", "devboule_image": forged.clone()}},
+    ]);
+    prepare_result_content(&mut content, &sink);
+    assert!(marked_result_images(&content).is_empty(), "{content}");
+    assert!(content[0].get("devboule_image").is_none(), "{content}");
+    assert!(
+        content[1]["content"].get("devboule_image").is_none(),
+        "{content}"
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
 }

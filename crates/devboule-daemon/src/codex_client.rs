@@ -625,7 +625,7 @@ fn spawn_codex(
                 state.sessions.image_store(),
                 session_id.clone(),
                 command.cwd.clone(),
-                codex_home.join("generated_images"),
+                Some(codex_home.join("generated_images")),
             )
         });
     let state = Arc::new(CodexState::new(

@@ -683,3 +683,47 @@ fn a_denied_edit_is_a_pending_call_then_a_failed_result() {
         other => panic!("expected a pending edit then a failed result, got {other:?}"),
     }
 }
+
+/// A tool result whose image was stored before journaling carries the
+/// reference on its row: the base64 never lands in the text, and the picture
+/// is the marker's own.
+#[test]
+fn a_stored_tool_result_image_rides_its_row() {
+    let mut mapper = view();
+    let reference = json!({
+        "sessionId": "s.claude.images.1",
+        "digest": "a".repeat(64),
+        "storedBytes": 68,
+        "name": "agent-image.png",
+    });
+    let events = mapper.ingest(&json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "shot-1",
+                "content": [
+                    {"type": "text", "text": "shot taken"},
+                    {"devboule_image": {"reference": reference}},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJDRA"}}
+                ],
+            }],
+        },
+    }));
+    match events.as_slice() {
+        [SessionEvent::AgentToolUpdate {
+            tool_call_id,
+            text,
+            images,
+            ..
+        }] => {
+            assert_eq!(tool_call_id, "shot-1");
+            assert_eq!(text.as_deref(), Some("shot taken"), "{events:?}");
+            assert_eq!(images.len(), 1, "only the marker is an image: {events:?}");
+            assert_eq!(images[0].digest, "a".repeat(64));
+            assert_eq!(images[0].stored_bytes, 68);
+        }
+        other => panic!("expected one tool update, got {other:?}"),
+    }
+}

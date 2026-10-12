@@ -661,12 +661,12 @@ impl Provider for ClaudeProvider {
 
     fn spawn_resuming(
         &self,
-        _state: &Arc<ServerState>,
+        state: &Arc<ServerState>,
         command: super::PtyCommand,
         peer_session_id: String,
         mcp: Option<McpLaunchConfig>,
     ) -> Result<SpawnedSession, WireError> {
-        super::claude_client::spawn_process_resuming(command, peer_session_id, mcp)
+        super::claude_client::spawn_process_resuming(state, command, peer_session_id, mcp)
     }
 
     fn spawn_measures_health(&self) -> bool {

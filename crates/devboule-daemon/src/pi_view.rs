@@ -369,7 +369,10 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         exit_code,
         replace: false,
 
-        images: Vec::new(),
+        images: value
+            .pointer("/result/content")
+            .map(crate::agent_image::marked_result_images)
+            .unwrap_or_default(),
     }];
     if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
         if let Some(items) =
@@ -683,6 +686,35 @@ mod tests {
             events_from_line(&execution).as_slice(),
             [SessionEvent::AgentToolUpdate { text: Some(text), .. }]
                 if text == &format!("{kept}{TRUNCATION_MARKER}")
+        ));
+    }
+
+    /// A tool result whose image was stored before journaling carries the
+    /// reference on its row: the base64 is already gone from the frame, and
+    /// the marker is the picture.
+    #[test]
+    fn a_stored_tool_result_image_rides_its_row() {
+        let execution = serde_json::json!({
+            "type": "tool_execution_end",
+            "toolCallId": "call_shot",
+            "toolName": "browser_screenshot",
+            "result": {"content": [
+                {"type": "text", "text": "shot taken"},
+                {"devboule_image": {"reference": {
+                    "sessionId": "s.pi.images.1",
+                    "digest": "c".repeat(64),
+                    "storedBytes": 68,
+                    "name": "agent-image.png",
+                }}},
+            ]},
+            "isError": false,
+        });
+        assert!(matches!(
+            events_from_line(&execution).as_slice(),
+            [SessionEvent::AgentToolUpdate { images, text, .. }]
+                if images.len() == 1
+                    && images[0].digest == "c".repeat(64)
+                    && text.as_deref() == Some("shot taken")
         ));
     }
 

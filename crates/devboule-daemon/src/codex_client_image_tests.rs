@@ -97,7 +97,7 @@ impl Harness {
             crate::attachment_store::AttachmentStore::new(&workspace),
             session_id.clone(),
             workspace.clone(),
-            dir.0.join("generated_images"),
+            Some(dir.0.join("generated_images")),
         );
         let reader = CodexReader {
             images: Some(sink),

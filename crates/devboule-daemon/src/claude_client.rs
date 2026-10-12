@@ -717,7 +717,19 @@ pub(super) fn spawn_process(
         ),
         delivery.thinking_option_id.as_deref(),
     ));
-    spawn_claude_child(&command, args, requested_mode, &delivery, None)
+    spawn_claude_child(
+        &command,
+        args,
+        requested_mode,
+        &delivery,
+        None,
+        crate::agent_image::AgentImageSink::for_spawn(
+            state.sessions.image_store(),
+            &command.env,
+            command.cwd.clone(),
+            None,
+        ),
+    )
 }
 
 /// A resumed child: the same launch minus the `--model` pin (the resumed
@@ -726,6 +738,7 @@ pub(super) fn spawn_process(
 /// deleted or rotated conversation reads as a hang, so its absence refuses
 /// here, naming the file, before any process exists.
 pub(super) fn spawn_process_resuming(
+    state: &Arc<ServerState>,
     command: PtyCommand,
     peer_session_id: String,
     mcp: Option<McpLaunchConfig>,
@@ -779,6 +792,12 @@ pub(super) fn spawn_process_resuming(
         requested_mode,
         &delivery,
         Some(peer_session_id),
+        crate::agent_image::AgentImageSink::for_spawn(
+            state.sessions.image_store(),
+            &command.env,
+            command.cwd.clone(),
+            None,
+        ),
     )
 }
 
@@ -791,6 +810,7 @@ fn spawn_claude_child(
     requested_mode: String,
     delivery: &ProfileDelivery,
     resume_peer: Option<String>,
+    images: Option<crate::agent_image::AgentImageSink>,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -1051,7 +1071,8 @@ fn spawn_claude_child(
         wiring,
         Some(turn_watch),
     )
-    .with_pending_initialize(pending_initialize);
+    .with_pending_initialize(pending_initialize)
+    .with_images(images);
     // The fast-mode wait read ahead in this same pipe, and whatever it saw that
     // was not its own answer — the init event, the mode response, an MCP status
     // line — is seeded here so the session reader parses it once, through the
@@ -2606,6 +2627,11 @@ struct ClaudeReader {
     /// `can_use_tool` arriving while a person's steer is unread is denied,
     /// and the CLI's `command_lifecycle` frames release what they name.
     steer_latch: Arc<ClaudeSteerLatch>,
+    /// Where a tool result's images are stored before the envelope is
+    /// journaled. `None` when the spawn carried no session id: the frame
+    /// then journals what it came with, as every frame did before there was
+    /// a store.
+    images: Option<crate::agent_image::AgentImageSink>,
 }
 
 /// Seed attempts before the reader latches and stops retrying.
@@ -2646,6 +2672,36 @@ fn observe_mcp_status(value: &Value, runtime: &SessionRuntime) {
     }
 }
 
+/// Store the images of one `user` envelope's tool results and replace them
+/// with markers before the frame is journaled, so a replay shows the same
+/// pictures from the journal alone.
+fn prepare_tool_result_images(
+    value: &mut Value,
+    images: Option<&crate::agent_image::AgentImageSink>,
+) {
+    let Some(sink) = images else {
+        return;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return;
+    }
+    let Some(blocks) = value
+        .pointer_mut("/message/content")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for block in blocks.iter_mut() {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let Some(content) = block.get_mut("content") else {
+            continue;
+        };
+        crate::agent_image::prepare_result_content(content, sink);
+    }
+}
+
 impl ClaudeReader {
     fn new(
         view: ClaudeView,
@@ -2679,7 +2735,15 @@ impl ClaudeReader {
             initial_mode_timer_thread: None,
             watch: None,
             steer_latch: Arc::new(ClaudeSteerLatch::default()),
+            images: None,
         }
+    }
+
+    /// The store this reader prepares a tool result's images through,
+    /// installed by the spawn.
+    fn with_images(mut self, images: Option<crate::agent_image::AgentImageSink>) -> Self {
+        self.images = images;
+        self
     }
 
     fn with_mode_gate(
@@ -2826,7 +2890,7 @@ impl ClaudeReader {
         self.steer_latch.release_read(&value);
         // The initialize answer carries the account identity next to the
         // commands; the journal keeps only what the menu reads.
-        let value = self.minimize_initialize_answer(value);
+        let mut value = self.minimize_initialize_answer(value);
         // A result ends the daemon turn unless the abort gate withholds it,
         // and the decision and the transition are one critical section
         // (`settle_turn_finish`): a steer admitted concurrently either
@@ -2888,6 +2952,7 @@ impl ClaudeReader {
             runtime
                 .journal_agent_envelope_pair(&crate::claude_view::withheld_finish_marker(), &value)
         } else {
+            prepare_tool_result_images(&mut value, self.images.as_ref());
             runtime.journal_agent_envelope(&value)
         };
         if self.dispatch_control_response(&value, runtime) {

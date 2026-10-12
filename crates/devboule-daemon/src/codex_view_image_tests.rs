@@ -28,7 +28,7 @@ fn sink(tag: &str, workspace: &std::path::Path, images: &std::path::Path) -> Age
         store,
         format!("s.{tag}.1"),
         workspace.to_path_buf(),
-        images.to_path_buf(),
+        Some(images.to_path_buf()),
     )
 }
 

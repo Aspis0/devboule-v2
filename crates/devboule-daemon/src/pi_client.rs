@@ -2082,7 +2082,13 @@ fn spawn_pi(
     .with_commands_reply(commands_reply)
     .with_compact_guard(compact_guard)
     .with_prompt_fate(Arc::clone(&prompt_fate))
-    .with_turn_arbiter(Arc::clone(&arbiter));
+    .with_turn_arbiter(Arc::clone(&arbiter))
+    .with_images(crate::agent_image::AgentImageSink::for_spawn(
+        state.sessions.image_store(),
+        &command.env,
+        command.cwd.clone(),
+        None,
+    ));
     // A resumed child restored its own conversation; a fresh one has no
     // history to read, so only the resume road arms the task pass.
     let reader_dispatch = if resume_session.is_some() {
@@ -3877,6 +3883,11 @@ struct PiReader {
     /// saw, so the first feed — the first moment a runtime exists to
     /// publish on — starts the history pass that restores the checklist.
     restored_history: bool,
+    /// Where a tool result's images are stored before the frame is
+    /// journaled. `None` when the spawn carried no session id: the frame
+    /// then journals what it came with, as every frame did before there was
+    /// a store.
+    images: Option<crate::agent_image::AgentImageSink>,
 }
 
 impl PiReader {
@@ -3908,7 +3919,15 @@ impl PiReader {
             extension_path: PathBuf::new(),
             arbiter: pi_turn_arbiter::TurnArbiter::bare(),
             restored_history: false,
+            images: None,
         }
+    }
+
+    /// The store this reader prepares a tool result's images through,
+    /// installed by the spawn.
+    fn with_images(mut self, images: Option<crate::agent_image::AgentImageSink>) -> Self {
+        self.images = images;
+        self
     }
 
     fn with_extension_path(mut self, extension_path: PathBuf) -> Self {
@@ -3953,6 +3972,16 @@ impl PiReader {
     fn with_restored_history(mut self) -> Self {
         self.restored_history = true;
         self
+    }
+
+    /// Store one tool result's images and replace them with markers before
+    /// the frame is journaled: the journal keeps each reference once, and a
+    /// replay derives the same pictures from it without a store of its own.
+    fn prepare_tool_result_images(value: &mut Value, sink: &crate::agent_image::AgentImageSink) {
+        let Some(content) = value.pointer_mut("/result/content") else {
+            return;
+        };
+        crate::agent_image::prepare_result_content(content, sink);
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
@@ -4000,7 +4029,7 @@ impl PiReader {
 
     fn dispatch_value(
         &mut self,
-        value: Value,
+        mut value: Value,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<(), String> {
         // A reply to a request the daemon itself made says nothing about
@@ -4043,6 +4072,9 @@ impl PiReader {
             // its row, as it always did.
             if poll_reply {
                 return Ok(());
+            }
+            if let Some(images) = self.images.as_ref() {
+                Self::prepare_tool_result_images(&mut value, images);
             }
             let event_seq = runtime.journal_agent_envelope(&value);
             for event in crate::pi_view::events_from_line(&value) {
@@ -4124,6 +4156,9 @@ impl PiReader {
         // suppressed finish still journals — beside the marker replay reads
         // to withhold the same finish — so a reattach derives the one
         // finish the live pass showed.
+        if let Some(images) = self.images.as_ref() {
+            Self::prepare_tool_result_images(&mut value, images);
+        }
         let suppress_finish = value.get("type").and_then(Value::as_str) == Some("turn_end")
             && self.arbiter.turn_end_suppressed(runtime, &value);
         let event_seq = if suppress_finish {

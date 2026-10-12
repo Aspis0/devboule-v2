@@ -159,7 +159,9 @@ pub(super) fn tool_update_from_result(
         exit_code: None,
         replace: false,
 
-        images: Vec::new(),
+        images: crate::agent_image::marked_result_images(
+            block.get("content").unwrap_or(&Value::Null),
+        ),
     })
 }
 

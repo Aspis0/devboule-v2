@@ -17,9 +17,9 @@ use serde_json::{json, Value};
 use crate::attachment_store::{extension_for, AttachmentStore};
 use crate::raster_metadata::{sniff_raster_mime, RasterMime};
 
-/// One image's ceiling. Chosen against both budgets it sits under: four of
-/// them fit the store's 20 MiB per-owner budget, and the base64 a frame would
-/// carry stays under the reader's 10 MiB line cap.
+/// One image's ceiling. Chosen against both budgets it sits under: fourteen
+/// of them fit the store's 72 MiB per-owner budget, and the base64 a frame
+/// would carry stays under the reader's 10 MiB line cap.
 pub(crate) const MAX_AGENT_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Images taken out of one frame. The rest of the blocks are left alone and
@@ -73,20 +73,41 @@ impl StoredImage {
 }
 
 /// The store, the session, and the roots a provider-named path may live in:
-/// the session's workspace, and the provider's own generated-image folder.
+/// the session's workspace, and the provider's own generated-image folder
+/// when it has one.
 pub(crate) struct AgentImageSink {
     store: AttachmentStore,
     session_id: String,
     workspace: PathBuf,
-    images_dir: PathBuf,
+    images_dir: Option<PathBuf>,
 }
 
 impl AgentImageSink {
+    /// The sink one provider session's frames are prepared through: the store
+    /// under the session id the spawn puts in the child's environment, rooted
+    /// at the folder it runs in. `images_dir` is the provider's own
+    /// generated-image folder, and only Codex has one. A command with no
+    /// session id keeps the sink out, and such a frame produces nothing, as
+    /// it did before there was a store.
+    pub(crate) fn for_spawn(
+        store: AttachmentStore,
+        env: &[(String, String)],
+        workspace: PathBuf,
+        images_dir: Option<PathBuf>,
+    ) -> Option<Self> {
+        let session_id = env
+            .iter()
+            .find(|(key, _)| key == crate::agent_env::SESSION_ID)?
+            .1
+            .clone();
+        Some(Self::new(store, session_id, workspace, images_dir))
+    }
+
     pub(crate) fn new(
         store: AttachmentStore,
         session_id: String,
         workspace: PathBuf,
-        images_dir: PathBuf,
+        images_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             store,
@@ -153,7 +174,9 @@ impl AgentImageSink {
             .map_err(|_| "the named file could not be read".to_string())?;
         let allowed = [
             self.workspace.canonicalize().ok(),
-            self.images_dir.canonicalize().ok(),
+            self.images_dir
+                .as_ref()
+                .and_then(|dir| dir.canonicalize().ok()),
         ];
         if !allowed
             .iter()
@@ -217,6 +240,108 @@ fn non_empty<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .get(key)
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
+}
+
+/// The key a prepared frame carries an image outcome in. A provider must not
+/// be able to write one itself, so every incoming occurrence is dropped
+/// before this daemon writes its own.
+pub(crate) const MARKER: &str = "devboule_image";
+
+/// The line a refused image leaves behind, in the words the Codex road
+/// already uses: the row says it had a picture rather than showing one it
+/// does not carry.
+const NOT_STORED_TEXT: &str = "[image not stored]";
+
+fn not_stored() -> Value {
+    json!({"type": "text", "text": NOT_STORED_TEXT})
+}
+
+/// One image marker: the stored reference, the reason it was refused, or
+/// that the item is still running.
+pub(crate) fn marker(stored: StoredImage) -> Value {
+    json!({ MARKER: stored.to_value() })
+}
+
+/// Store every image of one tool result and replace it with a marker, in
+/// place: the frame the journal keeps holds each reference once instead of
+/// the base64 again, and a replay shows the same pictures from that alone.
+///
+/// Both shapes a provider names an image in are read: a block that is the
+/// image itself (MCP's `{data, mimeType}`, Claude's `{source: {…}}`) and an
+/// ACP `content` element wrapping one. At most [`MAX_IMAGES_PER_FRAME`]
+/// image blocks are stored; the rest become the not-stored line.
+pub(crate) fn prepare_result_content(content: &mut Value, sink: &AgentImageSink) {
+    match content.as_array_mut() {
+        Some(blocks) => {
+            let mut taken = 0;
+            for block in blocks.iter_mut() {
+                taken += prepare_block(block, taken, sink);
+            }
+        }
+        None => {
+            prepare_block(content, 0, sink);
+        }
+    }
+}
+
+/// How many of the frame's image budget this block took: one when it was an
+/// image the store accepted, zero otherwise.
+fn prepare_block(block: &mut Value, taken: usize, sink: &AgentImageSink) -> usize {
+    forget_incoming_marker(block);
+    let nested = block.get("type").and_then(Value::as_str) == Some("content");
+    let target: &mut Value = if nested {
+        let Some(content) = block.get_mut("content") else {
+            return 0;
+        };
+        content
+    } else {
+        block
+    };
+    forget_incoming_marker(target);
+    if target.get("type").and_then(Value::as_str) != Some("image") {
+        return 0;
+    }
+    let Some(source) = image_block_source(target) else {
+        return 0;
+    };
+    if taken >= MAX_IMAGES_PER_FRAME {
+        *target = not_stored();
+        return 0;
+    }
+    *target = match sink.store(&source) {
+        Ok(reference) => marker(StoredImage::Reference(reference)),
+        Err(_) => not_stored(),
+    };
+    1
+}
+
+fn forget_incoming_marker(block: &mut Value) {
+    if let Some(object) = block.as_object_mut() {
+        object.remove(MARKER);
+    }
+}
+
+/// The stored references a prepared result content carries, in order. A
+/// block the store refused is a plain text line by then and is skipped, as
+/// are the blocks that never named an image.
+pub(crate) fn marked_result_images(content: &Value) -> Vec<AttachmentReference> {
+    let blocks: &[Value] = match content.as_array() {
+        Some(blocks) => blocks,
+        None => std::slice::from_ref(content),
+    };
+    let mut references = Vec::new();
+    for block in blocks {
+        let target = match block.get("type").and_then(Value::as_str) {
+            Some("content") => block.get("content").unwrap_or(&Value::Null),
+            _ => block,
+        };
+        if let Some(StoredImage::Reference(reference)) =
+            target.get(MARKER).and_then(StoredImage::from_value)
+        {
+            references.push(reference);
+        }
+    }
+    references
 }
 
 /// The `imageGeneration` / `imageView` source: `savedPath` (then `path`) wins

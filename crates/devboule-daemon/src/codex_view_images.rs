@@ -8,18 +8,13 @@
 //! in-progress item says nothing.
 
 use devboule_protocol::SessionEvent;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::agent_image::{
-    codex_image_source, image_block_source, AgentImageSink, AgentImageSource, StoredImage,
-    MAX_IMAGES_PER_FRAME,
+    codex_image_source, image_block_source, marker, AgentImageSink, AgentImageSource, StoredImage,
+    MARKER, MAX_IMAGES_PER_FRAME,
 };
 use crate::text_cap::capped;
-
-/// The key a prepared frame carries an image outcome in. A provider must not
-/// be able to write one itself, so every incoming occurrence is dropped before
-/// this daemon writes its own.
-pub(crate) const MARKER: &str = "devboule_image";
 
 /// Replace one frame's image sources with stored markers. A running item is
 /// only marked pending: the store is written once, when the item completes.
@@ -101,17 +96,13 @@ fn prepare_result_blocks(item: &mut Value, completed: bool, sink: Option<&AgentI
     }
 }
 
-fn marker(stored: StoredImage) -> Value {
-    json!({ (MARKER): stored.to_value() })
-}
-
 /// One completed image item's events. A refused image is a notice, never a
 /// row that claims an image it does not carry.
 pub(super) fn image_item_events(id: &str, item: &Value, completed: bool) -> Vec<SessionEvent> {
     if !completed {
         return Vec::new();
     }
-    let Some(stored) = item.get("devboule_image").and_then(StoredImage::from_value) else {
+    let Some(stored) = item.get(MARKER).and_then(StoredImage::from_value) else {
         return Vec::new();
     };
     match stored {

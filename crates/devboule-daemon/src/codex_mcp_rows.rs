@@ -62,7 +62,7 @@ fn result_content(item: &Value) -> (Option<String>, Vec<AttachmentReference>, Ve
     let mut refusals = Vec::new();
     for block in content {
         if let Some(stored) = block
-            .get(super::images::MARKER)
+            .get(crate::agent_image::MARKER)
             .and_then(StoredImage::from_value)
         {
             match stored {

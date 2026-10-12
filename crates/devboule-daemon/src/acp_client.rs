@@ -834,7 +834,13 @@ fn spawn_process_with_load(
         deferred,
         command.provider_id.clone(),
         handshake.event,
-    );
+    )
+    .with_images(crate::agent_image::AgentImageSink::for_spawn(
+        state.sessions.image_store(),
+        &command.env,
+        command.cwd.clone(),
+        None,
+    ));
     Ok(SpawnedSession {
         process_job,
         master: None,
@@ -3067,6 +3073,11 @@ struct AcpReader {
     /// The tool content already published, so a content snapshot the agent
     /// repeats is not appended to its row a second time.
     tool_content: Mutex<ToolContentMemory>,
+    /// Where a tool result's images are stored before the frame is
+    /// journaled. `None` when the spawn carried no session id: the frame
+    /// then journals what it came with, as every frame did before there
+    /// was a store.
+    images: Option<crate::agent_image::AgentImageSink>,
 }
 
 impl AcpReader {
@@ -3105,7 +3116,15 @@ impl AcpReader {
             replay_count: AtomicU64::new(0),
             unmodeled_content_count: AtomicU64::new(0),
             tool_content: Mutex::new(ToolContentMemory::default()),
+            images: None,
         }
+    }
+
+    /// The store this reader prepares a frame's tool-result images through,
+    /// installed by the spawn.
+    fn with_images(mut self, images: Option<crate::agent_image::AgentImageSink>) -> Self {
+        self.images = images;
+        self
     }
 
     #[cfg(test)]
@@ -3412,6 +3431,22 @@ fn complete_lines(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 }
 
 impl AcpReader {
+    /// Store one tool result's images and replace them with markers before
+    /// the frame is journaled: the journal keeps each reference once, and a
+    /// replay derives the same pictures from it without a store of its own.
+    fn prepare_tool_result_images(
+        value: &mut serde_json::Value,
+        sink: &crate::agent_image::AgentImageSink,
+    ) {
+        if value.get("method").and_then(serde_json::Value::as_str) != Some("session/update") {
+            return;
+        }
+        let Some(content) = value.pointer_mut("/params/update/content") else {
+            return;
+        };
+        crate::agent_image::prepare_result_content(content, sink);
+    }
+
     fn dispatch_line(&self, line: &str, runtime: &Arc<SessionRuntime>) {
         let value = match serde_json::from_str::<serde_json::Value>(line) {
             Ok(value) => value,
@@ -3430,7 +3465,7 @@ impl AcpReader {
     }
 
     fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
-        let value = runtime.redact_mcp_value(value);
+        let mut value = runtime.redact_mcp_value(value);
         if is_mcp_status(&value) {
             observe_mcp_status(&value, runtime);
             return;
@@ -3455,6 +3490,9 @@ impl AcpReader {
             // durable journal hole during live replay. `acp_view` continues
             // to map historical echo envelopes for backward compatibility.
             return;
+        }
+        if let Some(images) = self.images.as_ref() {
+            Self::prepare_tool_result_images(&mut value, images);
         }
         let event_seq = runtime.journal_agent_envelope(&value);
         match classify_line(&value) {

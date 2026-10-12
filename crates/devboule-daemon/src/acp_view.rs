@@ -269,7 +269,9 @@ fn view_from_session_update(
                 exit_code,
                 replace,
 
-                images: Vec::new(),
+                images: crate::agent_image::marked_result_images(
+                    update.get("content").unwrap_or(&serde_json::Value::Null),
+                ),
             })
         }
         Some("plan") => {

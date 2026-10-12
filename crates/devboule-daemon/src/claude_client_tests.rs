@@ -3162,6 +3162,7 @@ fn spawn_wires_the_initialize_handshake_to_its_reader() {
         "default".to_string(),
         &ProfileDelivery::none(),
         None,
+        None,
     )
     .expect("spawn");
     let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
@@ -3540,4 +3541,75 @@ fn claude_bootstrap_appends_to_the_configured_append_prompt() {
         again, spaced,
         "a second pass adds nothing and keeps the person's text"
     );
+}
+
+/// A tool result's image is stored before the envelope is journaled: the
+/// live row carries the reference, the journal keeps no base64, and replay
+/// derives the same picture from the journal alone.
+#[test]
+fn a_tool_result_image_is_stored_before_the_envelope_is_journaled() {
+    const TINY_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = crate::test_dirs::test_temp_dir("devboule-claude-image");
+    let session_id = "s.claude.image.1";
+    let journal = Arc::new(
+        crate::journal::Journal::open(&dir.join("journal.db")).expect("the journal opens"),
+    );
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            devboule_protocol::SessionKind::Claude,
+            "Agent",
+        ))
+        .expect("the session record");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    let conn = crate::test_support::attach_and_track(&runtime, session_id);
+    let sink = crate::agent_image::AgentImageSink::new(
+        crate::attachment_store::AttachmentStore::new(&dir),
+        session_id.to_string(),
+        dir.clone(),
+        None,
+    );
+    let mut reader = lazy_reader().with_images(Some(sink));
+    reader.dispatch_line(LAZY_INIT, &runtime);
+    let line = format!(
+        r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"shot-1","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{TINY_PNG}"}}}}]}}]}}}}"#
+    );
+    reader.dispatch_line(&line, &runtime);
+    let stored = |events: Vec<SessionEvent>| {
+        events.into_iter().find_map(|event| match event {
+            SessionEvent::AgentToolUpdate { images, .. } => images.into_iter().next(),
+            _ => None,
+        })
+    };
+    let live = stored(drain(&conn)).expect("the live row carries the stored image");
+    let replayed = stored(
+        journal
+            .replay(session_id)
+            .expect("the journal replays")
+            .events,
+    )
+    .expect("replay derives the same image from the journal alone");
+    assert_eq!(live.digest, replayed.digest);
+    let payloads: Vec<Vec<u8>> = {
+        let db = rusqlite::Connection::open(dir.join("journal.db")).expect("inspect");
+        let mut stmt = db
+            .prepare("SELECT payload FROM events WHERE session_id = ?1")
+            .expect("query");
+        stmt.query_map([session_id], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("payload"))
+            .collect()
+    };
+    assert!(
+        !payloads.iter().any(|payload| payload
+            .windows(TINY_PNG.len())
+            .any(|window| window == TINY_PNG.as_bytes())),
+        "the journal keeps no base64"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
