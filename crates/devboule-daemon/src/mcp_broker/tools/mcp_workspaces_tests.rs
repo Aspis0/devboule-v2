@@ -166,6 +166,41 @@ fn list_reports_a_worktree_branch() {
 }
 
 #[test]
+fn list_marks_only_the_callers_own_workspace_as_current() {
+    let state = ServerState::new("mcp-workspaces-current".to_string());
+    let (project, _dir) = git_project(&state, "current");
+    let first = state
+        .sessions
+        .workspace_create(
+            &project,
+            WorkspaceIsolation::Worktree,
+            Some("feature-first".to_string()),
+        )
+        .expect("first worktree row");
+    let second = state
+        .sessions
+        .workspace_create(
+            &project,
+            WorkspaceIsolation::Worktree,
+            Some("feature-second".to_string()),
+        )
+        .expect("second worktree row");
+    live_in(&state, "ws-current", &second.id);
+
+    let listed = list_workspaces(&state, "ws-current", &owner()).expect("list");
+    let workspaces = listed["workspaces"].as_array().expect("workspaces");
+    let current: Vec<&str> = workspaces
+        .iter()
+        .filter(|row| row["current"] == true)
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert_eq!(current, vec![second.id.as_str()]);
+    assert!(workspaces
+        .iter()
+        .any(|row| row["id"].as_str() == Some(first.id.as_str()) && row["current"] == false));
+}
+
+#[test]
 fn list_refuses_a_session_with_no_workspace() {
     let state = ServerState::new("mcp-workspaces-nows".to_string());
     crate::session::insert_test_live_agent_with_kind(

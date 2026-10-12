@@ -121,13 +121,16 @@ fn list_workspaces(
     session_id: &str,
     owner: &OwnerId,
 ) -> Result<Value, WorkspaceError> {
-    let (_, project_id) = caller_scope(state, session_id, owner)?;
+    let (caller_workspace, project_id) = caller_scope(state, session_id, owner)?;
     let records = state
         .sessions
         .workspace_records(&project_id)
         .map_err(|error| refused(error.message))?;
     Ok(json!({
-        "workspaces": records.iter().map(workspace_document).collect::<Vec<_>>(),
+        "workspaces": records
+            .iter()
+            .map(|record| workspace_document(record, record.id == caller_workspace))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -147,10 +150,13 @@ fn caller_scope(
 
 /// One workspace as the tools answer it. `kind` is the checkout vocabulary,
 /// not the daemon's isolation words: a local workspace IS the project folder.
-/// `branch` rides along because the wire `Workspace` drops it.
-fn workspace_document(record: &WorkspaceRecord) -> Value {
+/// `branch` rides along because the wire `Workspace` drops it. `current` is
+/// there because two workspaces can share one folder, so the path cannot say
+/// which of them the caller runs in.
+fn workspace_document(record: &WorkspaceRecord, current: bool) -> Value {
     json!({
         "id": record.id,
+        "current": current,
         "projectId": record.project_id,
         "name": record.title,
         "path": crate::verbatim_path::plain_path(&record.path),
@@ -219,7 +225,7 @@ fn create_workspace(
              never at an agent-named directory",
         ));
     }
-    let (_, project_id) = caller_scope(state, session_id, owner)?;
+    let (caller_workspace, project_id) = caller_scope(state, session_id, owner)?;
     if let Some(requested) = request.project_id.as_deref() {
         if requested != project_id {
             return Err(refused("Project not found."));
@@ -271,7 +277,7 @@ fn create_workspace(
     records
         .iter()
         .find(|record| record.id == workspace.id)
-        .map(workspace_document)
+        .map(|record| workspace_document(record, record.id == caller_workspace))
         .ok_or_else(|| refused("The workspace was created but could not be read back."))
 }
 

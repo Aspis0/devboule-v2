@@ -223,7 +223,7 @@ pub const AGENT_WAKE_SENTENCE: &str = "The child's finish, error or permission n
 /// (Codex's developer instructions, Claude's and pi's append flag) and as the
 /// MCP server's instructions. One paragraph, because it is one command-line
 /// argument for Claude and pi.
-pub const DEVBOULE_AGENT_INSTRUCTIONS: &str = "You are an agent running inside Devboule, a desktop app that runs coding agents for one person on their own machine. Devboule's own tools are served over MCP under the name devboule: the devboule_* tools manage agents, profiles, messages and activity, and the browser_* tools drive Devboule's own browser, whose tabs the person can watch. Use them when the task needs them. A tool, skill or setting that is not in your tool list does not exist for you, so check the list instead of guessing. To look at a page you are building, open it with browser_new_tab (localhost is allowed) and take screenshots at desktop and mobile sizes.";
+pub const DEVBOULE_AGENT_INSTRUCTIONS: &str = "You are an agent running inside Devboule, a desktop app that runs coding agents for one person on their own machine. Devboule's own tools are served over MCP under the name devboule: the devboule_* tools manage agents, profiles, messages and activity, and the browser_* tools drive Devboule's own browser, whose tabs the person can watch. Use them when the task needs them. A tool, skill or setting that is not in your tool list does not exist for you, so check the list instead of guessing. Two workspaces can share one folder, so to name the workspace you run in, read the entry marked current: true in devboule_list_workspaces. To look at a page you are building, open it with browser_new_tab (localhost is allowed) and take screenshots at desktop and mobile sizes.";
 
 /// Every tool the daemon's MCP broker can serve, in `tools/list` order.
 ///
@@ -305,7 +305,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_LIST_WORKSPACES_TOOL,
-        "Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.",
+        "Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. current is true on the one workspace the calling session runs in. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.",
     ),
     (
         MCP_CREATE_WORKSPACE_TOOL,
