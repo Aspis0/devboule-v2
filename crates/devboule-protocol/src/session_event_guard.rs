@@ -228,6 +228,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             child_session_id: "s.1.2".to_string(),
             display_name: "worker".to_string(),
             state: crate::AgentTaskState::Completed,
+            at_ms: Some(1_760_000_000_000),
             note: Some("The message was over the 32 KiB cap and was not deposited.".to_string()),
             artifacts: vec![crate::FinishArtifact {
                 artifact_id: "devboule-attachment:s.1.2/deadbeef".to_string(),

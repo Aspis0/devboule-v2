@@ -2987,18 +2987,19 @@ impl SessionRuntime {
         note: Option<String>,
         artifacts: Vec<devboule_protocol::FinishArtifact>,
     ) -> Option<SessionEvent> {
-        let event = SessionEvent::ChildFinished {
+        // Journaled like the creation record: the creator's journal is what
+        // an unattached Workspace, or one that restarts, reads the finish
+        // out of, so the structured record cannot live on the stream alone.
+        // The time is the journal's own, so a replay carries the finish's time.
+        self.publish_journaled_agent_event(|_, _, at_ms| SessionEvent::ChildFinished {
             message_id,
             child_session_id: child_session_id.to_string(),
             display_name: display_name.to_string(),
             state,
             note,
             artifacts,
-        };
-        // Journaled like the creation record: the creator's journal is what
-        // an unattached Workspace, or one that restarts, reads the finish
-        // out of, so the structured record cannot live on the stream alone.
-        self.publish_journaled_agent_event(|_, _, _| event)
+            at_ms: Some(at_ms),
+        })
     }
 
     pub(crate) fn can_publish_agent_event(&self) -> bool {

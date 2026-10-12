@@ -1097,6 +1097,7 @@ describe("DesignSurface host capabilities", () => {
       childSessionId,
       displayName: "delegated work",
       state: "completed",
+      atMs: Date.now(),
       artifacts: [
         {
           artifactId: `devboule-attachment:s.creator.1/${digest}`,

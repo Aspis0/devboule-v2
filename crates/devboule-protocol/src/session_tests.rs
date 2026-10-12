@@ -1565,10 +1565,12 @@ fn the_creation_events_carry_their_camel_case_facts() {
                 metadata: Some(FinishArtifactPartMetadata { stored_bytes: 42 }),
             }],
         }],
+        at_ms: Some(1_760_000_000_000),
     };
     let value = serde_json::to_value(&finished).expect("json");
     assert_eq!(value["type"], "child_finished");
     assert_eq!(value["state"], "canceled");
+    assert_eq!(value["atMs"], 1_760_000_000_000_u64);
     assert!(value.get("note").is_none(), "an absent note is absent");
     assert_eq!(
         value["artifacts"][0]["artifactId"],

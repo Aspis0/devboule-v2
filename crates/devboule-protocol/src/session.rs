@@ -1103,6 +1103,12 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         artifacts: Vec<FinishArtifact>,
+        /// When the finish was journaled, in the creator's journal clock (ms).
+        /// A replayed finish keeps its own time, so a client can tell a finish
+        /// it is only now hearing about from one that happened after something
+        /// it already shows. Absent on a row written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_ms: Option<u64>,
     },
     /// A Claude stream-json subagent birth. The absence of status and summary
     /// is intentional: Claude supplies those only in task_notification.

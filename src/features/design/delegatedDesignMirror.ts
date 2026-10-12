@@ -4,12 +4,11 @@
 // deposited artifact yields a design. When two children finish close
 // together the later arrival wins and the earlier arrival's slow read is
 // dropped as stale. A human who deliberately opened an older history entry
-// keeps it against replays: the pin set by `noteHumanOpenedHistory` holds
-// against any finish this run already knew, and against the pinned child
-// itself. A child finishing for the first time is a new result and lands
-// over the pin, because a finished design the person is waiting for must
-// not be silently kept off the canvas. The pin is released by the human's
-// own next generation or by clearing the session.
+// keeps it against replays: a finish the daemon journaled before the pin is
+// held (see `pinHolds`), and so is the pinned child itself. A finish journaled
+// after the pin is a new result and lands over it, because a finished design
+// the person is waiting for must not be kept off the canvas. The pin is
+// released by the human's own next generation or by clearing the session.
 //
 // Displaying is reading. The mirror reads the finished child's deposited
 // bytes through `sessionAttachmentRead` and extracts fenced HTML from the
@@ -67,26 +66,29 @@ let mirrorSequence = 0;
 // last child: a replayed finish of an earlier child is skipped without a read.
 const mirroredChildIds = new Set<string>();
 let writtenSequence = 0;
-let humanPinnedChildId: string | null = null;
-// Every child whose finish this run has scheduled, written or not. It is what
-// tells a replay of a known finish from a new one while a pin is up.
-const knownFinishedChildIds = new Set<string>();
+// The pinned entry's child, and when the human pinned it (the app's clock).
+let humanPin: { childSessionId: string; atMs: number } | null = null;
 
 /**
- * Records that the human deliberately opened a history entry. While pinned,
- * a replay of a finish this run already knew is held, and so is the pinned
- * child itself (it is already on screen, so a second card would duplicate
- * it). A new child's finish still lands. Wired from
+ * Records that the human deliberately opened a history entry. Wired from
  * `DesignSurface.openHistoryEntry`; nothing else may set it.
  */
 export function noteHumanOpenedHistory(sessionId: string): void {
-  humanPinnedChildId = sessionId;
+  humanPin = { childSessionId: sessionId, atMs: Date.now() };
 }
 
-/** Whether the pin holds this arrival: a replay of a known finish, or the pinned child. */
-function pinHolds(childSessionId: string, newer: boolean): boolean {
-  if (humanPinnedChildId === null) return false;
-  return !newer || childSessionId === humanPinnedChildId;
+/**
+ * Whether the pin holds this finish. The pinned child is held: it is already on
+ * screen, so a second card would duplicate it. Any other finish is held only
+ * when the daemon journaled it before the pin, which makes it a replay of
+ * something the person could already see; a finish journaled after the pin is
+ * new, however late this renderer hears of it. A finish with no time cannot be
+ * placed, so it is held.
+ */
+function pinHolds(childSessionId: string, finishedAtMs: number | undefined): boolean {
+  if (humanPin === null) return false;
+  if (childSessionId === humanPin.childSessionId) return true;
+  return finishedAtMs === undefined || finishedAtMs < humanPin.atMs;
 }
 
 /**
@@ -95,16 +97,15 @@ function pinHolds(childSessionId: string, newer: boolean): boolean {
  * `DesignSurface.startGeneration`; the pin is never cleared by an arrival.
  */
 export function clearDelegatedMirrorPin(): void {
-  humanPinnedChildId = null;
+  humanPin = null;
 }
 
 /** Resets all mirror state. Tests only; production state lives for the run. */
 export function resetDelegatedMirrorForTests(): void {
   mirrorSequence = 0;
   mirroredChildIds.clear();
-  knownFinishedChildIds.clear();
   writtenSequence = 0;
-  humanPinnedChildId = null;
+  humanPin = null;
 }
 
 async function defaultEnsureHost(): Promise<DesignHost> {
@@ -167,11 +168,11 @@ async function writeDelegatedArtifact(
   html: string,
   ensureHost: () => Promise<DesignHost>,
   store: typeof useAppStoreType,
-  newer: boolean,
+  finishedAtMs: number | undefined,
 ): Promise<boolean> {
   // The human pinned an entry while the read was in flight, or a duplicate
   // arrival's read finished second: neither may write.
-  if (pinHolds(childSessionId, newer)) return false;
+  if (pinHolds(childSessionId, finishedAtMs)) return false;
   if (mirroredChildIds.has(childSessionId)) return false;
   let host = store.getState().designSession.host;
   if (host === null) {
@@ -256,8 +257,6 @@ export function scheduleDelegatedDesignMirror(
   // history entry, where the human reads the true state.
   if (event.state !== "completed") return;
   const sequence = ++mirrorSequence;
-  const newer = !knownFinishedChildIds.has(childSessionId);
-  knownFinishedChildIds.add(childSessionId);
 
   void (async () => {
     try {
@@ -268,11 +267,11 @@ export function scheduleDelegatedDesignMirror(
       // gone, so stale state must neither block the next delegation nor skip
       // re-mirroring the same child after its card was cleared.
       if (store.getState().designSession.host === null) {
-        humanPinnedChildId = null;
+        humanPin = null;
         mirroredChildIds.clear();
         writtenSequence = 0;
       }
-      if (pinHolds(childSessionId, newer)) return;
+      if (pinHolds(childSessionId, event.atMs)) return;
       if (mirroredChildIds.has(childSessionId)) return;
       const readStored =
         deps?.readStored ?? (await import("../../lib/tauri")).sessionAttachmentRead;
@@ -286,7 +285,14 @@ export function scheduleDelegatedDesignMirror(
       // writer wins, which converges on the most recent one either way.
       if (sequence < writtenSequence) return;
       if (
-        await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store, newer)
+        await writeDelegatedArtifact(
+          childSessionId,
+          displayName,
+          html,
+          ensureHost,
+          store,
+          event.atMs,
+        )
       ) {
         writtenSequence = sequence;
         mirroredChildIds.add(childSessionId);

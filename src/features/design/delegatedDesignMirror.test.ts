@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The property test below runs the mirror through its real default path,
 // so the daemon door it knocks on is the mocked `invoke`, not an injected
@@ -86,6 +86,15 @@ function finishedWithMarkdown(
   ]);
 }
 
+/** A finish with a markdown artifact, journaled at `atMs`. */
+function finishedAt(
+  childSessionId: string,
+  atMs: number,
+  displayName = "design child",
+): ChildFinishedEvent {
+  return { ...finishedWithMarkdown(childSessionId, displayName), atMs };
+}
+
 function toBase64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
@@ -136,6 +145,10 @@ beforeEach(() => {
   resetDelegatedMirrorForTests();
   resetStore();
   vi.useRealTimers();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 // The mirror resolves its extractor through a dynamic import, so the first
@@ -358,10 +371,11 @@ describe("delegated design mirror", () => {
         sectionNotes: [],
       },
     });
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
     noteHumanOpenedHistory("old-child");
 
     const captured: CapturedRead[] = [];
-    scheduleDelegatedDesignMirror(finishedWithMarkdown("new-child", "Newer design"), {
+    scheduleDelegatedDesignMirror(finishedAt("new-child", 2_500, "Newer design"), {
       readStored: fakeRead(captured),
       store: useAppStore,
     });
@@ -377,27 +391,35 @@ describe("delegated design mirror", () => {
     ]);
   });
 
-  it("holds a pin against a replay of a child the run already saw", async () => {
+  it("holds a finish that happened before the pin when this renderer first hears of it now", async () => {
+    // A reconnect or a second renderer: the finish is new to this run, but it
+    // is older than the pin, so it is a replay and must not replace the entry.
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
+    noteHumanOpenedHistory("history-entry");
     const captured: CapturedRead[] = [];
     const deps = { readStored: fakeRead(captured), store: useAppStore };
-    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-old", "Older"), deps);
-    await flush();
-    captured[0]?.resolve(storedMarkdown("```html\n<main>Old</main>\n```"));
-    await flush();
-    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-new", "Newer"), deps);
-    await flush();
-    captured[1]?.resolve(storedMarkdown("```html\n<main>New</main>\n```"));
-    await flush();
 
-    // The human opens the older entry; a replay of that finish must not read or write.
-    noteHumanOpenedHistory("child-old");
-    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-old", "Older"), deps);
+    scheduleDelegatedDesignMirror(finishedAt("child-replayed", 1_000), deps);
     await flush();
+    expect(captured).toHaveLength(0);
 
-    expect(captured).toHaveLength(2);
-    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
-      html: "<main>New</main>",
+    // A finish after the pin is a new result and does land.
+    scheduleDelegatedDesignMirror(finishedAt("child-live", 2_500), deps);
+    await flush();
+    expect(captured).toHaveLength(1);
+  });
+
+  it("holds a pinned finish that carries no time, because its age is unknown", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
+    noteHumanOpenedHistory("history-entry");
+    const captured: CapturedRead[] = [];
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-untimed"), {
+      readStored: fakeRead(captured),
+      store: useAppStore,
     });
+    await flush();
+
+    expect(captured).toHaveLength(0);
   });
 
   it("writes nothing when the human is already viewing that exact child", async () => {

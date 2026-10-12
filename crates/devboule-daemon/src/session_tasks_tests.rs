@@ -92,6 +92,7 @@ fn child_finished(id: &str, state: AgentTaskState) -> SessionEvent {
         state,
         note: None,
         artifacts: Vec::new(),
+        at_ms: None,
     }
 }
 

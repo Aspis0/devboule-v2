@@ -1752,6 +1752,11 @@ export type SessionEvent =
       /** Why `artifacts` is empty, when it is. Absent with an artifact. */
       note?: string;
       artifacts: FinishArtifact[];
+      /**
+       * When the finish was journaled, in the creator's journal clock (ms). A
+       * replayed finish keeps its own time. Absent on a row an older daemon wrote.
+       */
+      atMs?: number;
     }
   /**
    * The daemon accepted a prompt into a turn that was already running

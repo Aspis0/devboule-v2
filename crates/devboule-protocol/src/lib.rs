@@ -314,7 +314,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Protocol 44 adds the paired-host agent-edit reads, `RemoteHostAgentEdits` and
 /// `RemoteHostAgentDiff`, relayed over the held peer link like
 /// `RemoteHostGitStatus`: local-only and read-only. Same new-variant rule.
-pub const PROTOCOL_VERSION: u32 = 44;
+/// Protocol 45 adds `atMs` to `child_finished`: the finish's journal time, so a
+/// replayed finish can be told from a new one. An older daemon sends no field,
+/// which reads as unknown.
+pub const PROTOCOL_VERSION: u32 = 45;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older
