@@ -142,8 +142,9 @@ function treeOf(sessions: readonly Session[], key: WorkspaceKey): Tree {
 
 /**
  * The agents of one workspace as the rail lists them. Past the cap, what shows
- * is chosen by need: a waiting, running or front agent is never cut, then the
- * live rows, then the settled children. A creator is kept with the rows it holds.
+ * is chosen by need under a hard cap: waiting agents, running ones, the front
+ * agent, the live rows, then the settled children. A creator is shown with the
+ * rows it holds, and the rest counts as hidden.
  */
 export function railAgentsOf(
   sessions: readonly Session[],
@@ -154,26 +155,26 @@ export function railAgentsOf(
   const { nodes: tree, settled } = treeOf(sessions, key);
   const byId = new Map(tree.map((node) => [node.id, node]));
   const kept = new Set<string>();
-  const keep = (id: string) => {
+  // An agent takes its own row and the creators not yet shown; it is taken only
+  // when all of them fit under the cap, so the cap is never exceeded.
+  const take = (id: string) => {
+    const missing: string[] = [];
     let current: string | null = id;
     while (current !== null && byId.has(current) && !kept.has(current)) {
-      kept.add(current);
+      missing.push(current);
       current = byId.get(current)?.parentId ?? null;
     }
+    if (kept.size + missing.length > RAIL_AGENT_CAP) return;
+    for (const shown of missing) kept.add(shown);
   };
-  for (const node of tree) {
-    if (node.state === "waiting" || node.state === "running" || node.id === activeId) {
-      keep(node.id);
-    }
-  }
-  const fill = [
+  const priority = [
+    ...tree.filter((node) => node.state === "waiting"),
+    ...tree.filter((node) => node.state === "running"),
+    ...tree.filter((node) => node.id === activeId),
     ...tree.filter((node) => !settled.has(node.id)),
     ...tree.filter((node) => settled.has(node.id)),
   ];
-  for (const node of fill) {
-    if (kept.size >= RAIL_AGENT_CAP) break;
-    keep(node.id);
-  }
+  for (const node of priority) take(node.id);
   const shown = tree.filter((node) => kept.has(node.id));
   const rows = shown.map((node) => ({
     ...node,

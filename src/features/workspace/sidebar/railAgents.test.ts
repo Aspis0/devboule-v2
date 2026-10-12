@@ -263,12 +263,26 @@ describe("the cap", () => {
     expect(ids).toContain("child");
   });
 
-  it("never cuts a waiting or running agent, even when they outnumber the cap", () => {
+  it("holds the cap even when more agents work than it has rows, and counts the rest", () => {
     const sessions = Array.from({ length: RAIL_AGENT_CAP + 2 }, (_, index) =>
       agent({ id: `busy-${index}`, activity: "working" }),
     );
     const listed = rail(sessions);
-    expect(listed.rows).toHaveLength(RAIL_AGENT_CAP + 2);
-    expect(listed.hidden).toBe(0);
+    expect(listed.rows).toHaveLength(RAIL_AGENT_CAP);
+    expect(listed.hidden).toBe(2);
+  });
+
+  it("fills the cap with waiting agents, then running ones, before idle ones", () => {
+    const sessions = [
+      agent({ id: "idle" }),
+      ...Array.from({ length: RAIL_AGENT_CAP }, (_, index) =>
+        agent({ id: `busy-${index}`, activity: "working" }),
+      ),
+      agent({ id: "asks", attention: { reason: "permission", atMs: 1 } }),
+    ];
+    const ids = idsOf(sessions);
+    expect(ids).toHaveLength(RAIL_AGENT_CAP);
+    expect(ids).toContain("asks");
+    expect(ids).not.toContain("idle");
   });
 });
