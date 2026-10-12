@@ -196,7 +196,7 @@ pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, Br
     Ok(view_walk::compact(&tree_of(page).await?, mode))
 }
 
-/// The commands that only read a page. They never wait for the tab and never
+/// The commands that only read a page. Most never wait for the tab and never
 /// hold it: a `wait_for` that polled for twelve seconds under the tab's lock
 /// would leave the pane's own present waiting just as long. They do put a
 /// parked page at its pane's size, which is safe without the lock because the
@@ -209,6 +209,17 @@ const READS: [&str; 6] = [
     "read_text",
     "console_logs",
 ];
+
+/// The reads that take the tab's lock anyway. A screenshot measures the layout
+/// it photographs, and a resize changes that layout under the same lock, so the
+/// two cannot interleave.
+const LOCKED_READS: [&str; 1] = ["screenshot"];
+
+/// Whether a command takes the tab's lock: every action does, and of the reads
+/// only those in [`LOCKED_READS`].
+fn takes_tab_lock(command: &str) -> bool {
+    !READS.contains(&command) || LOCKED_READS.contains(&command)
+}
 
 /// Which of the dispatch's two page arms runs `command`.
 ///
@@ -289,6 +300,14 @@ pub async fn dispatch(
     // built from whatever is on screen now.
     scrub::left(&tab.browser_id, fill_login::origin_of(&tab).as_deref());
     if READS.contains(&command) {
+        // The tab is read again once its lock is held: the pane may have shown
+        // or parked it while the lock was waited for.
+        let _locked = if takes_tab_lock(command) {
+            Some(tab_guard::hold(registry, &browser_id, deadline).await?)
+        } else {
+            None
+        };
+        let tab = resolve(registry, &request.caller, &browser_id)?;
         let page = WebviewPage::new(app, &tab.label);
         return scrubbed(on_tab(&tab, &page, command, &request.args, deadline).await);
     }

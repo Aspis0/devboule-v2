@@ -374,3 +374,13 @@ fn an_answer_and_a_refusal_leave_without_what_was_typed() {
 
     scrub::forget(tab);
 }
+
+#[test]
+fn a_screenshot_takes_the_tab_lock_the_way_a_resize_does() {
+    // A screenshot measures the layout it photographs, which a resize changes
+    // under the same lock; the other reads never wait for the tab.
+    assert!(takes_tab_lock("screenshot"));
+    assert!(takes_tab_lock("resize"));
+    assert!(!takes_tab_lock("snapshot"));
+    assert!(!takes_tab_lock("read_text"));
+}
