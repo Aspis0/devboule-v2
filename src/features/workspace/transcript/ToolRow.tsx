@@ -161,11 +161,6 @@ export const ToolRow = memo(function ToolRow({
           <span className="workspace-chat-tool-label" title={model.displayName}>
             {model.displayName}
           </span>
-          {hasSummary ? (
-            <span className="workspace-chat-tool-sep" aria-hidden="true">
-              ·
-            </span>
-          ) : null}
           {commandRow && model.summary !== undefined ? (
             <CommandChip command={model.summary} />
           ) : null}
