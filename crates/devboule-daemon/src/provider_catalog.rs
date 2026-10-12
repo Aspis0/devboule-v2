@@ -357,7 +357,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_BROWSER_NEW_TAB_TOOL,
-        "Opens a new browser tab in this machine's desktop app and answers its browserId, url and title. Keep that browserId: every other browser tool takes it, and a tab of another workspace is not visible from here. You have no refs until you snapshot. Needs the app running; with no host registered this fails browser_no_host.",
+        "Opens a new browser tab in this machine's desktop app and answers its browserId, url and title. A url that a tab of yours already has open is not opened twice: that tab is reloaded and answered instead, with reused true. Every answer lists your open tabs under tabs. Keep that browserId: every other browser tool takes it, and a tab of another workspace is not visible from here. You have no refs until you snapshot. Needs the app running; with no host registered this fails browser_no_host.",
     ),
     (
         MCP_BROWSER_LIST_TABS_TOOL,

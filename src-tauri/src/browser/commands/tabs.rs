@@ -16,11 +16,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 
-use super::super::cdp::Page;
+use super::super::cdp::{Bounded, Page, WebviewPage};
 use super::super::deadline::Deadline;
 use super::super::registry::{AgentDrive, BrowserRegistry, TabInfo};
 use super::super::scrub;
 use super::super::tab;
+use super::super::url::accept;
 use super::{act, host_error, refused, tab_not_found};
 
 /// The app-wide event the strip listens for. One name with a tag, because a
@@ -123,6 +124,17 @@ async fn new_tab(
 ) -> Result<Value, BrowserError> {
     let asked: NewTabArgs = super::args_of(args)?;
     let workspace = workspace_of(caller)?;
+    if let Some(existing) = open_at(registry, &workspace, &asked.url) {
+        let page = WebviewPage::new(app, &existing.label);
+        reload_tab(&existing, &Bounded::new(&page, deadline), deadline).await?;
+        return Ok(json!({
+            "browserId": existing.browser_id,
+            "url": existing.url,
+            "title": existing.title,
+            "reused": true,
+            "tabs": tab_list(registry, &workspace),
+        }));
+    }
     let id = mint_id()?;
     // The page reports into a channel no JavaScript side holds yet: the strip
     // learns about the tab from the event below, and the pane that opens its
@@ -139,6 +151,7 @@ async fn new_tab(
     )
     .await
     .map_err(|error| host_error(format!("This address could not be opened: {error}")))?;
+    let tabs = tab_list(registry, &workspace);
     let event = TabEvent::Opened {
         browser_id: id.clone(),
         workspace_id: workspace,
@@ -154,19 +167,39 @@ async fn new_tab(
         "browserId": id,
         "url": opened.url,
         "title": opened.title,
+        "reused": false,
+        "tabs": tabs,
     }))
 }
 
-/// The caller's own tabs. Public because the host loop's test drives the real
-/// command over a real connection: it is the one command that never touches a
-/// page, so it is the one the loop can be driven with without a window.
-pub fn list_tabs(
-    registry: &BrowserRegistry,
-    caller: &BrowserCaller,
-) -> Result<Value, BrowserError> {
-    let workspace = workspace_of(caller)?;
-    let tabs: Vec<Value> = registry
-        .tabs_of(&workspace)
+/// The tab of this workspace already open at the address asked for, if there is
+/// one. The asked text is parsed the way opening it would parse it, so an
+/// address the app would refuse finds nothing.
+fn open_at(registry: &BrowserRegistry, workspace: &str, raw: &str) -> Option<TabInfo> {
+    let target = accept(raw).ok()?.to_string();
+    registry
+        .tabs_of(workspace)
+        .into_iter()
+        .find(|tab| tab.url == target)
+}
+
+/// Reload a tab's page and wait for it to settle, so what is read next is the
+/// page as it is now and not the copy a retry would have shown.
+async fn reload_tab(
+    tab: &TabInfo,
+    page: &dyn Page,
+    deadline: Deadline,
+) -> Result<(), BrowserError> {
+    act::call(page, "Page.reload", json!({})).await?;
+    act::settled(tab, page, deadline).await?;
+    Ok(())
+}
+
+/// The workspace's tabs as an agent sees them: what `list_tabs` answers, and what
+/// `new_tab` answers beside the tab it opened or reused.
+fn tab_list(registry: &BrowserRegistry, workspace: &str) -> Vec<Value> {
+    registry
+        .tabs_of(workspace)
         .into_iter()
         .map(|tab| {
             json!({
@@ -179,8 +212,18 @@ pub fn list_tabs(
                 "active": !tab.live.parked(),
             })
         })
-        .collect();
-    Ok(json!({ "tabs": tabs }))
+        .collect()
+}
+
+/// The caller's own tabs. Public because the host loop's test drives the real
+/// command over a real connection: it is the one command that never touches a
+/// page, so it is the one the loop can be driven with without a window.
+pub fn list_tabs(
+    registry: &BrowserRegistry,
+    caller: &BrowserCaller,
+) -> Result<Value, BrowserError> {
+    let workspace = workspace_of(caller)?;
+    Ok(json!({ "tabs": tab_list(registry, &workspace) }))
 }
 
 /// Close the tab an agent named, already resolved and held by the caller.
@@ -302,3 +345,7 @@ async fn history(page: &dyn Page, action: &str) -> Result<(), BrowserError> {
 #[cfg(test)]
 #[path = "tabs_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tabs_reuse_tests.rs"]
+mod reuse_tests;
