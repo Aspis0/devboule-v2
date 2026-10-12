@@ -375,9 +375,10 @@ pub(crate) fn mcp_launch(
             TOOL_TIMEOUT_SECONDS
         ),
     ];
-    // Codex asks the person before any MCP tool it was not told to approve; the
-    // read-only list is the set that never needs that question.
-    for tool in crate::provider_catalog::MCP_READ_ONLY_TOOLS {
+    // Codex asks before any MCP tool it was not told to approve, and every
+    // Devboule tool already has its own consent card, so Codex's question
+    // would be a second one for the same action.
+    for (tool, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
         arg_additions.push("-c".to_string());
         arg_additions.push(format!(
             "mcp_servers.{}.tools.{tool}.approval_mode=\"approve\"",

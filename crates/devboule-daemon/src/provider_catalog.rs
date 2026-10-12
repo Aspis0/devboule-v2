@@ -471,36 +471,6 @@ pub(crate) fn mcp_tool_waits_on_card(name: &str) -> bool {
     MCP_CARD_WAIT_TOOLS.contains(&name)
 }
 
-/// Tools that only read. Codex asks the person before any MCP tool it has not
-/// been told to approve, so these are approved by name at launch; every other
-/// tool keeps the answer its provider mode gives.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) const MCP_READ_ONLY_TOOLS: &[&str] = &[
-    MCP_ROSTER_TOOL,
-    MCP_LIST_DEVICES_TOOL,
-    MCP_LIST_PEER_AGENTS_TOOL,
-    MCP_LIST_PROFILES_TOOL,
-    MCP_ACTIVITY_TOOL,
-    MCP_LIST_PENDING_PERMISSIONS_TOOL,
-    MCP_GET_AGENT_STATUS_TOOL,
-    MCP_NEIGHBORHOOD_TOOL,
-    MCP_IMPORTS_TOOL,
-    MCP_IMPORTERS_TOOL,
-    MCP_ORACLE_SEARCH_TOOL,
-    MCP_LIST_WORKSPACES_TOOL,
-    MCP_LIST_TERMINALS_TOOL,
-    MCP_CAPTURE_TERMINAL_TOOL,
-    MCP_FILE_COLLISIONS_TOOL,
-    MCP_PROCESS_OWNER_TOOL,
-    MCP_SESSION_PROCESSES_TOOL,
-    MCP_BROWSER_LIST_TABS_TOOL,
-    MCP_BROWSER_SNAPSHOT_TOOL,
-    MCP_BROWSER_FIND_TOOL,
-    MCP_BROWSER_SCREENSHOT_TOOL,
-    MCP_BROWSER_READ_TEXT_TOOL,
-    MCP_BROWSER_CONSOLE_LOGS_TOOL,
-];
-
 /// The read-only roster tool, and the one name a tool policy can never
 /// disable: an agent that cannot list its siblings cannot be steered at all,
 /// and the tool reads only its own bearer's roster.

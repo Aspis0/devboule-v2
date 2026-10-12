@@ -1779,20 +1779,20 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
 }
 
 #[test]
-fn codex_mcp_launch_approves_each_read_only_tool_by_name() {
+fn codex_mcp_launch_approves_every_served_tool_by_name() {
     let carrier = super::mcp_launch(
         &crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:4321/mcp", "test"),
         Path::new("unused"),
     )
     .expect("carrier");
-    for tool in crate::provider_catalog::MCP_READ_ONLY_TOOLS {
+    for (tool, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
         let approval = format!(
             "mcp_servers.{}.tools.{tool}.approval_mode=\"approve\"",
             crate::mcp_broker::MCP_SERVER_NAME
         );
         assert!(
             carrier.arg_additions.contains(&approval),
-            "{tool} runs without a Codex approval card"
+            "{tool} runs without a second Codex card"
         );
     }
     let approvals = carrier
@@ -1802,35 +1802,9 @@ fn codex_mcp_launch_approves_each_read_only_tool_by_name() {
         .count();
     assert_eq!(
         approvals,
-        crate::provider_catalog::MCP_READ_ONLY_TOOLS.len(),
-        "no tool outside the read-only list is approved"
+        crate::provider_catalog::MCP_BROKER_TOOLS.len(),
+        "exactly the served tools are approved"
     );
-    for acting in [
-        crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
-        crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
-        crate::provider_catalog::MCP_STOP_AGENT_TOOL,
-    ] {
-        assert!(
-            !carrier.arg_additions.iter().any(|arg| arg.contains(acting)),
-            "{acting} keeps the provider's own answer"
-        );
-    }
-}
-
-#[test]
-fn read_only_tools_are_served_and_never_carded() {
-    for tool in crate::provider_catalog::MCP_READ_ONLY_TOOLS {
-        assert!(
-            crate::provider_catalog::MCP_BROKER_TOOLS
-                .iter()
-                .any(|(name, _)| name == tool),
-            "{tool} is served by the broker"
-        );
-        assert!(
-            !crate::provider_catalog::mcp_tool_waits_on_card(tool),
-            "{tool} never waits on a card"
-        );
-    }
 }
 
 #[test]
@@ -2288,8 +2262,8 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
     );
     assert_eq!(
         argv.lines().filter(|line| *line == "-c").count(),
-        3 + crate::provider_catalog::MCP_READ_ONLY_TOOLS.len(),
-        "the URL, bearer pointer, finite timeout and one approval per read-only tool are the only overrides: {argv}"
+        3 + crate::provider_catalog::MCP_BROKER_TOOLS.len(),
+        "the URL, bearer pointer, finite timeout and one approval per served tool are the only overrides: {argv}"
     );
     assert!(
         !argv.contains(&bearer),
