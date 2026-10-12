@@ -60,13 +60,13 @@ describe("memoized assistant Markdown", () => {
 
     await act(async () => root.render(<MarkdownText text="src/a.ts" fileLinks={fileLinks} />));
     expect(parser.parseMarkdownText).toHaveBeenCalledTimes(1);
-    expect(parser.parseMarkdownText).toHaveBeenCalledWith("src/a.ts", fileLinks);
+    expect(parser.parseMarkdownText).toHaveBeenCalledWith("src/a.ts", fileLinks, undefined);
 
     await act(async () => root.render(<MarkdownText text="src/a.ts" fileLinks={fileLinks} />));
     expect(parser.parseMarkdownText).toHaveBeenCalledTimes(1);
 
     await act(async () => root.render(<MarkdownText text="src/b.ts" fileLinks={fileLinks} />));
     expect(parser.parseMarkdownText).toHaveBeenCalledTimes(2);
-    expect(parser.parseMarkdownText).toHaveBeenLastCalledWith("src/b.ts", fileLinks);
+    expect(parser.parseMarkdownText).toHaveBeenLastCalledWith("src/b.ts", fileLinks, undefined);
   });
 });

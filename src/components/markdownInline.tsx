@@ -6,6 +6,10 @@ import { endsInSeparator, localPathFromHref } from "../lib/markdownLocalPath";
 import { FileLinkButton } from "./FileLinkButton";
 import { workspaceRelativePath } from "../lib/workspaceRelativePath";
 
+/** What one markdown image becomes, or null to leave it as its alt text. The
+ * key belongs to the node the parser pushes. */
+export type MarkdownImageRenderer = (target: string, alt: string, key: number) => ReactNode | null;
+
 /** The workspace-relative spelling a candidate path names, or null when it is outside the workspace. */
 function insideRoot(candidate: string, links: ChatFileLinks | null): string | null {
   return links === null ? null : workspaceRelativePath(candidate, links.root);
@@ -36,7 +40,11 @@ function localPathLink(
   return <FileLinkButton key={key} label={label} relative={relative} links={links} />;
 }
 
-export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
+export function inline(
+  text: string,
+  fileLinks?: ChatFileLinks | null,
+  renderImage?: MarkdownImageRenderer,
+): ReactNode[] {
   const links = fileLinks ?? null;
   const nodes: ReactNode[] = [];
   const escaped = new Uint8Array(text.length);
@@ -176,9 +184,8 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
       contentEnd = stars[index + 1];
       end = contentEnd + 1;
     } else if (
-      // An image is its alt text and nothing else: no element loads the
-      // URL, so a relative path can never be fetched and a remote one is
-      // never requested.
+      // A local destination may be read as a picture by the transcript;
+      // a remote one is never fetched.
       text[index] === "!" &&
       text[index + 1] === "[" &&
       escaped[index] === 0 &&
@@ -227,15 +234,22 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
     }
     // Emphasis content ends at its first emphasis star, so this nested scan
     // finds code and links but never another emphasis: no depth cap needed.
-    else if (kind === "strong") nodes.push(<strong key={key}>{inline(content, links)}</strong>);
-    else if (kind === "em") nodes.push(<em key={key}>{inline(content, links)}</em>);
-    else if (kind === "image")
+    else if (kind === "strong")
+      nodes.push(<strong key={key}>{inline(content, links, renderImage)}</strong>);
+    else if (kind === "em") nodes.push(<em key={key}>{inline(content, links, renderImage)}</em>);
+    else if (kind === "image") {
+      // A local destination the workspace can read becomes the picture; a
+      // remote or unreadable one stays the alt text, because no element here
+      // ever loads a URL.
+      const target = localPathFromHref(text.slice(contentEnd + 2, end - 1));
       nodes.push(
-        <span key={key} className="plan-markdown-image">
-          {content === "" ? "image" : content}
-        </span>,
+        (target === null ? null : renderImage?.(target, content, key)) ?? (
+          <span key={key} className="plan-markdown-image">
+            {content === "" ? "image" : content}
+          </span>
+        ),
       );
-    else {
+    } else {
       const href = text.slice(contentEnd + 2, end - 1);
       const label = text.slice(contentStart, contentEnd);
       // An http(s) destination the command would refuse stays the text the agent

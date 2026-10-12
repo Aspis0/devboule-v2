@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
@@ -12,6 +12,7 @@ import { ThoughtRow } from "../ThoughtRow";
 import { entryFrame } from "./entryFrame";
 import { QuietLine } from "./QuietLine";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
+import { MarkdownImage } from "./MarkdownImage";
 import { PermissionRequestRow } from "./PermissionRequestRow";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
 import { ToolRow } from "./ToolRow";
@@ -48,6 +49,17 @@ export const TranscriptRow = memo(function TranscriptRow({
   onOpenChild,
   onRevealChange,
 }: TranscriptRowProps) {
+  // The renderer is a callback, so it must be stable: MarkdownText is
+  // memoized and a fresh function would re-parse every answer on each render.
+  const renderImage = useMemo(
+    () =>
+      fileLinks === null || fileLinks.readImage === undefined
+        ? undefined
+        : (target: string, alt: string, key: number) => (
+            <MarkdownImage key={key} target={target} alt={alt} links={fileLinks} />
+          ),
+    [fileLinks],
+  );
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
   }
@@ -93,7 +105,12 @@ export const TranscriptRow = memo(function TranscriptRow({
               hasDetail ? (
                 <div className="workspace-chat-subagent-text">
                   {texts.map((text, index) => (
-                    <MarkdownText key={index} text={text} fileLinks={fileLinks} />
+                    <MarkdownText
+                      key={index}
+                      text={text}
+                      fileLinks={fileLinks}
+                      renderImage={renderImage}
+                    />
                   ))}
                   {failures.map((failure, index) => (
                     <QuietLine key={index} failed>
@@ -192,7 +209,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     <div className={className} data-message-id={item.messageId ?? undefined} style={style}>
       {item.text.length > 0 ? (
         <div className="workspace-chat-copy">
-          <MarkdownText text={item.text} fileLinks={fileLinks} />
+          <MarkdownText text={item.text} fileLinks={fileLinks} renderImage={renderImage} />
         </div>
       ) : null}
       {item.images !== undefined && item.images.length > 0 ? (

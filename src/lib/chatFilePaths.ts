@@ -23,6 +23,18 @@ export interface ChatFileLinks {
   root: string;
   /** Resolves "folder" when the path names a folder, which opens nothing. */
   open: (relativePath: string) => Promise<ChatFileTarget>;
+  /** Reads one workspace image for an inline picture. The daemon confines
+   * the path to the workspace and hands back base64 for the image
+   * extensions it recognizes; a refusal is null, never a throw. Absent on
+   * a surface that draws no pictures. */
+  readImage?: (relativePath: string) => Promise<ChatImageBytes | null>;
+}
+
+/** The bytes one workspace image was read as: base64, with the type the
+ * browser needs to draw it. */
+export interface ChatImageBytes {
+  mimeType: string;
+  data: string;
 }
 
 export type ChatFileTarget = "file" | "folder";

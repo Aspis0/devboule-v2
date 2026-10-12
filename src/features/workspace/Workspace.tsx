@@ -185,12 +185,14 @@ import {
   sessionResume,
   sessionStop,
   workspaceFilesList,
+  workspaceFileRead,
   type AttentionTarget,
   providerVocabularyGet,
   sessionSetModel,
   workspaceFileEditorOpen,
 } from "../../lib/tauri";
 import { workspaceFileIndex } from "./workspaceFileIndex";
+import { imageMimeType } from "./previewMedia";
 import { openChatFileLink } from "./chatFileOpen";
 import type { TranscriptSearchProps } from "./sidebar/TranscriptSearchResults";
 import { isCommandError } from "../../lib/commandError";
@@ -1464,6 +1466,17 @@ export function Workspace({
           (path) => workspaceFileEditorOpen(workspaceId, path),
           (path) => openToolTab(paneWorkspaceKey, path, "file"),
         ),
+      // The daemon confines the path to this workspace and hands back base64
+      // only for the image extensions it recognizes; anything else draws no
+      // picture.
+      readImage: async (relativePath: string) => {
+        const reply = await workspaceFileRead(workspaceId, relativePath);
+        const mimeType = imageMimeType(relativePath);
+        if (reply.status !== "ok" || reply.kind !== "image" || reply.content === null) {
+          return null;
+        }
+        return mimeType === null ? null : { mimeType, data: reply.content };
+      },
     };
   }, [paneWorkspaceId, paneCwd, paneWorkspaceKey, openToolTab]);
   // The "@" menu's file index: built on the first mention, per workspace.

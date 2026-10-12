@@ -5,10 +5,20 @@ import { useModalOpen } from "../../../lib/modalOpen";
 import type { AttachmentReference } from "../../../lib/tauri";
 import { useChatImageUrl } from "./useChatImageUrl";
 
-interface ChatLightboxSource {
+interface ChatLightboxStored {
   reference: AttachmentReference;
   alt: string;
 }
+
+interface ChatLightboxUrl {
+  /** A picture already in hand: a markdown image's own blob URL, never read
+   * again here. */
+  url: string;
+  alt: string;
+}
+
+/** One viewer page: a stored reference to read, or a URL already in hand. */
+type ChatLightboxSource = ChatLightboxStored | ChatLightboxUrl;
 
 /** Open viewers, oldest first. Only the top entry answers keys. */
 const viewerStack: number[] = [];
@@ -39,6 +49,9 @@ function LightboxPage({
   if (presetUrl !== null) {
     return <OpenedLightboxPage url={presetUrl} alt={source.alt} />;
   }
+  if ("url" in source) {
+    return <OpenedLightboxPage url={source.url} alt={source.alt} />;
+  }
   return <LoadingLightboxPage source={source} />;
 }
 
@@ -57,7 +70,7 @@ function OpenedLightboxPage({ url, alt }: { url: string; alt: string }) {
   );
 }
 
-function LoadingLightboxPage({ source }: { source: ChatLightboxSource }) {
+function LoadingLightboxPage({ source }: { source: ChatLightboxStored }) {
   const url = useChatImageUrl(source.reference);
   const [broken, setBroken] = useState(false);
   if (url === undefined) {

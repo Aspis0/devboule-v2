@@ -46,6 +46,12 @@ use crate::ServerState;
 /// file is.
 const FILE_READ_MAX_BYTES: u64 = 128 * 1024;
 
+/// The largest image this reply hands back, in raw bytes. Base64 maps three
+/// bytes to four, so 512 KiB is 699,052 bytes on the wire, under the frame
+/// ceiling with the envelope to spare. A screenshot is often past the text
+/// window's 128 KiB, and a withheld one reads as "Image unavailable".
+const IMAGE_READ_MAX_BYTES: u64 = 512 * 1024;
+
 /// Bytes read per step while locating a window's first line: each chunk is
 /// counted for newlines and dropped, so locating a late window holds this
 /// much — never the file, and never a line total for it.
@@ -328,7 +334,7 @@ fn window_of(target: &Path, from_line: u64, line_count: Option<u64>) -> std::io:
 /// can carry — the withholding left standing, because a window of base64
 /// is not content anyone can decode.
 fn image_of(target: &Path, metadata: &std::fs::Metadata) -> WorkspaceFileContent {
-    if metadata.len() > FILE_READ_MAX_BYTES {
+    if metadata.len() > IMAGE_READ_MAX_BYTES {
         return withheld(metadata.len(), stamped(metadata));
     }
     let bytes = match std::fs::read(target) {
@@ -338,7 +344,7 @@ fn image_of(target: &Path, metadata: &std::fs::Metadata) -> WorkspaceFileContent
     // The file can grow between the stat and the read: the cap is
     // re-checked on the bytes in hand.
     let size = bytes.len() as u64;
-    if size > FILE_READ_MAX_BYTES {
+    if size > IMAGE_READ_MAX_BYTES {
         return withheld(size, stamped(metadata));
     }
     let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -429,7 +435,7 @@ fn withheld(size: u64, modified_at: Option<i64>) -> WorkspaceFileContent {
         size: Some(size),
         modified_at,
         error: Some(format!(
-            "the file is larger than the {FILE_READ_MAX_BYTES}-byte content cap; its content is \
+            "the image is larger than the {IMAGE_READ_MAX_BYTES}-byte content cap; its content is \
              not handed back"
         )),
         from_line: None,

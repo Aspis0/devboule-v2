@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
-import { inline } from "./markdownInline";
+import { inline, type MarkdownImageRenderer } from "./markdownInline";
 import type { ChatFileLinks } from "../lib/chatFilePaths";
 import {
   alignmentOf,
@@ -14,7 +14,11 @@ import "./markdown.css";
 
 /** Table cells call `inline()` on their own and take no file-link context:
  * recognition covers paragraphs, lists and headings. */
-export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
+export function parseMarkdownText(
+  text: string,
+  fileLinks?: ChatFileLinks | null,
+  renderImage?: MarkdownImageRenderer,
+): ReactNode[] {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.split(/\r?\n/);
   const blocks: ReactNode[] = [];
@@ -50,7 +54,7 @@ export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null
           aria-level={heading[1].length}
           className={`plan-markdown-heading plan-markdown-heading-${heading[1].length}`}
         >
-          {inline(heading[2], fileLinks)}
+          {inline(heading[2], fileLinks, renderImage)}
         </div>,
       );
       index += 1;
@@ -60,7 +64,9 @@ export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null
       const items: ReactNode[] = [];
       while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
         items.push(
-          <li key={items.length}>{inline(lines[index].replace(/^\s*[-*+]\s+/, ""), fileLinks)}</li>,
+          <li key={items.length}>
+            {inline(lines[index].replace(/^\s*[-*+]\s+/, ""), fileLinks, renderImage)}
+          </li>,
         );
         index += 1;
       }
@@ -72,7 +78,7 @@ export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null
       while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
         items.push(
           <li key={items.length}>
-            {inline(lines[index].replace(/^\s*\d+[.)]\s+/, ""), fileLinks)}
+            {inline(lines[index].replace(/^\s*\d+[.)]\s+/, ""), fileLinks, renderImage)}
           </li>,
         );
         index += 1;
@@ -114,7 +120,9 @@ export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null
     }
     // Preserve line breaks until code-path validation; inline rendering still shows spaces.
     blocks.push(
-      <p key={blocks.length}>{inline(paragraph.join(fileLinks ? "\n" : " "), fileLinks)}</p>,
+      <p key={blocks.length}>
+        {inline(paragraph.join(fileLinks ? "\n" : " "), fileLinks, renderImage)}
+      </p>,
     );
   }
   return blocks;
