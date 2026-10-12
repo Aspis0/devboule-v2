@@ -4,6 +4,7 @@
 //! started in.
 
 use super::*;
+use crate::git::git_state_allows_worktree;
 use crate::workspace::repository_since_registration;
 
 /// Per-workspace create/delete bookkeeping under one short mutex: which
@@ -1165,10 +1166,6 @@ impl super::SessionRegistry {
         }
         Ok(())
     }
-}
-
-fn git_state_allows_worktree(state: &str) -> bool {
-    matches!(state, "repository" | "inside_repository")
 }
 
 pub(super) fn refuse_worktree_unless_live_git_allows(

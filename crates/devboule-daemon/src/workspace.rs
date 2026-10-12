@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{ErrorCode, WireError, WorkspaceIsolation};
 
-use crate::git::{detect_git_repository, GitRepositoryStatus};
+use crate::git::{detect_git_repository, git_state_allows_worktree};
 use crate::journal::{ProjectRecord, WorkspaceRecord};
 
 static ENTITY_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -30,12 +30,8 @@ pub(crate) fn repository_since_registration(record: &ProjectRecord) -> Option<&'
     if record.git_state != "not_repository" {
         return None;
     }
-    match detect_git_repository(Path::new(&record.path)) {
-        status @ (GitRepositoryStatus::RepositoryRoot | GitRepositoryStatus::InsideRepository) => {
-            Some(status.as_str())
-        }
-        _ => None,
-    }
+    let status = detect_git_repository(Path::new(&record.path)).as_str();
+    git_state_allows_worktree(status).then_some(status)
 }
 
 pub(crate) fn local_workspace_record(project: &ProjectRecord) -> WorkspaceRecord {

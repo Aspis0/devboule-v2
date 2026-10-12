@@ -55,11 +55,19 @@ impl GitRepositoryStatus {
 /// and a stale "no" would hide the option for a folder that has since become a
 /// repository.
 pub(crate) fn worktree_support_for_git_state(state: &str) -> WorktreeSupport {
-    match state {
-        "repository" | "inside_repository" => WorktreeSupport::Supported,
-        "not_repository" => WorktreeSupport::Unsupported,
-        _ => WorktreeSupport::Unknown,
+    if git_state_allows_worktree(state) {
+        WorktreeSupport::Supported
+    } else if state == "not_repository" {
+        WorktreeSupport::Unsupported
+    } else {
+        WorktreeSupport::Unknown
     }
+}
+
+/// The one list of recorded states that may host a worktree. The sheet's
+/// hint and the create-time guard both read it, so they cannot disagree.
+pub(crate) fn git_state_allows_worktree(state: &str) -> bool {
+    matches!(state, "repository" | "inside_repository")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
