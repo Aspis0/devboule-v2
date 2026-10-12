@@ -8,9 +8,8 @@
 use devboule_protocol::SessionKind;
 
 /// What a mode lets its session do without asking the person, in terms every
-/// family shares. Declared from the most restrictive to the most permissive, so
-/// the derived order is the rank a child may not exceed its creator's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// family shares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Posture {
     /// Plan or read-only: nothing is written.
     ReadOnly,
@@ -138,7 +137,12 @@ pub(super) fn agent_child_mode(
     if let Some(requested) = requested {
         let kept = match posture_of(child, requested) {
             Some(Posture::ReadOnly) => true,
-            Some(posture) => posture != Posture::Asking && own.is_some_and(|own| posture <= own),
+            // Accept-edits and reviewed do not contain each other, so a request is kept
+            // only when it is the creator's own posture or the creator is bypass.
+            Some(posture) => {
+                posture != Posture::Asking
+                    && own.is_some_and(|own| posture == own || own == Posture::Bypass)
+            }
             None => false,
         };
         if kept {
@@ -256,7 +260,7 @@ mod tests {
     /// The mode an agent's child starts in, from the mode the agent asked for and its
     /// creator's posture: `(mode, note)`, or `None` for a refusal.
     #[test]
-    fn an_agent_child_never_asks_and_never_outranks_its_creator() {
+    fn an_agent_child_never_asks_and_never_runs_wider_than_its_creator() {
         type Case<'a> = (
             SessionKind,
             &'a str,
@@ -311,6 +315,20 @@ mod tests {
                 "no-such-mode",
                 Some((Codex, "auto-review")),
                 Some(("auto", replaced("no-such-mode"))),
+            ),
+            // Accept-edits and reviewed do not contain each other: each request is
+            // replaced by the creator's own posture.
+            (
+                Claude,
+                "acceptEdits",
+                Some((Codex, "auto-review")),
+                Some(("auto", replaced("acceptEdits"))),
+            ),
+            (
+                Claude,
+                "auto",
+                Some((Claude, "acceptEdits")),
+                Some(("acceptEdits", replaced("auto"))),
             ),
             (Claude, "plan", None, Some(("plan", None))),
             (Claude, "default", None, None),
