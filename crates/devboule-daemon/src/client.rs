@@ -2028,13 +2028,6 @@ impl DaemonClient {
         }
     }
 
-    /// Refuse pairing against a daemon that predates the roleless requests.
-    ///
-    /// Every dialect before 32 requires a `role` field in `PairingStart` and
-    /// `PairingComplete`; a roleless request is a frame that old decoder cannot
-    /// construct, and the connection would die on it. The app and its daemon
-    /// normally ship together, so the actionable sentence is to restart
-    /// devboule so the matching daemon binary starts.
     /// Refuse a paired host's agent-edit request on a local daemon below the
     /// dialect that takes it: the request frame is new, and an older reader would
     /// drop the connection on it, so nothing is written.
@@ -2046,11 +2039,18 @@ impl DaemonClient {
         Err(DaemonError::Handshake(WireError::new(
             ErrorCode::ProtocolVersionMismatch,
             format!(
-                "the running daemon speaks protocol {daemon} and cannot read a paired host's \n                 agent edits; restart devboule so the matching daemon binary starts"
+                "the running daemon speaks protocol {daemon} and cannot read a paired host's agent edits; restart devboule so the matching daemon binary starts"
             ),
         )))
     }
 
+    /// Refuse pairing against a daemon that predates the roleless requests.
+    ///
+    /// Every dialect before 32 requires a `role` field in `PairingStart` and
+    /// `PairingComplete`; a roleless request is a frame that old decoder cannot
+    /// construct, and the connection would die on it. The app and its daemon
+    /// normally ship together, so the actionable sentence is to restart
+    /// devboule so the matching daemon binary starts.
     fn require_pairing_dialect(&self) -> Result<(), DaemonError> {
         let daemon = self.inner.hello.protocol_version;
         if pairing_dialect_ok(daemon) {
