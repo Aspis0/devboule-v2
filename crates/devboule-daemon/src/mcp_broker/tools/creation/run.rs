@@ -11,6 +11,7 @@ use crate::server::ServerState;
 
 use super::card::{creation_card, self_answer_note};
 use super::labels::stamped_labels;
+use super::posture::creation_asks_person;
 use super::profile::resolve_creation;
 use super::request::{creation_fingerprint, AgentCreateRequest};
 use super::result::created_result;
@@ -339,7 +340,7 @@ fn run_creation(
     let context_id = creator.context_id.clone();
     // The creator's mode, read on every call and before the reservation: a
     // plan or read-only mode of the creator's own family refuses even with
-    // an open gate, and an automatic mode skips the card without opening one.
+    // an open gate, and a mode that approves or reviews on its own skips the card.
     let creator_runtime = state
         .sessions
         .live_runtime(&creator_id, &registration.owner);
@@ -347,7 +348,13 @@ fn run_creation(
     if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = &creator_gate {
         return tool_error(id, sentence);
     }
-    let needs_card = !matches!(creator_gate, Some(crate::provider_catalog::ModeGate::Auto));
+    // The person is not asked for an agent's child when the creator approves or
+    // reviews on its own: those postures carry the creation themselves.
+    let creator_asks = creator_posture
+        .as_ref()
+        .is_none_or(|(kind, mode)| creation_asks_person(kind, mode));
+    let needs_card =
+        creator_asks && !matches!(creator_gate, Some(crate::provider_catalog::ModeGate::Auto));
     if background && needs_card {
         drop(hold);
         return await_card_in_background(state, caller, registration, id, request);

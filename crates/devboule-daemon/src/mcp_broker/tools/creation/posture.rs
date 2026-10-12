@@ -83,6 +83,16 @@ pub(super) fn inherited_mode(
     child_mode(child, posture_of(kind, mode_id)?)
 }
 
+/// Whether a creator in this mode asks the person before it creates a child. A
+/// bypass, reviewed or accept-edits creator creates on its own; a mode this table
+/// does not read still asks.
+pub(super) fn creation_asks_person(kind: &SessionKind, mode_id: &str) -> bool {
+    !matches!(
+        posture_of(kind, mode_id),
+        Some(Posture::Bypass | Posture::Reviewed | Posture::AcceptEdits)
+    )
+}
+
 /// The mode an agent-created child starts in. A child never asks the person through
 /// its mode and never runs wider than its creator, so an asking or wider request is
 /// replaced by the creator's posture. Plan and read-only only restrict, so they stand.

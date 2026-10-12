@@ -506,3 +506,37 @@ fn a_provider_switched_off_while_the_card_waits_starts_no_child() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// A creator that runs in a non-asking posture creates its child without asking
+/// the person: no creation card is raised, whatever the child's own mode.
+#[test]
+fn a_creator_in_an_accept_edits_posture_creates_without_a_card() {
+    let state = ServerState::new("create-posture-no-card".to_string());
+    tick_probe_profile(&state);
+    seed_probe_provider(&state);
+    let runtime = creator(&state, "d1a-creator");
+    set_mode(&runtime, "acceptEdits");
+
+    let answered = create_agent(
+        &state,
+        &state.mcp,
+        &McpCaller::Local,
+        &registration("d1a-creator"),
+        &json!(43),
+        request(),
+    );
+
+    assert_ne!(
+        answered.pointer("/result/structuredContent/state"),
+        Some(&json!("awaiting_approval")),
+        "no card was owed: {answered}"
+    );
+    assert!(
+        runtime
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids()
+            .is_empty(),
+        "no card waits for the person"
+    );
+}
