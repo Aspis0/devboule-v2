@@ -15,7 +15,10 @@ import type {
   ToolLocation,
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
-import { scheduleDelegatedDesignMirror } from "../features/design/delegatedDesignMirror";
+import {
+  noteChildProfile,
+  scheduleDelegatedDesignMirror,
+} from "../features/design/delegatedDesignMirror";
 import type { AttachmentReference, SessionChannel } from "./tauri";
 import { isCommandError } from "./commandError";
 import { errorSentence } from "./errorSentence";
@@ -1442,11 +1445,10 @@ export class AgentSession {
         this.recordJournalLoss(event.droppedFrames, event.droppedBytes);
         return;
       case "agent_created":
-        // A created child, recorded on its creator's transcript. Listed so it is
-        // not silently dropped, and ignored because no view renders it: the fact
-        // the app uses is the child's own row — its `displayName` (the tab's
-        // label) and its `createdBy` (the badge naming this session). The one
-        // event this pipeline acts on is the finish below.
+        // A created child, recorded on its creator's transcript. The mirror needs
+        // the profile it was made from to tell a Design child from any other; no
+        // view renders the event itself.
+        noteChildProfile(event.childSessionId, event.profile);
         return;
       case "agent_resumed":
         // A created child running again. Like `agent_created` it is a fact for

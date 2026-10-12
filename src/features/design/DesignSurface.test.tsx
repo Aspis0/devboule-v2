@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
 import {
+  noteChildProfile,
   resetDelegatedMirrorForTests,
   scheduleDelegatedDesignMirror,
 } from "./delegatedDesignMirror";
@@ -1090,6 +1091,8 @@ describe("DesignSurface host capabilities", () => {
   function delegatedFinish(
     childSessionId: string,
   ): Extract<SessionEvent, { type: "child_finished" }> {
+    // Every delegated finish in this file comes from a Design child.
+    noteChildProfile(childSessionId, "Design");
     const digest = "a".repeat(64);
     return {
       type: "child_finished",

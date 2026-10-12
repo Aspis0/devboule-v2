@@ -13,6 +13,7 @@ vi.mock("../features/design/childFinishedHistory", () => ({
 // The mirror replays the child through a read-only attach: the test asserts
 // the pipeline schedules it, and the mirror's own test covers the replay.
 vi.mock("../features/design/delegatedDesignMirror", () => ({
+  noteChildProfile: vi.fn(),
   scheduleDelegatedDesignMirror: mirrorMocks.scheduleDelegatedDesignMirror,
 }));
 

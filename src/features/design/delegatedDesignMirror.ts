@@ -1,7 +1,8 @@
 // Automatic mirror of delegated design work into the Design side panel.
 //
-// Which child the panel mirrors: the most recent finished child whose
-// deposited artifact yields a design. When two children finish close
+// Which child the panel mirrors: the most recent finished Design child (one
+// made from the Design profile, see `noteChildProfile`) whose deposited
+// artifact yields a design. When two children finish close
 // together the later arrival wins and the earlier arrival's slow read is
 // dropped as stale. A human who deliberately opened an older history entry
 // keeps it against replays: a finish the daemon journaled before the pin is
@@ -66,6 +67,26 @@ let mirrorSequence = 0;
 // last child: a replayed finish of an earlier child is skipped without a read.
 const mirroredChildIds = new Set<string>();
 let writtenSequence = 0;
+
+const DESIGN_PROFILE_NAME = "Design";
+// Profiles are kept for the most recently created children only; a child older
+// than this many creations is not known to be a Design child any more.
+const CHILD_PROFILE_CAP = 50;
+const childProfiles = new Map<string, string>();
+
+/**
+ * Records the profile a child was created from, as its creator's transcript
+ * reports it at birth. A finish is mirrored only for a child recorded as made
+ * from the Design profile: a coder's reply can quote a fenced HTML example, and
+ * a child whose profile is unknown is not mirrored.
+ */
+export function noteChildProfile(childSessionId: string, profile: string): void {
+  childProfiles.delete(childSessionId);
+  childProfiles.set(childSessionId, profile);
+  if (childProfiles.size <= CHILD_PROFILE_CAP) return;
+  const [oldest] = childProfiles.keys();
+  if (oldest !== undefined) childProfiles.delete(oldest);
+}
 // The pinned entry's child, and when the human pinned it (the app's clock).
 let humanPin: { childSessionId: string; atMs: number } | null = null;
 
@@ -104,6 +125,7 @@ export function clearDelegatedMirrorPin(): void {
 export function resetDelegatedMirrorForTests(): void {
   mirrorSequence = 0;
   mirroredChildIds.clear();
+  childProfiles.clear();
   writtenSequence = 0;
   humanPin = null;
 }
@@ -256,6 +278,7 @@ export function scheduleDelegatedDesignMirror(
   // `stop_reason_state`) — so any other state leaves its transcript to the
   // history entry, where the human reads the true state.
   if (event.state !== "completed") return;
+  if (childProfiles.get(event.childSessionId) !== DESIGN_PROFILE_NAME) return;
   const sequence = ++mirrorSequence;
 
   void (async () => {

@@ -12,6 +12,7 @@ vi.mock("../features/design/childFinishedHistory", () => ({
   recordChildFinishedHistory: historyMocks.recordChildFinishedHistory,
 }));
 vi.mock("../features/design/delegatedDesignMirror", () => ({
+  noteChildProfile: vi.fn(),
   scheduleDelegatedDesignMirror: mirrorMocks.scheduleDelegatedDesignMirror,
 }));
 

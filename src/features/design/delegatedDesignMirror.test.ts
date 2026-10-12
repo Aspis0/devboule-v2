@@ -19,6 +19,7 @@ import type { DesignMessage } from "./designHost";
 import type { DesignHost } from "./designHost";
 import {
   clearDelegatedMirrorPin,
+  noteChildProfile,
   noteHumanOpenedHistory,
   resetDelegatedMirrorForTests,
   scheduleDelegatedDesignMirror,
@@ -141,10 +142,25 @@ function assistantCard(overrides: Partial<DesignMessage> & { id: string }): Desi
   } as DesignMessage;
 }
 
+// The children these tests finish are Design children, unless a test says otherwise.
+const DESIGN_CHILD_IDS = [
+  "child-1",
+  "child-a",
+  "child-b",
+  "child-old",
+  "child-new",
+  "new-child",
+  "child-replayed",
+  "child-live",
+  "child-untimed",
+  "child-first",
+];
+
 beforeEach(() => {
   resetDelegatedMirrorForTests();
   resetStore();
   vi.useRealTimers();
+  for (const childSessionId of DESIGN_CHILD_IDS) noteChildProfile(childSessionId, "Design");
 });
 
 afterEach(() => {
@@ -352,6 +368,36 @@ describe("delegated design mirror", () => {
     const session = useAppStore.getState().designSession;
     expect(session.latestArtifact).toBeNull();
     expect(session.messages).toHaveLength(0);
+  });
+
+  it("mirrors only a child made from the Design profile", async () => {
+    // A coder's reply can quote a fenced HTML example; that is not a design.
+    noteChildProfile("child-coder", "Coder");
+    const captured: CapturedRead[] = [];
+    const deps = { readStored: fakeRead(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-coder", "Coder work"), deps);
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-unknown", "Unknown work"), deps);
+    await flush();
+
+    expect(captured).toHaveLength(0);
+    expect(useAppStore.getState().designSession.messages).toHaveLength(0);
+  });
+
+  it("forgets the profile of the oldest children past the cap", async () => {
+    // The map is bounded: a child recorded long ago is dropped, so its finish
+    // is no longer known to be a Design child.
+    noteChildProfile("child-first", "Design");
+    for (let index = 0; index < 50; index += 1) {
+      noteChildProfile(`child-filler-${index}`, "Coder");
+    }
+    const captured: CapturedRead[] = [];
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-first"), {
+      readStored: fakeRead(captured),
+      store: useAppStore,
+    });
+    await flush();
+
+    expect(captured).toHaveLength(0);
   });
 
   it("lets a newer child finish land over a human-pinned entry, which stays in the transcript", async () => {
