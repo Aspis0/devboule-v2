@@ -1016,6 +1016,18 @@ impl Journal {
     /// (the transcript search) go through it, so they never queue behind the
     /// writer thread and never delay an append. WAL lets it read while the
     /// writer appends.
+    /// Where this session's stored edit paths resolve; `None` when the session
+    /// row is not there (yet) or no reader opens.
+    pub(crate) fn session_edit_scope(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::agent_edit_path::EditScope> {
+        let conn = self.open_reader().ok()?;
+        journal_replay::edit_scope_of_session(&conn, session_id)
+            .ok()
+            .flatten()
+    }
+
     pub(crate) fn open_reader(&self) -> Result<Connection, JournalError> {
         let conn = Connection::open_with_flags(
             &self.path,

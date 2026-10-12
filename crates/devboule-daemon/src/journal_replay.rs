@@ -346,6 +346,52 @@ pub(crate) fn list_workspace_sessions(
         .map_err(JournalError::from)
 }
 
+/// The directory a session's provider ran in and its workspace's root, read
+/// from the session row and the workspace row it names. `None` when the session
+/// row does not exist yet.
+pub(crate) fn edit_scope_of_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<crate::agent_edit_path::EditScope>, JournalError> {
+    let row = conn
+        .query_row(
+            "SELECT s.cwd, w.path FROM sessions s
+             LEFT JOIN workspaces w ON w.id = s.workspace_id
+             WHERE s.id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(row.map(|(cwd, root)| crate::agent_edit_path::EditScope {
+        cwd: cwd.map(std::path::PathBuf::from),
+        root: root.map(std::path::PathBuf::from),
+    }))
+}
+
+/// The root of one workspace, `None` for a session with no workspace or a
+/// workspace row that is gone.
+fn workspace_root(
+    conn: &Connection,
+    workspace_id: Option<&str>,
+) -> Result<Option<std::path::PathBuf>, JournalError> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT path FROM workspaces WHERE id = ?1",
+            [workspace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(std::path::PathBuf::from))
+}
+
 /// The columns [`row_to_session`] reads, in the order it reads them.
 const SESSION_COLUMNS: &str = "id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
         generation, status, exit_code, closed, last_seq, degraded,
@@ -882,6 +928,15 @@ fn replay_record(
         event_ts_ms.push(None);
     }
 
+    // A file change outside the workspace leaves the replay the way it leaves
+    // the live stream, so the transcript a peer reads never carries it.
+    let scope = crate::agent_edit_path::EditScope {
+        cwd: record.cwd.as_deref().map(std::path::PathBuf::from),
+        root: workspace_root(conn, record.workspace_id.as_deref())?,
+    };
+    for event in &mut events {
+        crate::agent_edit_path::confine_event(event, &scope);
+    }
     Ok(Replay {
         generation,
         last_seq: record.last_seq,

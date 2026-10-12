@@ -11,11 +11,9 @@
 //! read is a gap the answer says it has, not an empty answer.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use devboule_protocol::{AgentEditText, AgentToolEdit, SessionEvent, SessionKind};
 
-use crate::agent_edit_path::workspace_relative;
 use crate::journal::Journal;
 
 /// Edits older than this are not listed: the Changes panel answers "what did
@@ -61,7 +59,6 @@ pub(crate) struct WorkspaceAgentEditRecords {
 pub(crate) fn read(
     journal: &Journal,
     workspace_id: &str,
-    root: &Path,
     now_ms: u64,
 ) -> WorkspaceAgentEditRecords {
     let Ok(reader) = journal.open_reader() else {
@@ -101,8 +98,6 @@ pub(crate) fn read(
             session_id: &session.id,
             agent: &agent,
             fallback_ms: session.updated_at_ms,
-            cwd: session.cwd.as_deref().map(Path::new),
-            root,
         };
         records.extend(session_records(&scope, &replay.events, &replay.event_ts_ms));
     }
@@ -129,21 +124,19 @@ struct CallState<'a> {
     edits: Option<&'a [AgentToolEdit]>,
 }
 
-/// Who one session's replay belongs to and where its paths point: the session
-/// id and agent name, the time an untimed event takes (the session's last
-/// update), the directory its provider ran in, and the workspace root.
+/// Who one session's replay belongs to: the session id and agent name, and the
+/// time an untimed event takes (the session's last update).
 struct SessionScope<'a> {
     session_id: &'a str,
     agent: &'a str,
     fallback_ms: u64,
-    cwd: Option<&'a Path>,
-    root: &'a Path,
 }
 
 /// The edit records of one session's replay, one per file change of each call
-/// that finished `completed`, with paths inside the workspace root only. A
-/// denied, failed or unfinished call changed nothing the person can rely on,
-/// so it is not listed. `event_ts_ms` is index-aligned with `events`.
+/// that finished `completed`. The replay has already confined the paths to the
+/// workspace root. A denied, failed or unfinished call changed nothing the
+/// person can rely on, so it is not listed. `event_ts_ms` is index-aligned with
+/// `events`.
 fn session_records(
     scope: &SessionScope,
     events: &[SessionEvent],
@@ -204,18 +197,16 @@ fn session_records(
             call.edits.map(|edits| (tool_call_id, call.at_ms, edits))
         })
         .flat_map(|(tool_call_id, at_ms, edits)| {
-            edits.iter().filter_map(move |edit| {
-                Some(AgentEditRecord {
-                    session_id: scope.session_id.to_string(),
-                    agent: scope.agent.to_string(),
-                    tool_call_id: tool_call_id.to_string(),
-                    at_ms,
-                    path: workspace_relative(&edit.path, scope.cwd, scope.root)?,
-                    text: edit.text.clone(),
-                    added: edit.added,
-                    removed: edit.removed,
-                    truncated: edit.truncated,
-                })
+            edits.iter().map(move |edit| AgentEditRecord {
+                session_id: scope.session_id.to_string(),
+                agent: scope.agent.to_string(),
+                tool_call_id: tool_call_id.to_string(),
+                at_ms,
+                path: edit.path.clone(),
+                text: edit.text.clone(),
+                added: edit.added,
+                removed: edit.removed,
+                truncated: edit.truncated,
             })
         })
         .collect()

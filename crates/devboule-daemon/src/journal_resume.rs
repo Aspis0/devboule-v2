@@ -249,6 +249,8 @@ struct TailDeriver {
     kind: Option<SessionKind>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
+    /// Where the tail's file changes resolve; see `agent_edit_path::confine_event`.
+    edit_scope: crate::agent_edit_path::EditScope,
     plan_marks: HashSet<String>,
     claude: Option<crate::claude_view::ClaudeView>,
     codex: Option<crate::codex_view::CodexView>,
@@ -268,6 +270,7 @@ impl TailDeriver {
             kind: kind.clone(),
             peer_session_id: runtime.peer_session_id(),
             cwd,
+            edit_scope: runtime.edit_scope().unwrap_or_default(),
             plan_marks: HashSet::new(),
             claude: None,
             codex: None,
@@ -309,6 +312,7 @@ impl TailDeriver {
                     continue;
                 }
                 crate::session::stamp_turn_time(&mut event, record.ts_ms);
+                crate::agent_edit_path::confine_event(&mut event, &self.edit_scope);
                 out.push((record.seq, event));
             }
         }

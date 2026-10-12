@@ -3,7 +3,9 @@
 //! workspace root. A path that leaves the root has no place in the workspace's
 //! records, so the reads never serve it.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
+
+use devboule_protocol::{AgentToolEdit, SessionEvent};
 
 /// One step of a lexically normalised path.
 #[derive(Debug, PartialEq, Eq)]
@@ -103,6 +105,40 @@ fn same_part(left: &Part, right: &Part) -> bool {
     } else {
         left == right
     }
+}
+
+/// Where a session's stored edit paths resolve: the directory its provider ran
+/// in, and the workspace root they must stay inside. No root drops every edit.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EditScope {
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) root: Option<PathBuf>,
+}
+
+/// Keeps a tool call's file changes only where they are inside the workspace
+/// root, each rewritten root-relative. An edit outside the root, or any edit
+/// when no root is known, leaves the event: a subscriber or a replay never
+/// receives text for a file outside the workspace.
+pub(crate) fn confine_event(event: &mut SessionEvent, scope: &EditScope) {
+    let (SessionEvent::AgentToolCall { edits, .. } | SessionEvent::AgentToolUpdate { edits, .. }) =
+        event
+    else {
+        return;
+    };
+    let Some(list) = edits.take() else {
+        return;
+    };
+    let kept: Vec<AgentToolEdit> = match scope.root.as_deref() {
+        None => Vec::new(),
+        Some(root) => list
+            .into_iter()
+            .filter_map(|mut edit| {
+                edit.path = workspace_relative(&edit.path, scope.cwd.as_deref(), root)?;
+                Some(edit)
+            })
+            .collect(),
+    };
+    *edits = (!kept.is_empty()).then_some(kept);
 }
 
 #[cfg(test)]

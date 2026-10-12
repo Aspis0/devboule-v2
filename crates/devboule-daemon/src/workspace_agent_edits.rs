@@ -6,7 +6,6 @@
 //! each call recorded, never a net figure the daemon guessed.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use devboule_protocol::{
     AgentCallRef, DaemonMessage, WorkspaceAgentEditFile, WorkspaceAgentEdits, WorkspaceGitTotals,
@@ -32,17 +31,17 @@ pub(crate) const MAX_REPLY_BYTES: usize = 512 * 1024;
 /// unknown workspace is refused the way every other workspace read refuses it.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str) -> DaemonMessage {
     let edits = match state.sessions.workspace_cwd(workspace_id) {
-        Ok(root) => read(state, workspace_id, &root),
+        Ok(_) => read(state, workspace_id),
         Err(error) => unavailable(error.message),
     };
     DaemonMessage::WorkspaceAgentEdits { id, edits }
 }
 
-fn read(state: &ServerState, workspace_id: &str, root: &Path) -> WorkspaceAgentEdits {
+fn read(state: &ServerState, workspace_id: &str) -> WorkspaceAgentEdits {
     let Some(journal) = state.sessions.journal_handle() else {
         return unavailable("the conversation journal is unavailable");
     };
-    let read = agent_edit_records::read(journal, workspace_id, root, crate::journal::now_ms());
+    let read = agent_edit_records::read(journal, workspace_id, crate::journal::now_ms());
     if let Some(error) = read.error {
         return unavailable(error);
     }

@@ -1196,6 +1196,7 @@ fn pull_live_agent_replay_events(
                     continue;
                 }
                 stamp_turn_time(&mut event, record.ts_ms);
+                pull.runtime.confine_edits(&mut event);
                 replay
                     .pending
                     .push_back((record.generation, record.seq, event));

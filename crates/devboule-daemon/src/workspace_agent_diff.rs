@@ -8,8 +8,6 @@
 //! carried: a record has no position in the file, and a number this module
 //! could not prove is worse than none.
 
-use std::path::Path;
-
 use devboule_protocol::{
     AgentCallRef, AgentEditText, DaemonMessage, WorkspaceAgentDiffStatus, WorkspaceAgentFileDiff,
     WorkspaceGitDiffLine, WorkspaceGitDiffLineKind,
@@ -31,7 +29,7 @@ pub(crate) fn reply(
     call: Option<AgentCallRef>,
 ) -> DaemonMessage {
     let diff = match state.sessions.workspace_cwd(workspace_id) {
-        Ok(root) => read(state, workspace_id, &root, path, call.as_ref()),
+        Ok(_) => read(state, workspace_id, path, call.as_ref()),
         Err(error) => refused(path, error.message),
     };
     DaemonMessage::WorkspaceAgentDiff { id, diff }
@@ -40,14 +38,13 @@ pub(crate) fn reply(
 fn read(
     state: &ServerState,
     workspace_id: &str,
-    root: &Path,
     path: &str,
     call: Option<&AgentCallRef>,
 ) -> WorkspaceAgentFileDiff {
     let Some(journal) = state.sessions.journal_handle() else {
         return refused(path, "the conversation journal is unavailable");
     };
-    let read = agent_edit_records::read(journal, workspace_id, root, crate::journal::now_ms());
+    let read = agent_edit_records::read(journal, workspace_id, crate::journal::now_ms());
     if let Some(error) = read.error {
         return refused(path, error);
     }

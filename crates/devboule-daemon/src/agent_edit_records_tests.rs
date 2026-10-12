@@ -8,7 +8,10 @@ use serde_json::json;
 use super::{
     read, session_records, AgentEditRecord, SessionScope, MAX_READ_BYTES, MAX_READ_SESSIONS,
 };
-use crate::journal::{new_session_record, now_ms, tmp_journal, EventKind, EventRecord, Journal};
+use crate::journal::{
+    new_session_record, now_ms, tmp_journal, EventKind, EventRecord, Journal, WorkspaceRecord,
+};
+use devboule_protocol::WorkspaceIsolation;
 
 fn root() -> &'static std::path::Path {
     std::path::Path::new(crate::test_support::FIXTURE_ROOT)
@@ -19,8 +22,6 @@ fn scoped(events: &[SessionEvent], times: &[Option<u64>]) -> Vec<AgentEditRecord
         session_id: "s.a",
         agent: "agent",
         fallback_ms: 900,
-        cwd: None,
-        root: root(),
     };
     session_records(&scope, events, times)
 }
@@ -91,6 +92,38 @@ fn a_call_without_edits_contributes_nothing() {
 }
 
 fn session(journal: &Journal, id: &str, workspace_id: &str, title: &str, closed: bool) {
+    session_in(journal, id, workspace_id, title, closed, None);
+}
+
+/// A session row whose provider ran in `cwd`, in a workspace rooted at the
+/// fixture root.
+fn session_in(
+    journal: &Journal,
+    id: &str,
+    workspace_id: &str,
+    title: &str,
+    closed: bool,
+    cwd: Option<&std::path::Path>,
+) {
+    if journal
+        .workspace_get(workspace_id)
+        .expect("workspace read")
+        .is_none()
+    {
+        ensure_project(journal, "p.1");
+        journal
+            .workspace_create(WorkspaceRecord {
+                id: workspace_id.to_string(),
+                project_id: "p.1".to_string(),
+                title: "Workspace".to_string(),
+                isolation: WorkspaceIsolation::Local,
+                path: root().to_string_lossy().into_owned(),
+                branch: None,
+                created_at_ms: now_ms(),
+                updated_at_ms: now_ms(),
+            })
+            .expect("workspace row");
+    }
     let mut record = new_session_record(
         id,
         "S-1-5-21-1",
@@ -99,7 +132,31 @@ fn session(journal: &Journal, id: &str, workspace_id: &str, title: &str, closed:
         title,
     );
     record.closed = closed;
+    record.cwd = cwd.map(|cwd| cwd.to_string_lossy().into_owned());
     journal.upsert_blocking(record).expect("session row");
+}
+
+fn ensure_project(journal: &Journal, project_id: &str) {
+    if journal
+        .project_get(project_id)
+        .expect("project read")
+        .is_none()
+    {
+        journal
+            .project_add(crate::journal::ProjectRecord {
+                id: project_id.to_string(),
+                name: "Project".to_string(),
+                path: crate::test_support::FIXTURE_ROOT.to_string(),
+                git_state: "not_repository".to_string(),
+                created_at_ms: now_ms(),
+                updated_at_ms: now_ms(),
+            })
+            .expect("project row");
+    }
+}
+
+fn call_json(tool_call_id: &str, edits: Vec<AgentToolEdit>) -> serde_json::Value {
+    serde_json::to_value(call(tool_call_id, Some(edits))).expect("event")
 }
 
 fn append_event(journal: &Journal, session_id: &str, seq: u64, event: serde_json::Value) {
@@ -148,7 +205,7 @@ fn the_workspace_read_lists_each_sessions_edits_and_skips_a_row_without_them() {
     );
     append_event(&journal, "s.other.1", 1, replace_call("c4", "x\n", "y\n"));
 
-    let found = read(&journal, "ws.1", root(), now_ms());
+    let found = read(&journal, "ws.1", now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -180,7 +237,7 @@ fn a_closed_child_still_contributes_its_edits() {
         replace_call("c1", "one\n", "two\n"),
     );
 
-    let found = read(&journal, "ws.1", root(), now_ms());
+    let found = read(&journal, "ws.1", now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -235,34 +292,87 @@ fn only_a_call_that_finished_completed_is_listed() {
 }
 
 #[test]
-fn a_path_outside_the_workspace_root_is_not_listed() {
+fn an_edit_outside_the_workspace_root_is_not_listed() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    session(&journal, "s.a.1", "ws.1", "Ada", false);
     let outside = root()
         .parent()
         .expect("the fixture root has a parent")
         .join("other.txt");
-    let events = vec![
-        call("escape", Some(vec![edit("../secret", 1)])),
-        call("absolute", Some(vec![edit(&outside.to_string_lossy(), 1)])),
-        call("inside", Some(vec![edit("src/lib.rs", 1)])),
-    ];
-    let records = scoped(&events, &[Some(100), Some(100), Some(100)]);
-    let paths: Vec<&str> = records.iter().map(|record| record.path.as_str()).collect();
+    append_event(
+        &journal,
+        "s.a.1",
+        1,
+        call_json("escape", vec![edit("../secret", 1)]),
+    );
+    append_event(
+        &journal,
+        "s.a.1",
+        2,
+        call_json("absolute", vec![edit(&outside.to_string_lossy(), 1)]),
+    );
+    append_event(
+        &journal,
+        "s.a.1",
+        3,
+        call_json("inside", vec![edit("src/lib.rs", 1)]),
+    );
+
+    let found = read(&journal, "ws.1", now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let paths: Vec<&str> = found
+        .records
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect();
     assert_eq!(paths, ["src/lib.rs"]);
 }
 
 #[test]
 fn an_edit_in_a_nested_child_cwd_is_root_relative() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
     let child = crate::test_support::fixture_path("sub");
-    let scope = SessionScope {
-        session_id: "s.a",
-        agent: "agent",
-        fallback_ms: 900,
-        cwd: Some(&child),
-        root: root(),
-    };
-    let events = vec![call("c1", Some(vec![edit("a.rs", 1)]))];
-    let records = session_records(&scope, &events, &[Some(100)]);
-    assert_eq!(records[0].path, "sub/a.rs");
+    session_in(
+        &journal,
+        "s.child.1",
+        "ws.1",
+        "Worker",
+        false,
+        Some(child.as_path()),
+    );
+    append_event(
+        &journal,
+        "s.child.1",
+        1,
+        call_json("own", vec![edit("a.rs", 1)]),
+    );
+    append_event(
+        &journal,
+        "s.child.1",
+        2,
+        call_json(
+            "parent",
+            vec![edit(
+                &crate::test_support::fixture_path("x.rs").to_string_lossy(),
+                1,
+            )],
+        ),
+    );
+
+    let found = read(&journal, "ws.1", now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let paths: Vec<&str> = found
+        .records
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect();
+    assert_eq!(paths, ["sub/a.rs", "x.rs"]);
 }
 
 #[test]
@@ -273,7 +383,7 @@ fn a_workspace_past_the_session_cap_is_reported_truncated() {
         session(&journal, &format!("s.{index:03}"), "ws.1", "Agent", false);
     }
 
-    let found = read(&journal, "ws.1", root(), now_ms());
+    let found = read(&journal, "ws.1", now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -298,7 +408,7 @@ fn a_read_skips_sessions_once_the_replay_byte_budget_is_spent() {
         journal.upsert_blocking(record).expect("session row");
     }
 
-    let found = read(&journal, "ws.1", root(), now_ms());
+    let found = read(&journal, "ws.1", now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -352,4 +462,49 @@ fn edits_carried_on_an_update_are_listed_once_the_call_completes() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].added, 2);
     assert_eq!(records[0].at_ms, 120);
+}
+
+#[test]
+fn a_replayed_session_carries_no_edit_outside_the_workspace() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    session(&journal, "s.a.1", "ws.1", "Ada", false);
+    let outside = root()
+        .parent()
+        .expect("the fixture root has a parent")
+        .join("other.txt");
+    append_event(
+        &journal,
+        "s.a.1",
+        1,
+        call_json("escape", vec![edit("../secret", 1)]),
+    );
+    append_event(
+        &journal,
+        "s.a.1",
+        2,
+        call_json(
+            "mixed",
+            vec![edit("src/lib.rs", 1), edit(&outside.to_string_lossy(), 1)],
+        ),
+    );
+
+    let reader = journal.open_reader().expect("reader");
+    let replay =
+        crate::journal::replay_session_including_closed_on(&reader, "s.a.1").expect("replay");
+    drop(reader);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let carried: Vec<Vec<String>> = replay
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentToolCall {
+                edits: Some(edits), ..
+            } => Some(edits.iter().map(|edit| edit.path.clone()).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(carried, vec![vec!["src/lib.rs".to_string()]]);
 }

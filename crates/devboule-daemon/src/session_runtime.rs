@@ -197,6 +197,8 @@ pub(crate) struct SessionRuntime {
     /// Unix ms the running turn began and the last one ended; 0 until set.
     turn_started_ms: AtomicU64,
     turn_ended_ms: AtomicU64,
+    /// Where this session's edit paths resolve, read from the journal once.
+    edit_scope: std::sync::OnceLock<crate::agent_edit_path::EditScope>,
     /// The turn status last *published* on this session's roster row, kept so a
     /// change can be announced and a non-change stays quiet. [`SessionRuntime::
     /// activity`] is the live reading; this is what clients were told.
@@ -653,6 +655,7 @@ impl SessionRuntime {
             turn_active: AtomicBool::new(false),
             turn_started_ms: AtomicU64::new(0),
             turn_ended_ms: AtomicU64::new(0),
+            edit_scope: std::sync::OnceLock::new(),
             // Nothing has been published yet, so the first reading of a live
             // session is a change and reaches the client that attached for it.
             published_activity: AtomicU8::new(activity_code(AgentActivityState::Idle)),
@@ -2271,6 +2274,33 @@ impl SessionRuntime {
         self.publish_agent_event_core(event, None, event_seq, false)
     }
 
+    /// Confines a live file change to the workspace. Until the session's row can
+    /// be read, and without a journal, the change has no root and is dropped.
+    pub(crate) fn confine_edits(&self, event: &mut SessionEvent) {
+        let carries_edits = matches!(
+            event,
+            SessionEvent::AgentToolCall { edits: Some(_), .. }
+                | SessionEvent::AgentToolUpdate { edits: Some(_), .. }
+        );
+        if !carries_edits {
+            return;
+        }
+        let scope = self.edit_scope().unwrap_or_default();
+        crate::agent_edit_path::confine_event(event, &scope);
+    }
+
+    pub(crate) fn edit_scope(&self) -> Option<crate::agent_edit_path::EditScope> {
+        if let Some(scope) = self.edit_scope.get() {
+            return Some(scope.clone());
+        }
+        let scope = self
+            .journal
+            .as_ref()?
+            .session_edit_scope(&self.session_id)?;
+        let _ = self.edit_scope.set(scope.clone());
+        Some(scope)
+    }
+
     fn publish_agent_event_core(
         &self,
         event: SessionEvent,
@@ -2288,6 +2318,7 @@ impl SessionRuntime {
         // instant, so the live event and its replay agree.
         let mut event = event;
         crate::journal::time_a_finish(&mut event, crate::journal::now_ms());
+        self.confine_edits(&mut event);
         self.record_agent_outcome(&event);
         // One place, every publisher: a provider client writes `local` as a
         // placeholder and never has to know which device asked for the session,
@@ -4809,3 +4840,7 @@ mod marker_pair_tests;
 #[cfg(test)]
 #[path = "session_runtime_turn_times_tests.rs"]
 mod turn_times_tests;
+
+#[cfg(test)]
+#[path = "session_runtime_edit_confinement_tests.rs"]
+mod edit_confinement_tests;
