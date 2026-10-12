@@ -350,8 +350,8 @@ fn the_registered_command_list_is_the_one_this_dispatch_runs() {
     assert_eq!(saved_login, vec!["fill_login_preview", "fill_login"]);
     assert_eq!(
         COMMANDS.len(),
-        22,
-        "4b-1 is fifteen, 4b-2 is five, and a saved login is a preview and a fill"
+        23,
+        "twenty-one tool commands, and a saved login is a preview and a fill"
     );
 }
 

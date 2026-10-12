@@ -66,6 +66,10 @@ pub(crate) fn browser_tool_title(name: &str, input: &Value) -> Option<String> {
             field(input, "zoom").map(|zoom| format!("zoom {zoom}")),
         ),
         "browser_click_at" => point(input),
+        "browser_resize" => row(
+            "resize",
+            join(field(input, "width"), field(input, "height")),
+        ),
         "browser_read_text" => row("read text", field(input, "scope")),
         "browser_console_logs" => row("console logs", field(input, "level")),
         "browser_fill_login" => row(

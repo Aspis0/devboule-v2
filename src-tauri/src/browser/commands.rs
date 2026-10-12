@@ -17,6 +17,7 @@ pub mod keys;
 pub mod logs;
 pub mod page_script;
 pub mod read;
+pub mod resize;
 pub mod see;
 pub mod shot;
 pub mod tabs;
@@ -65,7 +66,7 @@ pub fn code_name(code: BrowserErrorCode) -> &'static str {
 /// them because they are not tools: `fill_login_preview` is what the daemon
 /// asks before it puts the choice to a person, and it has no agent-facing
 /// name at all.
-pub const COMMANDS: [&str; 22] = [
+pub const COMMANDS: [&str; 23] = [
     "new_tab",
     "list_tabs",
     "close_tab",
@@ -84,6 +85,7 @@ pub const COMMANDS: [&str; 22] = [
     "act",
     "screenshot",
     "click_at",
+    "resize",
     "read_text",
     "console_logs",
     "fill_login_preview",
@@ -374,6 +376,7 @@ pub async fn on_tab(
         "console_logs" => logs::logs(&tab.browser_id, args),
         "click" | "fill" | "type" | "press" | "select" | "check" | "hover" | "scroll"
         | "click_at" => input::run(tab, page, command, args, deadline).await,
+        "resize" => resize::resize(tab, page, args).await,
         "wait_for" => wait::wait_for(tab, page, args, deadline).await,
         // The daemon only routes a command this host registered, so this is a
         // wiring fault rather than a caller's mistake — and it is reported as

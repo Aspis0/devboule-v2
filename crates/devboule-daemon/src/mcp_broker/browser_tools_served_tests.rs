@@ -42,6 +42,7 @@ fn every_contract_command_is_served_under_its_browser_name() {
         ("browser_act", "act"),
         ("browser_screenshot", "screenshot"),
         ("browser_click_at", "click_at"),
+        ("browser_resize", "resize"),
         ("browser_read_text", "read_text"),
         ("browser_console_logs", "console_logs"),
         ("browser_fill_login", "fill_login"),
@@ -137,6 +138,10 @@ fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
     let click_at = browser_commands::schema_for("browser_click_at").expect("click_at");
     assert_eq!(click_at["required"], json!(["browserId", "x", "y"]));
     assert_eq!(click_at["properties"]["clickCount"]["maximum"], json!(3));
+    let resize = browser_commands::schema_for("browser_resize").expect("resize");
+    assert_eq!(resize["required"], json!(["browserId", "width", "height"]));
+    assert_eq!(resize["properties"]["width"]["minimum"], json!(1));
+    assert_eq!(resize["properties"]["height"]["maximum"], json!(4096));
 
     let login = browser_commands::schema_for("browser_fill_login").expect("fill_login");
     assert_eq!(login["required"], json!(["browserId"]), "{login}");

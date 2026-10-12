@@ -428,6 +428,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Clicks one point of the viewport by CSS pixel coordinates, and answers what the click changed. Use it only for something with no ref of its own - a canvas, a map, a drawn chart - and only with coordinates you read off the last browser_screenshot, which are the same pixels. Everything with a ref is better off clicked by that ref. button and clickCount narrow it.",
     ),
     (
+        MCP_BROWSER_RESIZE_TOOL,
+        "Sets a tab's viewport to width by height CSS pixels and answers the size the page now has, so a layout can be checked at a phone's or a tablet's size. The size stays for the tab's later commands. It works on a tab in the background only: a tab on screen in a pane takes its size from the pane, and answers that it cannot be resized.",
+    ),
+    (
         MCP_BROWSER_READ_TEXT_TOOL,
         "Reads a tab's readable text - headings as #, lists as -, links as [text](href) - and answers url, title and the text, capped at 12000 characters with a cursor to continue from. Use it to read an article or a search result instead of walking a control at a time; scope reads one element's subtree. It carries no refs, so snapshot before you act.",
     ),
@@ -735,6 +739,7 @@ pub const MCP_BROWSER_WAIT_FOR_TOOL: &str = "browser_wait_for";
 pub const MCP_BROWSER_ACT_TOOL: &str = "browser_act";
 pub const MCP_BROWSER_SCREENSHOT_TOOL: &str = "browser_screenshot";
 pub const MCP_BROWSER_CLICK_AT_TOOL: &str = "browser_click_at";
+pub const MCP_BROWSER_RESIZE_TOOL: &str = "browser_resize";
 pub const MCP_BROWSER_READ_TEXT_TOOL: &str = "browser_read_text";
 pub const MCP_BROWSER_CONSOLE_LOGS_TOOL: &str = "browser_console_logs";
 pub const MCP_BROWSER_FILL_LOGIN_TOOL: &str = "browser_fill_login";
@@ -1341,6 +1346,7 @@ const DESIGN_DENIED: &[&str] = &[
     MCP_BROWSER_ACT_TOOL,
     MCP_BROWSER_SCREENSHOT_TOOL,
     MCP_BROWSER_CLICK_AT_TOOL,
+    MCP_BROWSER_RESIZE_TOOL,
     MCP_BROWSER_READ_TEXT_TOOL,
     MCP_BROWSER_CONSOLE_LOGS_TOOL,
     MCP_BROWSER_FILL_LOGIN_TOOL,

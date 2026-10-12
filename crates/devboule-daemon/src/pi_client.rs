@@ -476,6 +476,10 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         requires_confirmation: false,
     },
     PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_RESIZE_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
         name: crate::provider_catalog::MCP_BROWSER_READ_TEXT_TOOL,
         requires_confirmation: false,
     },

@@ -84,7 +84,7 @@ fn the_browser_grant_opens_the_lane_and_nothing_else() {
         );
         held.pop();
     }
-    assert_eq!(TOOLS.len(), 21, "every tool of the lane was walked");
+    assert_eq!(TOOLS.len(), 22, "every tool of the lane was walked");
 }
 
 /// The one refusal no capability opens. A saved login belongs to the person at

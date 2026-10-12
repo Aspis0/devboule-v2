@@ -96,6 +96,11 @@ fn a_row_names_the_command_and_the_argument_it_was_given() {
             json!({"x": 120, "y": 80}),
             "click at 120,80",
         ),
+        (
+            "browser_resize",
+            json!({"width": 390, "height": 844}),
+            "resize 390 844",
+        ),
         ("browser_read_text", json!({}), "read text"),
         ("browser_read_text", json!({"scope": "e4"}), "read text e4"),
         (

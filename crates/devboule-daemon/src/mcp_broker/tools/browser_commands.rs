@@ -18,8 +18,9 @@ use crate::provider_catalog::{
     MCP_BROWSER_FILL_LOGIN_TOOL, MCP_BROWSER_FILL_TOOL, MCP_BROWSER_FIND_TOOL,
     MCP_BROWSER_HOVER_TOOL, MCP_BROWSER_LIST_TABS_TOOL, MCP_BROWSER_NAVIGATE_TOOL,
     MCP_BROWSER_NEW_TAB_TOOL, MCP_BROWSER_PRESS_TOOL, MCP_BROWSER_READ_TEXT_TOOL,
-    MCP_BROWSER_SCREENSHOT_TOOL, MCP_BROWSER_SCROLL_TOOL, MCP_BROWSER_SELECT_TOOL,
-    MCP_BROWSER_SNAPSHOT_TOOL, MCP_BROWSER_TYPE_TOOL, MCP_BROWSER_WAIT_FOR_TOOL,
+    MCP_BROWSER_RESIZE_TOOL, MCP_BROWSER_SCREENSHOT_TOOL, MCP_BROWSER_SCROLL_TOOL,
+    MCP_BROWSER_SELECT_TOOL, MCP_BROWSER_SNAPSHOT_TOOL, MCP_BROWSER_TYPE_TOOL,
+    MCP_BROWSER_WAIT_FOR_TOOL,
 };
 
 use super::browser_args::{optional, required, Kind, Spec};
@@ -44,6 +45,7 @@ pub(in crate::mcp_broker) const TOOLS: &[(&str, &str)] = &[
     (MCP_BROWSER_ACT_TOOL, "act"),
     (MCP_BROWSER_SCREENSHOT_TOOL, "screenshot"),
     (MCP_BROWSER_CLICK_AT_TOOL, "click_at"),
+    (MCP_BROWSER_RESIZE_TOOL, "resize"),
     (MCP_BROWSER_READ_TEXT_TOOL, "read_text"),
     (MCP_BROWSER_CONSOLE_LOGS_TOOL, "console_logs"),
     (MCP_BROWSER_FILL_LOGIN_TOOL, "fill_login"),
@@ -53,6 +55,10 @@ pub(in crate::mcp_broker) const TOOLS: &[(&str, &str)] = &[
 /// the host still has room to answer a timeout with the page's state rather than
 /// with nothing.
 const MAX_WAIT_MS: i64 = 12_000;
+
+/// The largest viewport side an agent may ask for: one call cannot make the
+/// renderer lay the page out at an unbounded size.
+const MAX_VIEWPORT_SIDE: i64 = 4096;
 
 const SCROLL_DIRECTIONS: &[&str] = &["up", "down"];
 const SNAPSHOT_MODES: &[&str] = &["interactive", "full"];
@@ -241,6 +247,18 @@ const SPECS: &[Spec] = &[
             required("y", Kind::Number(0.0, None)),
             optional("button", Kind::Choices(CLICK_BUTTONS)),
             optional("clickCount", Kind::Integer(1, Some(3))).described("2 is a double click."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    Spec {
+        command: "resize",
+        fields: &[
+            required("browserId", Kind::Tab),
+            required("width", Kind::Integer(1, Some(MAX_VIEWPORT_SIDE)))
+                .described("The viewport's width in CSS pixels, such as 390 for a phone."),
+            required("height", Kind::Integer(1, Some(MAX_VIEWPORT_SIDE)))
+                .described("The viewport's height in CSS pixels, such as 844 for a phone."),
         ],
         alternatives: &[],
         tab: true,

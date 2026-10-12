@@ -54,7 +54,8 @@ impl Live {
         *self.presented.lock().expect("browser geometry poisoned")
     }
 
-    /// The pane showed the page at this size. Kept past the park.
+    /// The size a parked page is measured at: the one a pane last showed it at,
+    /// or the one a resize asked for. Kept past the park.
     pub fn set_size(&self, size: Size) {
         *self.presented.lock().expect("browser geometry poisoned") = size;
     }
