@@ -871,11 +871,6 @@ enum JournalCmd {
         record: ProjectRecord,
         reply: mpsc::Sender<Result<ProjectRecord, JournalError>>,
     },
-    ProjectGitStateSet {
-        id: String,
-        git_state: String,
-        reply: mpsc::Sender<Result<(), JournalError>>,
-    },
     ProjectGet {
         id: String,
         reply: mpsc::Sender<Result<Option<ProjectRecord>, JournalError>>,
@@ -1577,14 +1572,6 @@ impl Journal {
     /// returns its existing stable record and never creates a second id.
     pub fn project_add(&self, record: ProjectRecord) -> Result<ProjectRecord, JournalError> {
         self.rpc(|reply| JournalCmd::ProjectAdd { record, reply })
-    }
-
-    pub fn project_git_state_set(&self, id: &str, git_state: &str) -> Result<(), JournalError> {
-        self.rpc(|reply| JournalCmd::ProjectGitStateSet {
-            id: id.to_string(),
-            git_state: git_state.to_string(),
-            reply,
-        })
     }
 
     pub fn project_get(&self, id: &str) -> Result<Option<ProjectRecord>, JournalError> {
@@ -2554,17 +2541,6 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
-            JournalCmd::ProjectGitStateSet {
-                id,
-                git_state,
-                reply,
-            } => {
-                let result = set_project_git_state(&conn, &id, &git_state);
-                if let Err(error) = &result {
-                    on_write_error(error);
-                }
-                let _ = reply.send(result);
-            }
             JournalCmd::ProjectGet { id, reply } => {
                 let _ = reply.send(get_project(&conn, &id));
             }
@@ -2840,14 +2816,6 @@ fn get_project(conn: &Connection, id: &str) -> Result<Option<ProjectRecord>, Jou
     .map_err(JournalError::from)
 }
 
-fn set_project_git_state(conn: &Connection, id: &str, git_state: &str) -> Result<(), JournalError> {
-    conn.execute(
-        "UPDATE projects SET git_state = ?2 WHERE id = ?1",
-        params![id, git_state],
-    )?;
-    Ok(())
-}
-
 fn add_project(conn: &Connection, record: &ProjectRecord) -> Result<ProjectRecord, JournalError> {
     let tx = conn.unchecked_transaction()?;
     if let Some(existing) = tx
@@ -2859,11 +2827,11 @@ fn add_project(conn: &Connection, record: &ProjectRecord) -> Result<ProjectRecor
         )
         .optional()?
     {
-        // Re-registering is the explicit refresh boundary for project
-        // metadata. Listing re-probes only a folder recorded as outside a
-        // repository (`projects_list`), not every row, which would spawn one
-        // git process per project on each list. Adding a path again also
-        // lists a project that was removed from the list.
+        // Re-registering is the refresh boundary for project metadata: the
+        // caller has just probed git, and this UPDATE stores its answer. A
+        // list never probes, so a folder's git state moves only when it is
+        // registered again. Adding a path again also lists a project that was
+        // removed from the list.
         tx.execute(
             "UPDATE projects
                 SET name = ?2, git_state = ?3, updated_at_ms = ?4, archived_at_ms = NULL

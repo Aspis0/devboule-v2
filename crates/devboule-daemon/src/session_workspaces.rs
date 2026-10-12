@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::git::git_state_allows_worktree;
-use crate::workspace::repository_since_registration;
 
 /// Per-workspace create/delete bookkeeping under one short mutex: which
 /// workspaces have a create or resume in flight, and which carry the
@@ -437,20 +436,17 @@ impl super::SessionRegistry {
     }
 
     pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
-        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
-        let records = journal.projects_list().map_err(WireError::from)?;
-        records
-            .into_iter()
-            .map(|mut record| -> Result<Project, WireError> {
-                if let Some(state) = repository_since_registration(&record) {
-                    journal
-                        .project_git_state_set(&record.id, state)
-                        .map_err(WireError::from)?;
-                    record.git_state = state.to_string();
-                }
-                Ok(record.to_project())
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .projects_list()
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(|project| project.to_project())
+                    .collect()
             })
-            .collect()
+            .map_err(WireError::from)
     }
 
     pub fn project_add(&self, path: &str) -> Result<Project, WireError> {

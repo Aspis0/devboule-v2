@@ -1881,8 +1881,10 @@ describe("Workspace sessions", () => {
     ).toBe("hello");
   });
 
-  it("re-reads the projects when the sheet opens, with no loading line, so a folder git init'ed since the last read offers worktrees", async () => {
-    vi.mocked(projectsList).mockResolvedValueOnce([{ ...project, worktreeSupport: "unsupported" }]);
+  it("registers the folder the sheet opens on before the list is read again, with no loading line", async () => {
+    vi.mocked(projectsList)
+      .mockResolvedValueOnce([{ ...project, worktreeSupport: "unsupported" }])
+      .mockResolvedValueOnce([{ ...project, worktreeSupport: "supported" }]);
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
@@ -1891,20 +1893,22 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
     expect(projectsList).toHaveBeenCalledTimes(1);
 
-    let answer: (projects: Project[]) => void = () => undefined;
-    vi.mocked(projectsList).mockReturnValueOnce(
-      new Promise<Project[]>((resolve) => {
-        answer = resolve;
+    let registered: (value: Project) => void = () => undefined;
+    vi.mocked(projectAdd).mockReturnValueOnce(
+      new Promise<Project>((resolve) => {
+        registered = resolve;
       }),
     );
     await openSheet();
 
-    expect(projectsList).toHaveBeenCalledTimes(2);
+    expect(projectAdd).toHaveBeenCalledWith(project.path);
+    expect(projectsList).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain("Loading projects");
     expect(sheetLabels()).not.toContain("Isolation");
 
-    await act(async () => answer([{ ...project, worktreeSupport: "supported" }]));
+    await act(async () => registered({ ...project, worktreeSupport: "supported" }));
     await act(async () => undefined);
+    expect(projectsList).toHaveBeenCalledTimes(2);
     expect(sheetLabels()).toContain("Isolation");
   });
 

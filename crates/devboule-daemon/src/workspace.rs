@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{ErrorCode, WireError, WorkspaceIsolation};
 
-use crate::git::{detect_git_repository, git_state_allows_worktree};
+use crate::git::detect_git_repository;
 use crate::journal::{ProjectRecord, WorkspaceRecord};
 
 static ENTITY_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -21,17 +21,6 @@ pub(crate) fn project_record(path: &str) -> Result<ProjectRecord, WireError> {
         created_at_ms: now,
         updated_at_ms: now,
     })
-}
-
-/// The repository state of a folder recorded outside one, once `git init` has
-/// made it one. Only a confirmed repository answers: a probe that fails keeps
-/// the recorded word.
-pub(crate) fn repository_since_registration(record: &ProjectRecord) -> Option<&'static str> {
-    if record.git_state != "not_repository" {
-        return None;
-    }
-    let status = detect_git_repository(Path::new(&record.path)).as_str();
-    git_state_allows_worktree(status).then_some(status)
 }
 
 pub(crate) fn local_workspace_record(project: &ProjectRecord) -> WorkspaceRecord {

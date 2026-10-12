@@ -178,6 +178,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import {
   daemonRestart,
+  projectAdd,
   providersList,
   sessionClose,
   sessionResume,
@@ -192,6 +193,7 @@ import { workspaceFileIndex } from "./workspaceFileIndex";
 import { openChatFileLink } from "./chatFileOpen";
 import type { TranscriptSearchProps } from "./sidebar/TranscriptSearchResults";
 import { isCommandError } from "../../lib/commandError";
+import { waitAtMost } from "../../lib/waitAtMost";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
 import "./panel/panel.css";
@@ -217,6 +219,8 @@ const ATTACHMENTS_UPLOAD_CAPABILITY = "attachments.upload";
 const SESSIONS_SEARCH_CAPABILITY = "sessions.search";
 /** Said wherever a tab or agent is asked for with no workspace selected. */
 const NO_WORKSPACE_SENTENCE = "No workspace is selected.";
+/** How long opening the sheet waits for its folder to be registered again. */
+const SHEET_REGISTER_DEADLINE_MS = 2_000;
 const NO_WORKSPACE_ERROR: ErrorSentence = { sentence: NO_WORKSPACE_SENTENCE, detail: null };
 /** The empty pane's reason, linked to its disabled action. */
 const EMPTY_PANE_REASON_ID = "workspace-empty-reason";
@@ -1798,11 +1802,17 @@ export function Workspace({
     (trigger: HTMLButtonElement, projectId: string) => {
       sheetTriggerRef.current = trigger;
       setSheet((open) => ({ nonce: (open?.nonce ?? 0) + 1, projectId }));
-      // The sheet's worktree option depends on git's answer now, not on the
-      // last list: a `git init` since then must show up when the sheet opens.
-      void refreshProjects();
+      // A `git init` since the folder was listed shows only once the daemon
+      // probes it again, which registering the folder does. The list is read
+      // after that, or after the deadline, when the stored value stands.
+      const shown =
+        projects.find((project) => project.id === projectId) ??
+        projects.find((project) => project.hostId === LOCAL_HOST_ID);
+      const registered =
+        shown?.hostId === LOCAL_HOST_ID ? projectAdd(shown.path) : Promise.resolve(null);
+      void waitAtMost(SHEET_REGISTER_DEADLINE_MS, registered).then(() => refreshProjects());
     },
-    [refreshProjects],
+    [projects, refreshProjects],
   );
   const closeSheet = useCallback(() => {
     setSheet(null);

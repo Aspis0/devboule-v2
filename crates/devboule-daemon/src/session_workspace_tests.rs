@@ -474,10 +474,10 @@ fn worktree_create_refuses_when_live_git_is_not_a_repository() {
     );
 }
 
-/// A folder registered before `git init` offers worktrees once the list is
-/// read again, and the recorded state follows, so the next read agrees.
+/// A listed folder keeps the git state it was registered with: a list never
+/// probes git, and registering the folder again is what reads it afresh.
 #[test]
-fn a_folder_registered_before_git_init_offers_worktrees_on_the_next_list() {
+fn a_list_keeps_the_git_state_until_the_folder_is_registered_again() {
     let (dir, registry, journal) = tmp_delete_registry();
     let root = dir.join("LateRepo");
     std::fs::create_dir_all(&root).expect("project folder");
@@ -504,9 +504,19 @@ fn a_folder_registered_before_git_init_offers_worktrees_on_the_next_list() {
             .expect("the registered folder is listed");
         assert_eq!(
             row.worktree_support,
-            devboule_protocol::WorktreeSupport::Supported
+            devboule_protocol::WorktreeSupport::Unsupported,
+            "a list must not probe git"
         );
     }
+
+    let again = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("registering again");
+    assert_eq!(again.id, project.id);
+    assert_eq!(
+        again.worktree_support,
+        devboule_protocol::WorktreeSupport::Supported
+    );
     let stored = journal
         .project_get(&project.id)
         .expect("get project")
