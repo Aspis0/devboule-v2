@@ -4303,6 +4303,22 @@ fn a_direct_create_without_a_mode_parses_for_inheritance() {
     ));
 }
 
+#[test]
+fn an_empty_workspace_or_cwd_is_absent_as_every_other_optional_text_is() {
+    let arguments = json!({
+        "title": "b",
+        "initialPrompt": "x",
+        "provider": "claude",
+        "model": "claude-haiku-5-5",
+        "workspaceId": "",
+        "cwd": ""
+    });
+    let request =
+        AgentCreateRequest::parse(&arguments).expect("an empty optional text is no request");
+    assert_eq!(request.workspace_id, None);
+    assert_eq!(request.cwd, None);
+}
+
 /// The fingerprint is what a retry must match, so it covers
 /// every field the answer depends on — including the ones that say *where*
 /// the child runs and whether the creator wants to hear about it.

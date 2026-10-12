@@ -172,14 +172,14 @@ impl AgentCreateRequest {
 /// The creation's choice out of the arguments: a profile by name, or the
 /// provider and model the caller names with its mode or preset. A profile names
 /// the whole configuration, so a direct setting beside it is refused rather
-/// than guessed between. A `null` is absent, as everywhere else in this tool.
+/// than guessed between. A `null` or an empty string is absent, as everywhere else in this tool.
 fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, String> {
-    let profile = optional_text("profile", object)?.filter(|value| !value.is_empty());
-    let provider = optional_text("provider", object)?.filter(|value| !value.is_empty());
-    let model = optional_text("model", object)?.filter(|value| !value.is_empty());
-    let mode = optional_text("mode", object)?.filter(|value| !value.is_empty());
-    let effort = optional_text("effort", object)?.filter(|value| !value.is_empty());
-    let preset = optional_text("preset", object)?.filter(|value| !value.is_empty());
+    let profile = optional_text("profile", object)?;
+    let provider = optional_text("provider", object)?;
+    let model = optional_text("model", object)?;
+    let mode = optional_text("mode", object)?;
+    let effort = optional_text("effort", object)?;
+    let preset = optional_text("preset", object)?;
     let Some(name) = profile else {
         let provider =
             provider.ok_or_else(|| "provider is required when no profile is named".to_string())?;
@@ -223,16 +223,18 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
 
 /// One optional string parameter, with its type enforced (audit S5-09).
 ///
-/// A `workspaceId` of `null` is absent; a number, a list or an object is an
-/// invalid-params error rather than a silently ignored parameter — the caller
-/// asked for something and must be told it was not understood, especially when
-/// what it asked for was *where* the child would run.
+/// A `null` or an empty string is absent: an agent that leaves a field blank
+/// asked for nothing. A number, a list or an object is an invalid-params error
+/// rather than a silently ignored parameter — the caller asked for something
+/// and must be told it was not understood, especially when what it asked for
+/// was *where* the child would run.
 fn optional_text(
     key: &str,
     object: &serde_json::Map<String, Value>,
 ) -> Result<Option<String>, String> {
     match object.get(key) {
         None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value.is_empty() => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
         Some(_) => Err(format!("{key} must be a string")),
     }

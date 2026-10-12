@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ToolChatItem } from "../../lib/toolCallGroups";
-import { devbouleChildSession, devbouleToolLine } from "./devbouleToolLine";
+import { devbouleChildSession, devbouleFailureText, devbouleToolLine } from "./devbouleToolLine";
 
 function call(title: string, output = "", status = "completed"): ToolChatItem {
   return {
@@ -117,6 +117,18 @@ describe("a call that did not finish", () => {
     expect(devbouleToolLine(call("devboule_create_agent", ""), "cancelled")).toBe(
       "Cancelled · start of an agent",
     );
+  });
+});
+
+describe("the reason a failed Devboule call gives", () => {
+  it("drops the MCP error code the transport puts in front of the daemon's sentence", () => {
+    expect(devbouleFailureText("Mcp error -32602: provider is required")).toBe(
+      "provider is required",
+    );
+  });
+
+  it("keeps a reason that carries no error code as it is", () => {
+    expect(devbouleFailureText("the creation is refused")).toBe("the creation is refused");
   });
 });
 

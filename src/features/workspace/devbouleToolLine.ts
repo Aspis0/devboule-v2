@@ -99,6 +99,11 @@ export function devbouleResultName(output: string): string | undefined {
   return resultName(parseResult(output));
 }
 
+/** A failed call's reason without the JSON-RPC error code the transport puts before it. */
+export function devbouleFailureText(reason: string): string {
+  return reason.replace(/^Mcp error -?\d+: /, "");
+}
+
 /** The child session a call's result names: what a click on the line opens. */
 export function devbouleChildSession(output: string): string | undefined {
   const value = parseResult(output)?.sessionId;
@@ -151,7 +156,8 @@ export function devbouleToolLine(
 
 /**
  * Whether a Devboule call's raw result may open behind its line: a sent message's
- * body only. The other calls open the child they touched, so their result stays hidden.
+ * body. The other calls open the child they touched, so their result stays hidden,
+ * except when the call failed: then the row opens its error.
  */
 export function devbouleShowsOutput(title: string): boolean {
   return FAMILY_BY_NAME.get(splitTitle(title).name) === "send";

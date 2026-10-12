@@ -197,7 +197,7 @@ describe("quiet lines", () => {
     expect(host.querySelector("details")).toBeNull();
   });
 
-  it("reads a failed create as a sentence with no detail, and never shows its raw result", async () => {
+  it("reads a failed create as its sentence with the reason on the line, and opens to the error", async () => {
     await show([
       call(
         "mcp__devboule__devboule_create_agent",
@@ -207,8 +207,11 @@ describe("quiet lines", () => {
     ]);
 
     expect(host.textContent).toContain("Couldn't start the agent");
+    expect(host.textContent).toContain("provider is required");
     expect(host.textContent).not.toContain("Mcp error");
-    expect(host.querySelector("details")).toBeNull();
+    expect(host.querySelector("details")).not.toBeNull();
+    await act(async () => host.querySelector("summary")?.click());
+    expect(host.textContent).toContain("Mcp error -32602: provider is required");
   });
 
   it("names an unrecovered failed command with its failure word and triangle", async () => {

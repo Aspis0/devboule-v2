@@ -4,7 +4,12 @@ import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
-import { devbouleChildSession, devbouleShowsOutput, devbouleToolLine } from "../devbouleToolLine";
+import {
+  devbouleChildSession,
+  devbouleFailureText,
+  devbouleShowsOutput,
+  devbouleToolLine,
+} from "../devbouleToolLine";
 import { AgentIcon } from "../ActivityRow";
 import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 import { CommandChip, ExitMarker } from "../CommandRow";
@@ -56,7 +61,8 @@ export const ToolRow = memo(function ToolRow({
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);
-  const showsOutput = devboule === undefined || devbouleShowsOutput(item.title);
+  // A failed call opens to its error, and its line names the reason.
+  const showsOutput = devboule === undefined || devbouleShowsOutput(item.title) || failed;
   const shownOutput = showsOutput ? item.output : "";
   // A line about a child opens that child; its raw result stays behind no click.
   const childSession =
@@ -131,6 +137,16 @@ export const ToolRow = memo(function ToolRow({
           <span className="workspace-chat-tool-label is-sentence" title={devboule}>
             {devboule}
           </span>
+          {reason !== null ? (
+            <>
+              <span className="workspace-chat-tool-sep" aria-hidden="true">
+                ·
+              </span>
+              <span className="workspace-chat-tool-summary-text" title={reason}>
+                {devbouleFailureText(reason)}
+              </span>
+            </>
+          ) : null}
         </span>
       ) : (
         <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
