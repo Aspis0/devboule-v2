@@ -1016,6 +1016,11 @@ impl SessionRegistry {
             .map(|journal| journal.file_len().map_err(|error| error.to_string()))
     }
 
+    /// The journal this registry writes, for the reads that replay its rows.
+    pub(crate) fn journal_handle(&self) -> Option<&Arc<Journal>> {
+        self.journal.as_ref()
+    }
+
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>, epoch: String) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),

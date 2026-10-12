@@ -2906,6 +2906,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceGitDiscard { .. } => None,
         ClientMessage::WorkspaceGitCommit { .. } => None,
         ClientMessage::WorkspaceGitLog { .. } => None,
+        ClientMessage::WorkspaceAgentEdits { .. } => None,
+        ClientMessage::WorkspaceAgentDiff { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
         ClientMessage::WorkspaceFileRename { .. } => None,

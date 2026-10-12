@@ -321,19 +321,35 @@ pub(super) fn replay_agent_page(
 /// closed rows accumulate for the daemon's whole life and are none of this
 /// path's business (history rides the transcript, not the live roster).
 pub(crate) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                generation, status, exit_code, closed, last_seq, degraded,
-                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                peer_session_id, provider, origin_kind, origin_device, origin_role,
-                display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                overlay, depth, disowned_peer_session_id, cwd, goal
-         FROM sessions WHERE closed = 0 ORDER BY id",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SESSION_COLUMNS} FROM sessions WHERE closed = 0 ORDER BY id"
+    ))?;
     let rows = stmt.query_map([], row_to_session)?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(JournalError::from)
 }
+
+/// Every session row of one workspace, closed ones included: a child the idle
+/// sweep closed still made the edits its folder shows.
+pub(crate) fn list_workspace_sessions(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<SessionRecord>, JournalError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SESSION_COLUMNS} FROM sessions WHERE workspace_id = ?1 ORDER BY updated_at_ms DESC"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_session)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
+}
+
+/// The columns [`row_to_session`] reads, in the order it reads them.
+const SESSION_COLUMNS: &str = "id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+        generation, status, exit_code, closed, last_seq, degraded,
+        dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
+        peer_session_id, provider, origin_kind, origin_device, origin_role,
+        display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+        overlay, depth, disowned_peer_session_id, cwd, goal";
 
 /// One session row, by id, and only if it belongs to `owner` and was created
 /// by `created_by`: the status fallback's stored read (`devboule_get_agent_status`).
@@ -513,22 +529,34 @@ fn deserialize_overlay(raw: Option<String>) -> Option<crate::provider_catalog::T
     known.then(|| crate::provider_catalog::ToolOverlay::from_profile_names(&names))
 }
 
+/// One open session replayed whole; a closed one is `SessionNotFound`.
 pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Replay, JournalError> {
+    replay_record(conn, session_id, false)
+}
+
+/// One session replayed whole, closed or not: the agent-edit reads answer from
+/// a child's transcript after the idle sweep has closed it.
+pub(crate) fn replay_session_including_closed(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Replay, JournalError> {
+    replay_record(conn, session_id, true)
+}
+
+fn replay_record(
+    conn: &Connection,
+    session_id: &str,
+    include_closed: bool,
+) -> Result<Replay, JournalError> {
     let record = conn
         .query_row(
-            "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                    generation, status, exit_code, closed, last_seq, degraded,
-                    dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                    peer_session_id, provider, origin_kind, origin_device, origin_role,
-                    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                    overlay, depth, disowned_peer_session_id, cwd, goal
-             FROM sessions WHERE id = ?1",
+            &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
             [session_id],
             row_to_session,
         )
         .optional()?
         .ok_or(JournalError::SessionNotFound)?;
-    if record.closed {
+    if record.closed && !include_closed {
         return Err(JournalError::SessionNotFound);
     }
     let generation = record.generation;

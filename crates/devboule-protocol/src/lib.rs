@@ -75,6 +75,7 @@
 //! [`ErrorCode::IdempotencyConflict`].
 
 mod address_ranges;
+mod agent_edit_reads;
 mod attachments;
 mod browser;
 mod capability;
@@ -104,6 +105,10 @@ mod tasks_frames_tests;
 
 pub use address_ranges::{
     address_blocked, is_localhost, literal_address, looks_numeric, normalise_host,
+};
+pub use agent_edit_reads::{
+    AgentCallRef, WorkspaceAgentDiffStatus, WorkspaceAgentEditFile, WorkspaceAgentEdits,
+    WorkspaceAgentFileDiff,
 };
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
@@ -296,7 +301,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Protocol 41 adds the `always` permission kind and `Attention.always`: a card
 /// the person must answer in every mode says so, so the app can announce it for
 /// any session. An older app would read it as an ordinary card.
-pub const PROTOCOL_VERSION: u32 = 41;
+///
+/// Protocol 42 adds the agent-edit reads, `WorkspaceAgentEdits` (the files a
+/// workspace's agents changed) and `WorkspaceAgentDiff` (one file's diff as they
+/// made it), gated like the git reads. Same new-variant rule.
+pub const PROTOCOL_VERSION: u32 = 42;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

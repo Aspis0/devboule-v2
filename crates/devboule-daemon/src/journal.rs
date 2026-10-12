@@ -1041,6 +1041,24 @@ pub(crate) fn replay_session_on(
     journal_replay::replay_session(conn, session_id)
 }
 
+/// The session rows of one workspace, closed ones included, on a connection the
+/// caller opened.
+pub(crate) fn sessions_of_workspace_on(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<SessionRecord>, JournalError> {
+    journal_replay::list_workspace_sessions(conn, workspace_id)
+}
+
+/// One session replayed on a connection the caller opened, closed or not. The
+/// same bound as [`replay_session_on`]: the caller checks the size first.
+pub(crate) fn replay_session_including_closed_on(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Replay, JournalError> {
+    journal_replay::replay_session_including_closed(conn, session_id)
+}
+
 pub struct Journal {
     tx: SyncSender<JournalCmd>,
     join: Mutex<Option<JoinHandle<()>>>,

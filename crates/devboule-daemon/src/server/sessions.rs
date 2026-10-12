@@ -706,6 +706,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceGitLog { .. }
+        | ClientMessage::WorkspaceAgentEdits { .. }
+        | ClientMessage::WorkspaceAgentDiff { .. }
         | ClientMessage::WorkspaceGitStage { .. }
         | ClientMessage::WorkspaceGitUnstage { .. }
         | ClientMessage::WorkspaceGitDiscard { .. }

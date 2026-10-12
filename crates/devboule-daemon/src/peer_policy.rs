@@ -463,6 +463,8 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         // the folder never a workspace path.
         ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
+        | ClientMessage::WorkspaceAgentEdits { .. }
+        | ClientMessage::WorkspaceAgentDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileOpen { .. }
@@ -1938,6 +1940,16 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
             },
+            ClientMessage::WorkspaceAgentEdits {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::WorkspaceAgentDiff {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "src/lib.rs".to_string(),
+                call: None,
+            },
             ClientMessage::WorkspaceFilesList {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -3001,6 +3013,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspacesList { .. } => administrative(),
             ClientMessage::WorkspaceGitStatus { .. } => administrative(),
             ClientMessage::WorkspaceGitDiff { .. } => administrative(),
+            ClientMessage::WorkspaceAgentEdits { .. } => administrative(),
+            ClientMessage::WorkspaceAgentDiff { .. } => administrative(),
             ClientMessage::WorkspaceFilesList { .. } => administrative(),
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
             ClientMessage::WorkspaceFileOpen { .. } => administrative(),
@@ -3083,7 +3097,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 115;
+    pub(crate) const VARIANT_COUNT: usize = 117;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -3141,6 +3155,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspacesList { .. } => "WorkspacesList",
             ClientMessage::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             ClientMessage::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
+            ClientMessage::WorkspaceAgentEdits { .. } => "WorkspaceAgentEdits",
+            ClientMessage::WorkspaceAgentDiff { .. } => "WorkspaceAgentDiff",
             ClientMessage::WorkspaceGitStage { .. } => "WorkspaceGitStage",
             ClientMessage::WorkspaceGitUnstage { .. } => "WorkspaceGitUnstage",
             ClientMessage::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
@@ -3506,6 +3522,16 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitLog {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::WorkspaceAgentEdits {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::WorkspaceAgentDiff {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "src/lib.rs".to_string(),
+                call: None,
             },
             ClientMessage::WorkspaceFilesList {
                 id: 1,

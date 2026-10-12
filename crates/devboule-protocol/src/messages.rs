@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_edit_reads::{AgentCallRef, WorkspaceAgentEdits, WorkspaceAgentFileDiff};
 use crate::capability::Capability;
 use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
@@ -1163,6 +1164,26 @@ pub enum ClientMessage {
         id: u64,
         workspace_id: String,
     },
+    /// The files this workspace's agents changed, for the Changes panel of a
+    /// folder that is not a git repository. A read like
+    /// [`Self::WorkspaceGitStatus`], answered from the journal rather than the
+    /// disk, so the daemon resolves the folder from `workspace_id` only. The
+    /// reply is [`DaemonMessage::WorkspaceAgentEdits`].
+    WorkspaceAgentEdits {
+        id: u64,
+        workspace_id: String,
+    },
+    /// The diff of one file as the agents made it: every recorded call that
+    /// changed `path`, oldest first, or only `call` when one is named. A read
+    /// like [`Self::WorkspaceAgentEdits`]; `path` is matched against the
+    /// recorded paths and never opened on disk. The reply is
+    /// [`DaemonMessage::WorkspaceAgentDiff`].
+    WorkspaceAgentDiff {
+        id: u64,
+        workspace_id: String,
+        path: String,
+        call: Option<AgentCallRef>,
+    },
     /// The entries of one workspace folder, for the Files panel's tree. A read
     /// like [`Self::WorkspaceGitStatus`]: the daemon resolves the directory
     /// from `workspace_id`, and `path` is a relative path inside it — empty
@@ -1899,6 +1920,8 @@ impl ClientMessage {
             | Self::WorkspaceGitDiscard { id, .. }
             | Self::WorkspaceGitCommit { id, .. }
             | Self::WorkspaceGitLog { id, .. }
+            | Self::WorkspaceAgentEdits { id, .. }
+            | Self::WorkspaceAgentDiff { id, .. }
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceOpenRoot { id, .. }
@@ -2108,6 +2131,8 @@ impl ClientMessage {
             | Self::ProviderVocabularyGet { .. }
             | Self::DelegationGet { .. }
             | Self::DelegationSet { .. }
+            | Self::WorkspaceAgentEdits { .. }
+            | Self::WorkspaceAgentDiff { .. }
             | Self::WorkspaceGitLog { .. } => None,
         }
     }
@@ -2195,6 +2220,8 @@ impl ClientMessage {
             Self::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
             Self::WorkspaceGitCommit { .. } => "WorkspaceGitCommit",
             Self::WorkspaceGitLog { .. } => "WorkspaceGitLog",
+            Self::WorkspaceAgentEdits { .. } => "WorkspaceAgentEdits",
+            Self::WorkspaceAgentDiff { .. } => "WorkspaceAgentDiff",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceOpenRoot { .. } => "WorkspaceOpenRoot",
@@ -2266,6 +2293,8 @@ impl ClientMessage {
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceGitLog { .. }
+            | Self::WorkspaceAgentEdits { .. }
+            | Self::WorkspaceAgentDiff { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::RemoteHostList { .. }
@@ -2532,6 +2561,16 @@ pub enum DaemonMessage {
     WorkspaceGitLog {
         id: u64,
         log: WorkspaceGitLog,
+    },
+    /// The reply to [`ClientMessage::WorkspaceAgentEdits`].
+    WorkspaceAgentEdits {
+        id: u64,
+        edits: WorkspaceAgentEdits,
+    },
+    /// The reply to [`ClientMessage::WorkspaceAgentDiff`].
+    WorkspaceAgentDiff {
+        id: u64,
+        diff: WorkspaceAgentFileDiff,
     },
     /// The reply to [`ClientMessage::WorkspaceGitDiff`]: the diff of one
     /// file, or a refusal of it.

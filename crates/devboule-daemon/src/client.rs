@@ -3864,6 +3864,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }
         | DaemonMessage::WorkspaceGitLog { id, .. }
+        | DaemonMessage::WorkspaceAgentEdits { id, .. }
+        | DaemonMessage::WorkspaceAgentDiff { id, .. }
         | DaemonMessage::WorkspaceGitWrite { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }

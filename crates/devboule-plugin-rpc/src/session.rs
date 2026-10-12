@@ -311,6 +311,11 @@ impl PluginSession {
                         // sibling: a plugin backend never reads this
                         // machine's history either. Listed, not swept.
                         | DaemonMessage::WorkspaceGitLog { id, .. }
+                        // The agent-edit reads are listed for the same reason:
+                        // a plugin backend never reads what this machine's
+                        // agents changed. Listed, not swept.
+                        | DaemonMessage::WorkspaceAgentEdits { id, .. }
+                        | DaemonMessage::WorkspaceAgentDiff { id, .. }
                         // The Changes panel's git writes answer with an id
                         // for the same reason these reads are listed: a
                         // plugin backend neither stages nor unstages nor

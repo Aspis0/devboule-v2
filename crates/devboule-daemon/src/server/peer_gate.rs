@@ -471,6 +471,9 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceGitDiff { .. } => None,
         // The commit-history read: a read like the two above.
         ClientMessage::WorkspaceGitLog { .. } => None,
+        // The agent-edit reads reach no agent either: they only replay records.
+        ClientMessage::WorkspaceAgentEdits { .. } => None,
+        ClientMessage::WorkspaceAgentDiff { .. } => None,
         // The four git writes act on this machine's disk through git —
         // same reason as the file writes below: no mode to vet (the
         // capability table is what guards them).
@@ -776,6 +779,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceGitLog { .. }
+        | ClientMessage::WorkspaceAgentEdits { .. }
+        | ClientMessage::WorkspaceAgentDiff { .. }
         | ClientMessage::WorkspaceGitStage { .. }
         | ClientMessage::WorkspaceGitUnstage { .. }
         | ClientMessage::WorkspaceGitDiscard { .. }

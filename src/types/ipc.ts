@@ -1470,6 +1470,49 @@ export interface AgentToolEdit {
   removed: number;
 }
 
+/** One tool call of one agent: the session that made it and the call's id. */
+export interface AgentCallRef {
+  sessionId: string;
+  toolCallId: string;
+}
+
+/** One file the workspace's agents changed, with every call that changed it. */
+export interface WorkspaceAgentEditFile {
+  /** Relative to the workspace with forward slashes, or the provider's own spelling outside it. */
+  path: string;
+  /** The sum of the lines each recorded call added; not a net figure. */
+  additions: number;
+  deletions: number;
+  /** The agent behind the file's newest recorded edit. */
+  lastAgent: string | null;
+  /** When that newest edit was recorded, in epoch milliseconds. */
+  lastAtMs: number;
+  calls: AgentCallRef[];
+}
+
+/** The files this workspace's agents changed, one row per path, sorted by path. */
+export interface WorkspaceAgentEdits {
+  files: WorkspaceAgentEditFile[];
+  /** Covers the rows this reply carries, so the header and the list agree. */
+  totals: WorkspaceGitTotals;
+  /** A bound dropped rows: the file cap, the session cap, or an oversized transcript. */
+  truncated: boolean;
+  /** A refusal to answer at all; `null` otherwise. */
+  error: string | null;
+}
+
+/** Whether a file diff carries every line its recorded edits hold. */
+export type WorkspaceAgentDiffStatus = "ok" | "truncated" | "error";
+
+/** One file's diff as the agents made it. */
+export interface WorkspaceAgentFileDiff {
+  path: string;
+  lines: WorkspaceGitDiffLine[];
+  status: WorkspaceAgentDiffStatus;
+  /** Why no lines came back; `null` unless `status` is `error`. */
+  error: string | null;
+}
+
 /**
  * Attachment events plus the connection-scoped roster snapshot.
  * Alignment with `SessionEvent` in `crates/devboule-protocol` is enforced by

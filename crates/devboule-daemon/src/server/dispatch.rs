@@ -483,6 +483,8 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceGitDiscard { .. }
         | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceGitLog { .. }
+        | ClientMessage::WorkspaceAgentEdits { .. }
+        | ClientMessage::WorkspaceAgentDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceOpenRoot { .. }

@@ -12,6 +12,8 @@ mod agent_activity;
 #[cfg(feature = "server")]
 mod agent_edit;
 #[cfg(feature = "server")]
+mod agent_edit_records;
+#[cfg(feature = "server")]
 mod agent_env;
 #[cfg(feature = "server")]
 mod agent_image;
@@ -257,6 +259,10 @@ mod windows_registry_path;
 mod wire_json;
 #[cfg(feature = "server")]
 mod workspace;
+#[cfg(feature = "server")]
+mod workspace_agent_diff;
+#[cfg(feature = "server")]
+mod workspace_agent_edits;
 #[cfg(feature = "server")]
 mod workspace_file_edit;
 #[cfg(feature = "server")]

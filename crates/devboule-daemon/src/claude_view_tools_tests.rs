@@ -600,6 +600,7 @@ fn edit_shaped_tool_calls_carry_the_text_the_provider_sent() {
         }] => {
             assert_eq!(edits.len(), 1);
             assert_eq!(edits[0].path, "src/lib.rs");
+            assert_eq!((edits[0].added, edits[0].removed), (1, 1));
             assert_eq!(
                 edits[0].text,
                 Some(devboule_protocol::AgentEditText::Replace {

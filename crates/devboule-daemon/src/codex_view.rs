@@ -2337,8 +2337,10 @@ mod tests {
                         text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                     })
                 );
+                assert_eq!((edits[0].added, edits[0].removed), (1, 1));
                 assert_eq!(edits[1].path, "src/new.rs");
                 assert_eq!(edits[1].kind, devboule_protocol::AgentEditKind::Write);
+                assert_eq!((edits[1].added, edits[1].removed), (1, 0));
             }
             other => panic!("expected a diff-carrying fileChange, got {other:?}"),
         }
