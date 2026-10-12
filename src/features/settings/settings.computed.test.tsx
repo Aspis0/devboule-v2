@@ -31,7 +31,7 @@ afterEach(() => {
 describe("settings shell layout (real stylesheets, no app launch)", () => {
   // Sheet order matches the bundle: tokens, global (main.tsx, static),
   // settings (lazy chunk, last).
-  const { inject } = assembleCssProof([
+  const { inject, rulesFor } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
     read("src/features/settings/settings.css"),
@@ -75,5 +75,18 @@ describe("settings shell layout (real stylesheets, no app launch)", () => {
     inner.appendChild(header);
     // Providers sets the reference with its list's 16 px top margin.
     expect(getComputedStyle(header).marginBottom).toBe("16px");
+  });
+
+  it("draws the Devices host row with the page rows' geometry and no box of its own", () => {
+    inject([".settings-menu-row", ".settings-menu-row-active", ".settings-host-row"]);
+    const row = box("settings-menu-row");
+    const host = box("settings-host-row");
+    expect(getComputedStyle(host).height).toBe(getComputedStyle(row).height);
+    expect(getComputedStyle(host).paddingLeft).toBe(getComputedStyle(row).paddingLeft);
+    // A border or a fill beside the open page's row reads as a second selected
+    // row: the host row carries neither.
+    const hostRule = rulesFor(".settings-host-row");
+    expect(hostRule).not.toMatch(/border(-(top|right|bottom|left))?:\s/);
+    expect(hostRule).not.toMatch(/background(-color)?:\s/);
   });
 });
