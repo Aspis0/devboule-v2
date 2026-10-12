@@ -16,16 +16,16 @@ export function hasMirroredDesignCard(
  * an artifact, so the child's card moves to the end of the transcript; the other
  * child's card stays in the list.
  *
- * A running generation keeps the end of the transcript, so the card is not moved
- * under it; Design still opens.
+ * Refused while a generation runs: its result takes the end of the transcript
+ * when it settles, so the artifact shown would not be the requested one.
  */
 export function openMirroredDesign(childSessionId: string): void {
   const store = useAppStore.getState();
   const { host, messages, generation } = store.designSession;
   const cardId = delegatedDesignCardId(childSessionId);
   const card = messages.find((message) => message.id === cardId);
-  if (host === null || card === undefined) return;
-  if (generation === null && messages.at(-1) !== card) {
+  if (host === null || card === undefined || generation !== null) return;
+  if (messages.at(-1) !== card) {
     store.setDesignMessages(host, (current) => [
       ...current.filter((message) => message.id !== cardId),
       card,

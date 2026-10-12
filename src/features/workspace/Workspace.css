@@ -465,6 +465,12 @@
   outline-offset: 3px;
 }
 
+/* Disabled while a generation runs: the line's own muted text, not a new state colour. */
+.workspace-chat-activity-action:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
 /* The chevron that opens and folds a clipped summary: an icon, not a sentence. */
 .workspace-chat-activity-toggle {
   align-self: flex-start;

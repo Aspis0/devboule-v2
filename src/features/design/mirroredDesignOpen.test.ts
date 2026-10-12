@@ -89,7 +89,7 @@ describe("opening a mirrored Design child", () => {
     expect(useAppStore.getState().activeSurface).toBe("design");
   });
 
-  it("opens Design without reordering while a generation runs", () => {
+  it("does nothing while a generation runs, so the canvas keeps the artifact it shows", () => {
     setSession(
       [mirroredCard("child-a", "<main>A</main>"), mirroredCard("child-b", "<main>B</main>")],
       true,
@@ -98,7 +98,10 @@ describe("opening a mirrored Design child", () => {
     openMirroredDesign("child-a");
 
     expect(cardIds()).toEqual([delegatedDesignCardId("child-a"), delegatedDesignCardId("child-b")]);
-    expect(useAppStore.getState().activeSurface).toBe("design");
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>B</main>",
+    });
+    expect(useAppStore.getState().activeSurface).toBe("workspace");
   });
 
   it("does nothing for a child the canvas does not hold", () => {

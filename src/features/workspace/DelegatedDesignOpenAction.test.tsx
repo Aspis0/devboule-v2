@@ -109,6 +109,26 @@ describe("the Open in Design action on a finished Design child", () => {
     expect(button()?.textContent).toBe("Open in Design");
   });
 
+  it("is disabled while a generation runs and enabled again when it settles", async () => {
+    await render("child-a");
+    expect(button()?.disabled).toBe(false);
+    expect(button()?.title).toBe("");
+
+    await act(async () => {
+      useAppStore
+        .getState()
+        .setDesignGeneration(HOST, { assistantId: "live", controller: new AbortController() });
+    });
+    expect(button()?.disabled).toBe(true);
+    expect(button()?.title).toBe("Design is generating");
+
+    await act(async () => {
+      useAppStore.getState().setDesignGeneration(HOST, null);
+    });
+    expect(button()?.disabled).toBe(false);
+    expect(button()?.title).toBe("");
+  });
+
   it("opens Design on that child's artifact when pressed", async () => {
     await render("child-a");
 
