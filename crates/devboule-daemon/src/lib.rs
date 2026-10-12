@@ -12,6 +12,8 @@ mod agent_activity;
 #[cfg(feature = "server")]
 mod agent_edit;
 #[cfg(feature = "server")]
+mod agent_edit_path;
+#[cfg(feature = "server")]
 mod agent_edit_records;
 #[cfg(feature = "server")]
 mod agent_env;

@@ -6,11 +6,13 @@
 //! each call recorded, never a net figure the daemon guessed.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use devboule_protocol::{
     AgentCallRef, DaemonMessage, WorkspaceAgentEditFile, WorkspaceAgentEdits, WorkspaceGitTotals,
 };
 
+use crate::agent_edit_path::path_key;
 use crate::agent_edit_records::{self, AgentEditRecord};
 use crate::ServerState;
 
@@ -22,17 +24,17 @@ pub(crate) const MAX_FILES: usize = 200;
 /// unknown workspace is refused the way every other workspace read refuses it.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str) -> DaemonMessage {
     let edits = match state.sessions.workspace_cwd(workspace_id) {
-        Ok(_) => read(state, workspace_id),
+        Ok(root) => read(state, workspace_id, &root),
         Err(error) => unavailable(error.message),
     };
     DaemonMessage::WorkspaceAgentEdits { id, edits }
 }
 
-fn read(state: &ServerState, workspace_id: &str) -> WorkspaceAgentEdits {
+fn read(state: &ServerState, workspace_id: &str, root: &Path) -> WorkspaceAgentEdits {
     let Some(journal) = state.sessions.journal_handle() else {
         return unavailable("the conversation journal is unavailable");
     };
-    let read = agent_edit_records::read(journal, workspace_id, crate::journal::now_ms());
+    let read = agent_edit_records::read(journal, workspace_id, root, crate::journal::now_ms());
     if let Some(error) = read.error {
         return unavailable(error);
     }
@@ -45,20 +47,22 @@ fn read(state: &ServerState, workspace_id: &str) -> WorkspaceAgentEdits {
     }
 }
 
-/// One row per path, sorted by path; the totals cover the rows kept.
+/// One row per file, sorted by path key; the totals cover the rows kept. Two
+/// spellings of one file share a row and show the newest edit's spelling.
 fn fold(records: &[AgentEditRecord]) -> (Vec<WorkspaceAgentEditFile>, WorkspaceGitTotals, bool) {
     let mut by_path: BTreeMap<String, WorkspaceAgentEditFile> = BTreeMap::new();
     for record in records {
-        let file = by_path
-            .entry(record.path.clone())
-            .or_insert_with(|| WorkspaceAgentEditFile {
-                path: record.path.clone(),
-                additions: 0,
-                deletions: 0,
-                last_agent: None,
-                last_at_ms: 0,
-                calls: Vec::new(),
-            });
+        let file =
+            by_path
+                .entry(path_key(&record.path))
+                .or_insert_with(|| WorkspaceAgentEditFile {
+                    path: record.path.clone(),
+                    additions: 0,
+                    deletions: 0,
+                    last_agent: None,
+                    last_at_ms: 0,
+                    calls: Vec::new(),
+                });
         file.additions += record.added;
         file.deletions += record.removed;
         // The records arrive oldest first, so the last one to pass here is
@@ -66,6 +70,7 @@ fn fold(records: &[AgentEditRecord]) -> (Vec<WorkspaceAgentEditFile>, WorkspaceG
         if record.at_ms >= file.last_at_ms {
             file.last_at_ms = record.at_ms;
             file.last_agent = Some(record.agent.clone());
+            file.path = record.path.clone();
         }
         let call = AgentCallRef {
             session_id: record.session_id.clone(),

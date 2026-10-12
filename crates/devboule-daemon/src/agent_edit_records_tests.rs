@@ -5,8 +5,23 @@
 use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit, SessionEvent, SessionKind};
 use serde_json::json;
 
-use super::{read, session_records};
+use super::{read, session_records, AgentEditRecord, SessionScope};
 use crate::journal::{new_session_record, now_ms, tmp_journal, EventKind, EventRecord, Journal};
+
+fn root() -> &'static std::path::Path {
+    std::path::Path::new(crate::test_support::FIXTURE_ROOT)
+}
+
+fn scoped(events: &[SessionEvent], times: &[Option<u64>]) -> Vec<AgentEditRecord> {
+    let scope = SessionScope {
+        session_id: "s.a",
+        agent: "agent",
+        fallback_ms: 900,
+        cwd: None,
+        root: root(),
+    };
+    session_records(&scope, events, times)
+}
 
 fn edit(path: &str, added: u64) -> AgentToolEdit {
     AgentToolEdit {
@@ -42,7 +57,7 @@ fn a_call_recorded_twice_is_one_record_with_its_last_edits() {
         call("c1", Some(vec![edit("src/a.rs", 1)])),
         call("c1", Some(vec![edit("src/a.rs", 3)])),
     ];
-    let records = session_records("s.a", "agent", 900, &events, &[Some(100), Some(200)]);
+    let records = scoped(&events, &[Some(100), Some(200)]);
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].added, 3);
     assert_eq!(records[0].at_ms, 200);
@@ -54,7 +69,7 @@ fn each_file_change_of_each_call_is_its_own_record() {
         call("c1", Some(vec![edit("src/a.rs", 1), edit("src/b.rs", 2)])),
         call("c2", Some(vec![edit("src/a.rs", 4)])),
     ];
-    let records = session_records("s.a", "agent", 900, &events, &[Some(100), Some(200)]);
+    let records = scoped(&events, &[Some(100), Some(200)]);
     let paths: Vec<&str> = records.iter().map(|record| record.path.as_str()).collect();
     assert_eq!(paths, ["src/a.rs", "src/b.rs", "src/a.rs"]);
     assert!(records.iter().all(|record| record.session_id == "s.a"));
@@ -63,14 +78,14 @@ fn each_file_change_of_each_call_is_its_own_record() {
 #[test]
 fn an_event_without_a_time_takes_the_fallback_time() {
     let events = vec![call("c1", Some(vec![edit("src/a.rs", 1)]))];
-    let records = session_records("s.a", "agent", 900, &events, &[None]);
+    let records = scoped(&events, &[None]);
     assert_eq!(records[0].at_ms, 900);
 }
 
 #[test]
 fn a_call_without_edits_contributes_nothing() {
     let events = vec![call("c1", None)];
-    assert!(session_records("s.a", "agent", 900, &events, &[Some(100)]).is_empty());
+    assert!(scoped(&events, &[Some(100)]).is_empty());
 }
 
 fn session(journal: &Journal, id: &str, workspace_id: &str, title: &str, closed: bool) {
@@ -131,7 +146,7 @@ fn the_workspace_read_lists_each_sessions_edits_and_skips_a_row_without_them() {
     );
     append_event(&journal, "s.other.1", 1, replace_call("c4", "x\n", "y\n"));
 
-    let found = read(&journal, "ws.1", now_ms());
+    let found = read(&journal, "ws.1", root(), now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -163,7 +178,7 @@ fn a_closed_child_still_contributes_its_edits() {
         replace_call("c1", "one\n", "two\n"),
     );
 
-    let found = read(&journal, "ws.1", now_ms());
+    let found = read(&journal, "ws.1", root(), now_ms());
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -208,10 +223,41 @@ fn only_a_call_that_finished_completed_is_listed() {
         status_update("finished", "completed"),
     ];
     let times = vec![Some(100); events.len()];
-    let records = session_records("s.a", "agent", 900, &events, &times);
+    let records = scoped(&events, &times);
     let calls: Vec<&str> = records
         .iter()
         .map(|record| record.tool_call_id.as_str())
         .collect();
     assert_eq!(calls, ["finished"]);
+}
+
+#[test]
+fn a_path_outside_the_workspace_root_is_not_listed() {
+    let outside = root()
+        .parent()
+        .expect("the fixture root has a parent")
+        .join("other.txt");
+    let events = vec![
+        call("escape", Some(vec![edit("../secret", 1)])),
+        call("absolute", Some(vec![edit(&outside.to_string_lossy(), 1)])),
+        call("inside", Some(vec![edit("src/lib.rs", 1)])),
+    ];
+    let records = scoped(&events, &[Some(100), Some(100), Some(100)]);
+    let paths: Vec<&str> = records.iter().map(|record| record.path.as_str()).collect();
+    assert_eq!(paths, ["src/lib.rs"]);
+}
+
+#[test]
+fn an_edit_in_a_nested_child_cwd_is_root_relative() {
+    let child = crate::test_support::fixture_path("sub");
+    let scope = SessionScope {
+        session_id: "s.a",
+        agent: "agent",
+        fallback_ms: 900,
+        cwd: Some(&child),
+        root: root(),
+    };
+    let events = vec![call("c1", Some(vec![edit("a.rs", 1)]))];
+    let records = session_records(&scope, &events, &[Some(100)]);
+    assert_eq!(records[0].path, "sub/a.rs");
 }

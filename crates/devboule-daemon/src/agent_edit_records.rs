@@ -11,9 +11,11 @@
 //! read is a gap the answer says it has, not an empty answer.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use devboule_protocol::{AgentEditText, AgentToolEdit, SessionEvent, SessionKind};
 
+use crate::agent_edit_path::workspace_relative;
 use crate::journal::Journal;
 
 /// Edits older than this are not listed: the Changes panel answers "what did
@@ -55,6 +57,7 @@ pub(crate) struct WorkspaceAgentEditRecords {
 pub(crate) fn read(
     journal: &Journal,
     workspace_id: &str,
+    root: &Path,
     now_ms: u64,
 ) -> WorkspaceAgentEditRecords {
     let Ok(reader) = journal.open_reader() else {
@@ -83,13 +86,14 @@ pub(crate) fn read(
             .display_name
             .clone()
             .unwrap_or_else(|| session.title.clone());
-        records.extend(session_records(
-            &session.id,
-            &agent,
-            session.updated_at_ms,
-            &replay.events,
-            &replay.event_ts_ms,
-        ));
+        let scope = SessionScope {
+            session_id: &session.id,
+            agent: &agent,
+            fallback_ms: session.updated_at_ms,
+            cwd: session.cwd.as_deref().map(Path::new),
+            root,
+        };
+        records.extend(session_records(&scope, &replay.events, &replay.event_ts_ms));
     }
     records.retain(|record| record.at_ms >= window_start);
     records.sort_by(|left, right| {
@@ -114,15 +118,23 @@ struct CallState<'a> {
     edits: Option<&'a [AgentToolEdit]>,
 }
 
-/// The edit records of one session's replay, one per file change of each call
-/// that finished `completed`. A denied, failed or unfinished call changed
-/// nothing the person can rely on, so it is not listed.
-/// `event_ts_ms` is index-aligned with `events`; an event without a time is
-/// stamped with `fallback_ms`, the session's last update.
-fn session_records(
-    session_id: &str,
-    agent: &str,
+/// Who one session's replay belongs to and where its paths point: the session
+/// id and agent name, the time an untimed event takes (the session's last
+/// update), the directory its provider ran in, and the workspace root.
+struct SessionScope<'a> {
+    session_id: &'a str,
+    agent: &'a str,
     fallback_ms: u64,
+    cwd: Option<&'a Path>,
+    root: &'a Path,
+}
+
+/// The edit records of one session's replay, one per file change of each call
+/// that finished `completed`, with paths inside the workspace root only. A
+/// denied, failed or unfinished call changed nothing the person can rely on,
+/// so it is not listed. `event_ts_ms` is index-aligned with `events`.
+fn session_records(
+    scope: &SessionScope,
     events: &[SessionEvent],
     event_ts_ms: &[Option<u64>],
 ) -> Vec<AgentEditRecord> {
@@ -132,7 +144,7 @@ fn session_records(
             .get(index)
             .copied()
             .flatten()
-            .unwrap_or(fallback_ms);
+            .unwrap_or(scope.fallback_ms);
         match event {
             SessionEvent::AgentToolCall {
                 tool_call_id,
@@ -171,16 +183,18 @@ fn session_records(
             call.edits.map(|edits| (tool_call_id, call.at_ms, edits))
         })
         .flat_map(|(tool_call_id, at_ms, edits)| {
-            edits.iter().map(move |edit| AgentEditRecord {
-                session_id: session_id.to_string(),
-                agent: agent.to_string(),
-                tool_call_id: tool_call_id.to_string(),
-                at_ms,
-                path: edit.path.clone(),
-                text: edit.text.clone(),
-                added: edit.added,
-                removed: edit.removed,
-                truncated: edit.truncated,
+            edits.iter().filter_map(move |edit| {
+                Some(AgentEditRecord {
+                    session_id: scope.session_id.to_string(),
+                    agent: scope.agent.to_string(),
+                    tool_call_id: tool_call_id.to_string(),
+                    at_ms,
+                    path: workspace_relative(&edit.path, scope.cwd, scope.root)?,
+                    text: edit.text.clone(),
+                    added: edit.added,
+                    removed: edit.removed,
+                    truncated: edit.truncated,
+                })
             })
         })
         .collect()

@@ -76,3 +76,16 @@ fn files_past_the_cap_are_cut_and_the_reply_says_so() {
     assert_eq!(files.len(), MAX_FILES);
     assert_eq!(totals.additions, MAX_FILES as u64);
 }
+
+#[cfg(windows)]
+#[test]
+fn two_spellings_of_one_file_on_windows_are_one_row() {
+    let records = vec![
+        record("Src/Lib.rs", "s.a", "call-1", 100, 1, 0),
+        record("src/lib.rs", "s.b", "call-2", 200, 1, 1),
+    ];
+    let (files, _, _) = fold(&records);
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "src/lib.rs");
+    assert_eq!((files[0].additions, files[0].deletions), (2, 1));
+}
