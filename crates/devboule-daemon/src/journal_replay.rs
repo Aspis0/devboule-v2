@@ -329,16 +329,19 @@ pub(crate) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
         .map_err(JournalError::from)
 }
 
-/// Every session row of one workspace, closed ones included: a child the idle
-/// sweep closed still made the edits its folder shows.
+/// The newest `limit` session rows of one workspace, closed ones included: a
+/// child the idle sweep closed still made the edits its folder shows. The
+/// `sessions_workspace_updated` index serves both the filter and the order.
 pub(crate) fn list_workspace_sessions(
     conn: &Connection,
     workspace_id: &str,
+    limit: usize,
 ) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {SESSION_COLUMNS} FROM sessions WHERE workspace_id = ?1 ORDER BY updated_at_ms DESC"
+        "SELECT {SESSION_COLUMNS} FROM sessions WHERE workspace_id = ?1
+         ORDER BY updated_at_ms DESC LIMIT ?2"
     ))?;
-    let rows = stmt.query_map([workspace_id], row_to_session)?;
+    let rows = stmt.query_map(params![workspace_id, limit as i64], row_to_session)?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(JournalError::from)
 }

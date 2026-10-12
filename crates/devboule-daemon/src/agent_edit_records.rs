@@ -29,6 +29,10 @@ pub(crate) const MAX_READ_SESSIONS: usize = 32;
 /// memory. A bigger one is skipped and the answer says so.
 pub(crate) const MAX_SESSION_BYTES: u64 = 32 * 1024 * 1024;
 
+/// The stored payload bytes one read replays in all. Sessions are taken newest
+/// first; one that would pass this total is skipped and the answer says so.
+pub(crate) const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
+
 /// One file change one tool call recorded, with the session that made it.
 pub(crate) struct AgentEditRecord {
     pub session_id: String,
@@ -63,20 +67,27 @@ pub(crate) fn read(
     let Ok(reader) = journal.open_reader() else {
         return failed();
     };
-    let Ok(sessions) = crate::journal::sessions_of_workspace_on(&reader, workspace_id) else {
+    // One row past the cap, so the cap being hit is itself visible.
+    let Ok(sessions) =
+        crate::journal::sessions_of_workspace_on(&reader, workspace_id, MAX_READ_SESSIONS + 1)
+    else {
         return failed();
     };
     let window_start = now_ms.saturating_sub(AGENT_EDIT_WINDOW_MS);
     let mut truncated = sessions.len() > MAX_READ_SESSIONS;
+    let mut replayed_bytes = 0u64;
     let mut records = Vec::new();
     for session in sessions.iter().take(MAX_READ_SESSIONS) {
         if session.kind == SessionKind::Terminal {
             continue;
         }
-        if session.payload_bytes > MAX_SESSION_BYTES {
+        if session.payload_bytes > MAX_SESSION_BYTES
+            || replayed_bytes.saturating_add(session.payload_bytes) > MAX_READ_BYTES
+        {
             truncated = true;
             continue;
         }
+        replayed_bytes += session.payload_bytes;
         let Ok(replay) = crate::journal::replay_session_including_closed_on(&reader, &session.id)
         else {
             truncated = true;

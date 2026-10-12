@@ -61,7 +61,7 @@ pub(crate) use journal_transcript_time::{time_a_finish, time_a_kindless_report};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 21;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 22;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -1041,13 +1041,14 @@ pub(crate) fn replay_session_on(
     journal_replay::replay_session(conn, session_id)
 }
 
-/// The session rows of one workspace, closed ones included, on a connection the
-/// caller opened.
+/// The newest `limit` session rows of one workspace, closed ones included, on a
+/// connection the caller opened.
 pub(crate) fn sessions_of_workspace_on(
     conn: &Connection,
     workspace_id: &str,
+    limit: usize,
 ) -> Result<Vec<SessionRecord>, JournalError> {
-    journal_replay::list_workspace_sessions(conn, workspace_id)
+    journal_replay::list_workspace_sessions(conn, workspace_id, limit)
 }
 
 /// One session replayed on a connection the caller opened, closed or not. The

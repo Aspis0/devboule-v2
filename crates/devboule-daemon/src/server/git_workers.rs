@@ -66,6 +66,8 @@ use super::*;
 const STATUS_READ: u64 = 1;
 const DIFF_READ: u64 = 2;
 const LOG_READ: u64 = 3;
+const AGENT_EDITS_READ: u64 = 4;
+const AGENT_DIFF_READ: u64 = 5;
 
 /// The arms whose handling runs git. Written by "can reach git", not by
 /// "always spawns it": a Local `WorkspaceDelete` refuses before any git
@@ -76,6 +78,8 @@ pub(super) fn is_git_backed(request: &ClientMessage) -> bool {
         ClientMessage::WorkspaceGitStatus { .. }
             | ClientMessage::WorkspaceGitDiff { .. }
             | ClientMessage::WorkspaceGitLog { .. }
+            | ClientMessage::WorkspaceAgentEdits { .. }
+            | ClientMessage::WorkspaceAgentDiff { .. }
             | ClientMessage::WorkspaceGitStage { .. }
             | ClientMessage::WorkspaceGitUnstage { .. }
             | ClientMessage::WorkspaceGitDiscard { .. }
@@ -99,6 +103,20 @@ fn poll_key(request: &ClientMessage) -> Option<ReadKey> {
             Some(ReadKey::new(DIFF_READ, Some(path.clone())))
         }
         ClientMessage::WorkspaceGitLog { .. } => Some(ReadKey::new(LOG_READ, None)),
+        ClientMessage::WorkspaceAgentEdits { .. } => Some(ReadKey::new(AGENT_EDITS_READ, None)),
+        ClientMessage::WorkspaceAgentDiff { path, call, .. } => {
+            let call = call
+                .as_ref()
+                .map(|call| format!("{}/{}", call.session_id, call.tool_call_id))
+                .unwrap_or_default();
+            Some(ReadKey::new(
+                AGENT_DIFF_READ,
+                Some(format!(
+                    "{path}
+{call}"
+                )),
+            ))
+        }
         _ => None,
     }
 }
@@ -118,6 +136,8 @@ fn queue_key(state: &ServerState, request: &ClientMessage) -> String {
         ClientMessage::WorkspaceGitStatus { workspace_id, .. }
         | ClientMessage::WorkspaceGitDiff { workspace_id, .. }
         | ClientMessage::WorkspaceGitLog { workspace_id, .. }
+        | ClientMessage::WorkspaceAgentEdits { workspace_id, .. }
+        | ClientMessage::WorkspaceAgentDiff { workspace_id, .. }
         | ClientMessage::WorkspaceGitStage { workspace_id, .. }
         | ClientMessage::WorkspaceGitUnstage { workspace_id, .. }
         | ClientMessage::WorkspaceGitDiscard { workspace_id, .. }
@@ -157,6 +177,16 @@ fn restamp(reply: &DaemonMessage, id: u64) -> Option<DaemonMessage> {
         DaemonMessage::WorkspaceGitLog { log, .. } => Some(DaemonMessage::WorkspaceGitLog {
             id,
             log: log.clone(),
+        }),
+        DaemonMessage::WorkspaceAgentEdits { edits, .. } => {
+            Some(DaemonMessage::WorkspaceAgentEdits {
+                id,
+                edits: edits.clone(),
+            })
+        }
+        DaemonMessage::WorkspaceAgentDiff { diff, .. } => Some(DaemonMessage::WorkspaceAgentDiff {
+            id,
+            diff: diff.clone(),
         }),
         DaemonMessage::WorkspaceGitFile { file, .. } => Some(DaemonMessage::WorkspaceGitFile {
             id,

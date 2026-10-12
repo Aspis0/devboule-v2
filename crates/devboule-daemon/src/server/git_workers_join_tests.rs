@@ -205,6 +205,16 @@ fn every_admitted_arm_resolves_a_real_queue_key() {
             id: 3,
             workspace_id: workspace_id.clone(),
         },
+        ClientMessage::WorkspaceAgentEdits {
+            id: 12,
+            workspace_id: workspace_id.clone(),
+        },
+        ClientMessage::WorkspaceAgentDiff {
+            id: 13,
+            workspace_id: workspace_id.clone(),
+            path: "a.txt".to_string(),
+            call: None,
+        },
         ClientMessage::WorkspaceGitStage {
             id: 4,
             workspace_id: workspace_id.clone(),

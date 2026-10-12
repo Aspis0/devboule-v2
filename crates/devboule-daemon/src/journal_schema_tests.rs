@@ -1705,7 +1705,7 @@ fn v16_migration_adds_a_nullable_goal_column() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
     assert_eq!(version, JOURNAL_SCHEMA_VERSION);
-    assert_eq!(version, 21, "the v17 to v21 migrations run after v16");
+    assert_eq!(version, 22, "the v17 to v22 migrations run after v16");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1962,4 +1962,37 @@ fn a_v16_journal_migrates_to_the_roleless_peers_table_and_preserves_every_row() 
     assert_eq!(revoked, Some(7));
     drop(check);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v22_creates_the_workspace_index_for_a_v21_file() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal.shutdown();
+    let conn = Connection::open(&path).expect("reopen");
+    assert_eq!(workspace_index_count(&conn), 1, "the index exists at 22");
+    conn.execute("DROP INDEX sessions_workspace_updated", [])
+        .expect("drop the index");
+    conn.pragma_update(None, "user_version", 21)
+        .expect("stamp 21");
+    drop(conn);
+
+    let journal = Journal::open(&path).expect("reopen at 21");
+    journal.shutdown();
+    let conn = Connection::open(&path).expect("reopen after the migration");
+    assert_eq!(
+        workspace_index_count(&conn),
+        1,
+        "the migration adds it back"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn workspace_index_count(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_workspace_updated'",
+        [],
+        |row| row.get(0),
+    )
+    .expect("index lookup")
 }

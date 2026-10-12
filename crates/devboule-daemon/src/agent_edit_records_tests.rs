@@ -5,7 +5,9 @@
 use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit, SessionEvent, SessionKind};
 use serde_json::json;
 
-use super::{read, session_records, AgentEditRecord, SessionScope};
+use super::{
+    read, session_records, AgentEditRecord, SessionScope, MAX_READ_BYTES, MAX_READ_SESSIONS,
+};
 use crate::journal::{new_session_record, now_ms, tmp_journal, EventKind, EventRecord, Journal};
 
 fn root() -> &'static std::path::Path {
@@ -260,4 +262,44 @@ fn an_edit_in_a_nested_child_cwd_is_root_relative() {
     let events = vec![call("c1", Some(vec![edit("a.rs", 1)]))];
     let records = session_records(&scope, &events, &[Some(100)]);
     assert_eq!(records[0].path, "sub/a.rs");
+}
+
+#[test]
+fn a_workspace_past_the_session_cap_is_reported_truncated() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    for index in 0..=MAX_READ_SESSIONS {
+        session(&journal, &format!("s.{index:03}"), "ws.1", "Agent", false);
+    }
+
+    let found = read(&journal, "ws.1", root(), now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(found.truncated);
+    assert!(found.records.is_empty());
+}
+
+#[test]
+fn a_read_skips_sessions_once_the_replay_byte_budget_is_spent() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    let each = MAX_READ_BYTES / 2 - 1;
+    for id in ["s.a.1", "s.b.1", "s.c.1"] {
+        let mut record = new_session_record(
+            id,
+            "S-1-5-21-1",
+            Some("ws.1".to_string()),
+            SessionKind::Claude,
+            "Agent",
+        );
+        record.payload_bytes = each;
+        journal.upsert_blocking(record).expect("session row");
+    }
+
+    let found = read(&journal, "ws.1", root(), now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(found.truncated, "the third session would pass the budget");
 }

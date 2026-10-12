@@ -425,6 +425,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         // frame's `events.payload`, and a row written before it decodes with
         // no edits. The stamp is the point: an older build refuses a v21
         // file (`FutureSchema`) rather than replay one and drop edit text.
+        // v22 adds `sessions_workspace_updated`, which the per-workspace edit
+        // read sorts by; SCHEMA_SQL creates it on any open below 22.
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -1239,6 +1241,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, generation, seq);
 CREATE INDEX IF NOT EXISTS snapshots_session ON snapshots(session_id, generation, up_to_seq);
 CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at_ms);
+CREATE INDEX IF NOT EXISTS sessions_workspace_updated ON sessions(workspace_id, updated_at_ms);
 CREATE TABLE IF NOT EXISTS turns (
     session_id TEXT NOT NULL,
     generation INTEGER NOT NULL,
