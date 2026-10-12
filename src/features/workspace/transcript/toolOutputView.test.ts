@@ -168,25 +168,40 @@ describe("copyText", () => {
 });
 
 describe("failureReason", () => {
+  it("finds the failure in the tail when the head holds none", () => {
+    expect(
+      failureReason(
+        ["Compiling a v1", "Compiling b v1"],
+        ["warning: unused", "error[E0425]: cannot find value"],
+      ),
+    ).toBe("error[E0425]: cannot find value");
+  });
+
   it("is the line that names the failure, not the command echo above it", () => {
     expect(
-      failureReason(["Get-ChildItem", "error[E0425]: cannot find value `x`", "  --> src/lib.rs:1"]),
+      failureReason(
+        ["Get-ChildItem", "error[E0425]: cannot find value `x`", "  --> src/lib.rs:1"],
+        [],
+      ),
     ).toBe("error[E0425]: cannot find value `x`");
   });
 
   it("is the first line of output when nothing names the failure", () => {
     expect(
-      failureReason([
-        "",
-        "Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.)",
-        "cwd=C:\\Users\\gualt\\Desktop\\test",
-      ]),
+      failureReason(
+        [
+          "",
+          "Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.)",
+          "cwd=C:\\Users\\gualt\\Desktop\\test",
+        ],
+        [],
+      ),
     ).toBe(
       "Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.)",
     );
   });
 
   it("is absent when the output is empty", () => {
-    expect(failureReason(["", "  "])).toBeNull();
+    expect(failureReason(["", "  "], [])).toBeNull();
   });
 });

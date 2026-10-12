@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ToolRow } from "./ToolRow";
-import { outputLines, REASON_HEAD_CHARS } from "./toolOutputView";
+import { outputLines, REASON_WINDOW_CHARS } from "./toolOutputView";
 
 vi.mock("../../../lib/untrustedFrame", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/untrustedFrame")>();
@@ -78,11 +78,11 @@ describe("ToolRow closed output", () => {
     expect(outputLines).toHaveBeenCalled();
   });
 
-  it("reads only the head of a failure's output while the line is closed", async () => {
+  it("reads only the two ends of a failure's output while the line is closed", async () => {
     const container = await renderRow(tool({ status: "failed", output: BIG }));
     const closedReads = vi.mocked(outputLines).mock.calls.map(([text]) => text.length);
     expect(closedReads.length).toBeGreaterThan(0);
-    expect(Math.max(...closedReads)).toBeLessThanOrEqual(REASON_HEAD_CHARS);
+    expect(Math.max(...closedReads)).toBeLessThanOrEqual(REASON_WINDOW_CHARS);
     const details = container.querySelector("details");
     if (details === null) throw new Error("the failed row had nothing to open");
     await act(async () => {

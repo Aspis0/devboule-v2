@@ -66,6 +66,17 @@ describe("ToolRow failure reason", () => {
     expect(reason?.getAttribute("title")).toBe(SANDBOX_REFUSAL);
   });
 
+  it("names a late failure that follows more output than the head reads", async () => {
+    const LATE = "error[E0425]: cannot find value `x` in this scope";
+    const noise = Array.from(
+      { length: 400 },
+      (_, index) => `   Compiling crate-${index} v0.1.0`,
+    ).join("\n");
+    const container = await renderRow(tool({ status: "failed", output: `${noise}\n${LATE}\n` }));
+
+    expect(summaryTexts(container)).toContain(LATE);
+  });
+
   it("names no reason on a call that went well", async () => {
     const container = await renderRow(tool({ status: "completed", output: "ran fine" }));
 

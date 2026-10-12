@@ -25,7 +25,7 @@ import {
   failureExcerpt,
   failureReason,
   outputLines,
-  REASON_HEAD_CHARS,
+  REASON_WINDOW_CHARS,
 } from "./toolOutputView";
 import { isFailedToolCall } from "./toolFailure";
 
@@ -63,14 +63,13 @@ export const ToolRow = memo(function ToolRow({
     devboule !== undefined && !showsOutput ? devbouleChildSession(item.output) : undefined;
   const linkUrl = model.linkUrl;
   // The line says why a call failed without the person opening it, so the reason
-  // is read from the head of the output even while the row is closed.
-  const reason = useMemo(
-    () =>
-      failed
-        ? failureReason(outputLines(hideUntrustedFrame(item.output.slice(0, REASON_HEAD_CHARS))))
-        : null,
-    [failed, item.output],
-  );
+  // is read from both ends of the output even while the row is closed.
+  const reason = useMemo(() => {
+    if (!failed) return null;
+    const head = outputLines(hideUntrustedFrame(item.output.slice(0, REASON_WINDOW_CHARS)));
+    const tail = outputLines(hideUntrustedFrame(item.output.slice(-REASON_WINDOW_CHARS)));
+    return failureReason(head, tail);
+  }, [failed, item.output]);
   const isPlan = item.kind === "plan";
   const planDecision =
     isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;
