@@ -2035,6 +2035,22 @@ impl DaemonClient {
     /// construct, and the connection would die on it. The app and its daemon
     /// normally ship together, so the actionable sentence is to restart
     /// devboule so the matching daemon binary starts.
+    /// Refuse a paired host's agent-edit request on a local daemon below the
+    /// dialect that takes it: the request frame is new, and an older reader would
+    /// drop the connection on it, so nothing is written.
+    fn require_remote_agent_edit_dialect(&self) -> Result<(), DaemonError> {
+        let daemon = self.inner.hello.protocol_version;
+        if remote_agent_edits_dialect_ok(daemon) {
+            return Ok(());
+        }
+        Err(DaemonError::Handshake(WireError::new(
+            ErrorCode::ProtocolVersionMismatch,
+            format!(
+                "the running daemon speaks protocol {daemon} and cannot read a paired host's \n                 agent edits; restart devboule so the matching daemon binary starts"
+            ),
+        )))
+    }
+
     fn require_pairing_dialect(&self) -> Result<(), DaemonError> {
         let daemon = self.inner.hello.protocol_version;
         if pairing_dialect_ok(daemon) {
@@ -2750,6 +2766,7 @@ impl DaemonClient {
         device_id: &str,
         workspace_id: &str,
     ) -> Result<WorkspaceAgentEdits, DaemonError> {
+        self.require_remote_agent_edit_dialect()?;
         self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::RemoteHostAgentEdits {
@@ -2770,6 +2787,7 @@ impl DaemonClient {
         workspace_id: &str,
         path: &str,
     ) -> Result<WorkspaceAgentFileDiff, DaemonError> {
+        self.require_remote_agent_edit_dialect()?;
         self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::RemoteHostAgentDiff {
@@ -4022,4 +4040,10 @@ mod browser_tests;
 /// behind keeps pairing.
 pub(crate) fn pairing_dialect_ok(daemon: u32) -> bool {
     daemon >= devboule_protocol::ROLELESS_PAIRING_MIN_VERSION
+}
+
+/// Whether a local daemon of this dialect takes the paired-host agent-edit
+/// requests: the floor is the dialect that introduced them.
+pub(crate) fn remote_agent_edits_dialect_ok(daemon: u32) -> bool {
+    daemon >= devboule_protocol::REMOTE_AGENT_EDIT_READS_MIN_VERSION
 }

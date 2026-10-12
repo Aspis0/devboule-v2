@@ -10,6 +10,11 @@ import { AgentChanges } from "./agentChanges/AgentChanges";
 import { remoteAgentChangeReads } from "./agentChanges/agentChangeReads";
 import "./panel/changes.css";
 
+/** Oldest local daemon dialect that takes the paired-host agent-edit requests.
+ * Mirrors `REMOTE_AGENT_EDIT_READS_MIN_VERSION` in `devboule-protocol`: a rebase
+ * that moves that number moves this one too. */
+export const REMOTE_AGENT_EDIT_READS_MIN_DIALECT = 43;
+
 /**
  * The Changes panel for a paired host's workspace: the host's own
  * working-tree status over the held peer link, read-only. A row click
@@ -38,6 +43,8 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
     gated ? null : workspaceId,
   );
   const [selection, setSelection] = useState<string | null>(null);
+  // A local daemon below the dialect cannot send the agent-edit requests.
+  const agentDialect = version !== null && version >= REMOTE_AGENT_EDIT_READS_MIN_DIALECT;
   const agentReads = useMemo(
     () => remoteAgentChangeReads(deviceId, workspaceId),
     [deviceId, workspaceId],
@@ -114,7 +121,11 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
             </div>
           ) : null}
           {reply.error === null ? (
-            <AgentChanges reads={agentReads} onRefresh={refresh} />
+            agentDialect ? (
+              <AgentChanges reads={agentReads} onRefresh={refresh} />
+            ) : (
+              <StaleDaemonNote what="see this folder's agent edits" />
+            )
           ) : (
             <div className="workspace-changes-error" role="alert">
               {reply.error}

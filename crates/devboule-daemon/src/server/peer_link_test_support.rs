@@ -150,6 +150,16 @@ pub(crate) fn spawn(
     static_private: [u8; 32],
     capabilities: Vec<Capability>,
 ) -> (Responder, mpsc::Receiver<ClientMessage>) {
+    spawn_at(static_private, capabilities, PROTOCOL_VERSION)
+}
+
+/// [`spawn`] with the far daemon's own dialect, so a test can offer a daemon
+/// that predates a frame by version rather than by capability.
+pub(crate) fn spawn_at(
+    static_private: [u8; 32],
+    capabilities: Vec<Capability>,
+    protocol_version: u32,
+) -> (Responder, mpsc::Receiver<ClientMessage>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the responder");
     let address = listener.local_addr().expect("responder address");
     let handshakes = Arc::new(AtomicUsize::new(0));
@@ -216,7 +226,7 @@ pub(crate) fn spawn(
             }
             if framed
                 .send(&DaemonMessage::Hello(DaemonHello {
-                    protocol_version: PROTOCOL_VERSION,
+                    protocol_version,
                     min_protocol_version: PROTOCOL_MIN_VERSION,
                     daemon_version: "test".to_string(),
                     instance_id: "held-link-responder".to_string(),

@@ -94,6 +94,22 @@ impl Harness {
         Self::paced(instance, capabilities, pacing())
     }
 
+    /// A far end that speaks the given dialect, for a test that offers a daemon
+    /// older than the frame it refuses.
+    pub(crate) fn with_far_version(
+        instance: &str,
+        capabilities: Vec<devboule_protocol::Capability>,
+        protocol_version: u32,
+    ) -> Self {
+        let keypair = pinned_keypair();
+        let (responder, requests) = super::peer_link_test_support::spawn_at(
+            keypair.private.clone().try_into().expect("32 bytes"),
+            capabilities,
+            protocol_version,
+        );
+        Self::with_responder(instance, pacing(), keypair, responder, requests)
+    }
+
     fn paced(
         instance: &str,
         capabilities: Vec<devboule_protocol::Capability>,

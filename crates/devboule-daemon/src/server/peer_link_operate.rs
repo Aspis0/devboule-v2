@@ -33,6 +33,13 @@ fn file_edit_advertised(session: &LinkSession) -> bool {
     session.hello.protocol_version >= devboule_protocol::FILE_EDIT_MIN_VERSION
 }
 
+/// The hello version the far daemon must speak for an agent-edit read. An older
+/// daemon cannot decode `WorkspaceAgentEdits` or `WorkspaceAgentDiff`, so the
+/// refusal happens here, before the frame is written, as the file calls do.
+fn agent_edits_advertised(session: &LinkSession) -> bool {
+    session.hello.protocol_version >= devboule_protocol::AGENT_EDIT_READS_MIN_VERSION
+}
+
 /// The hello capability the far daemon must advertise for a session operate
 /// call. A daemon that predates the session frames cannot deserialize the
 /// request, so the refusal happens here, before anything is written — the
@@ -1156,6 +1163,13 @@ pub(crate) fn serve_agent_edits(
     if !operate_ready_link(state, link, generation, &answer) {
         return;
     }
+    if !agent_edits_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
     if session
         .framed
         .send(&ClientMessage::WorkspaceAgentEdits {
@@ -1207,6 +1221,13 @@ pub(crate) fn serve_agent_diff(
         return;
     };
     if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if !agent_edits_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
         return;
     }
     if session

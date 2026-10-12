@@ -235,6 +235,40 @@ fn a_far_daemon_without_the_frames_is_unsupported() {
     );
 }
 
+/// A far daemon below the dialect that answers the agent-edit reads is refused
+/// on both, before the frame leaves, as the file calls refuse their old peers.
+#[test]
+fn a_far_daemon_below_the_agent_edit_dialect_is_unsupported_and_gets_no_frame() {
+    let harness = Harness::with_far_version(
+        "peer-link-old-agent-edits",
+        super::peer_link_test_support::current_capabilities(),
+        devboule_protocol::AGENT_EDIT_READS_MIN_VERSION - 1,
+    );
+    harness.watch();
+    eventually("the link comes up", || {
+        harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Online)
+    });
+    let reads = [
+        harness.links.operate_agent_edits("b", "ws.1".to_string()),
+        harness
+            .links
+            .operate_agent_diff("b", "ws.1".to_string(), "site.css".to_string()),
+    ];
+    for answer in reads {
+        match answer {
+            LinkAnswer::Failed(state, _) => assert_eq!(state, RemoteHostState::Unsupported),
+            other => panic!("expected the old far end to be unsupported, got {other:?}"),
+        }
+    }
+    assert!(
+        harness.requests.try_recv().is_err(),
+        "no agent-edit frame may reach a far end that cannot parse it"
+    );
+}
+
 /// The vocabulary is three reads, closed: this match is exhaustive, so a fourth
 /// variant has to be added here, which is what makes adding one a reviewable
 /// act rather than a silent widening of what can reach a peer.

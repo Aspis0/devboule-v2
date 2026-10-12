@@ -26,6 +26,7 @@ vi.mock("../../lib/tauri", () => ({
   editorTargetsList: vi.fn(async () => []),
 }));
 
+import { REMOTE_AGENT_EDIT_READS_MIN_DIALECT } from "./RemoteChangesSurface";
 import {
   daemonStatus,
   remoteHostAgentDiff,
@@ -179,6 +180,15 @@ describe("remote panels", () => {
   });
 
   it("shows a paired folder that is not a repository as its agents' edits, never as a clean tree", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: REMOTE_AGENT_EDIT_READS_MIN_DIALECT,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
     vi.mocked(remoteHostGitStatus).mockResolvedValue({
       isGit: false,
       dirty: false,
@@ -218,6 +228,34 @@ describe("remote panels", () => {
     expect(remoteHostAgentEdits).toHaveBeenCalledWith(DEVICE, WORKSPACE);
     expect(container.textContent).toContain("site.css");
     expect(container.textContent).toContain("Not a git folder — showing what agents edited here.");
+    expect(container.textContent).not.toContain("No uncommitted changes.");
+  });
+
+  it("asks a local daemon below the agent-edit dialect for an update, and sends no agent-edit request", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: REMOTE_AGENT_EDIT_READS_MIN_DIALECT - 1,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
+    vi.mocked(remoteHostGitStatus).mockResolvedValue({
+      isGit: false,
+      dirty: false,
+      branch: null,
+      totals: { additions: 0, deletions: 0 },
+      rows: [],
+      error: null,
+    });
+
+    await render(
+      <ChangesSurface workspaceKey={remoteKeyFor(DEVICE, WORKSPACE)} canListCommits={false} />,
+    );
+
+    expect(container.textContent).toContain("Update the daemon to see this folder's agent edits.");
+    expect(remoteHostAgentEdits).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("No uncommitted changes.");
   });
 

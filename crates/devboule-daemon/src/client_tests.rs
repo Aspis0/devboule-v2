@@ -1292,6 +1292,15 @@ fn trace_fields(line: &str) -> Vec<(&str, &str)> {
 /// A client whose every frame lands in a file: enough wire for the trace to
 /// see a request leave, with no daemon behind it.
 fn trace_stub_inner(dir: &std::path::Path) -> Arc<ClientInner> {
+    stub_inner_with_hello(
+        dir,
+        DaemonHello::plugin_backend("trace-test", std::process::id()),
+    )
+}
+
+/// The same stub with a chosen far hello: a local daemon of any dialect, for the
+/// gates that refuse before a frame is written.
+fn stub_inner_with_hello(dir: &std::path::Path, hello: DaemonHello) -> Arc<ClientInner> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(windows)]
@@ -1317,7 +1326,7 @@ fn trace_stub_inner(dir: &std::path::Path) -> Arc<ClientInner> {
         browser_request_inbox: Mutex::new(None),
         browser_rejects: Mutex::new(None),
         stop: AtomicBool::new(false),
-        hello: DaemonHello::plugin_backend("trace-test", std::process::id()),
+        hello,
         server_pid: None,
         runtime: None,
     })
@@ -1746,4 +1755,51 @@ fn pairing_floor_is_the_roleless_dialect_not_the_current_one() {
     assert!(pairing_dialect_ok(34));
     assert!(pairing_dialect_ok(35));
     assert!(pairing_dialect_ok(devboule_protocol::PROTOCOL_VERSION));
+}
+
+/// A local daemon below the dialect that takes the paired-host agent-edit
+/// requests is refused before any frame is written: the wire file stays empty.
+#[test]
+fn a_local_daemon_below_the_agent_edit_dialect_gets_no_remote_agent_request() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-agent-edit-gate");
+    let old = devboule_protocol::REMOTE_AGENT_EDIT_READS_MIN_VERSION - 1;
+    let hello = DaemonHello {
+        protocol_version: old,
+        ..DaemonHello::plugin_backend("agent-edit-gate", std::process::id())
+    };
+    let client = super::DaemonClient {
+        inner: stub_inner_with_hello(&dir, hello),
+        reader: Mutex::new(None),
+    };
+
+    let edits = client.remote_host_agent_edits("device-a", "workspace-a");
+    let diff = client.remote_host_agent_diff("device-a", "workspace-a", "site.css");
+    for refusal in [edits.err(), diff.err()] {
+        match refusal {
+            Some(DaemonError::Handshake(error)) => {
+                assert_eq!(error.code, ErrorCode::ProtocolVersionMismatch);
+            }
+            other => panic!("expected a dialect refusal, got {other:?}"),
+        }
+    }
+    let wire = std::fs::read(dir.join("wire.out")).expect("wire file");
+    assert!(
+        wire.is_empty(),
+        "no request may leave for an older daemon: {} bytes",
+        wire.len()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The local gate's floor is the dialect that introduced the requests, so the
+/// current daemon passes and one below it does not.
+#[test]
+fn the_agent_edit_gate_floor_is_the_dialect_that_introduced_the_requests() {
+    use super::remote_agent_edits_dialect_ok;
+    let floor = devboule_protocol::REMOTE_AGENT_EDIT_READS_MIN_VERSION;
+    assert!(!remote_agent_edits_dialect_ok(floor - 1));
+    assert!(remote_agent_edits_dialect_ok(floor));
+    assert!(remote_agent_edits_dialect_ok(
+        devboule_protocol::PROTOCOL_VERSION
+    ));
 }
