@@ -1,7 +1,12 @@
 import { useRef, useState } from "react";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ErrorSentence } from "../../../lib/errorSentence";
-import { providerCanUpdate, providerRowStatus, providerVersionSegments } from "../providerStatus";
+import {
+  providerCanUpdate,
+  providerRowStatus,
+  providerVersionSegments,
+  type ProviderVersionSegment,
+} from "../providerStatus";
 import { ProviderGlyph } from "./ProviderGlyph";
 import { ProviderKebab } from "./ProviderKebab";
 import { ProviderModelCount, type ModelCountCache } from "./ProviderModelCount";
@@ -12,8 +17,7 @@ import { SHELL_QUERY_LOADING } from "./terminalShell";
 import { ProviderNpmFailure, ProviderWriteError } from "./ProviderNpmFailure";
 
 /** Muted version line on the row; renders nothing without data. */
-export function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
-  const segments = providerVersionSegments(provider);
+export function ProviderVersionLine({ segments }: { segments: readonly ProviderVersionSegment[] }) {
   if (segments.length === 0) return null;
   return (
     <span className="provider-version">
@@ -149,6 +153,11 @@ export function ProviderRow({
   const status = enabled
     ? providerRowStatus(provider)
     : { tone: "idle" as const, word: "Off", detail: null };
+  const versionSegments = providerVersionSegments(provider);
+  // The npx channel is said once: a registry row that knows only the latest
+  // version already names it in the version line, so the row word would repeat
+  // it there.
+  const versionNamesNpx = versionSegments.some((segment) => segment.namesNpx === true);
   const canUpdate = providerCanUpdate(provider) && !actionsDisabled;
   // A login consent types into a terminal tab, independent of the daemon's
   // npm lock — but the consent card is still one per page, so a running
@@ -191,8 +200,8 @@ export function ProviderRow({
             <span className={`prov-dot prov-dot-${status.tone}`} aria-hidden="true" />
             <span className="prov-status-word">{status.word}</span>
             {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
-            <ProviderVersionLine provider={provider} />
-            {viaNpx ? <span className="prov-via">via npx</span> : null}
+            <ProviderVersionLine segments={versionSegments} />
+            {viaNpx && !versionNamesNpx ? <span className="prov-via">via npx</span> : null}
             {busyVerb !== null ? (
               <span className="prov-busy" role="status">
                 {busyVerb === "update" ? "Updating…" : "Installing…"}

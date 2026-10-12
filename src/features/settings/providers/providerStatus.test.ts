@@ -188,6 +188,11 @@ describe("providerVersionSegments", () => {
       providerWith({ installChannel: "npx-registry", latestVersion: "1.10.0" }),
     );
     expect(segments.map((segment) => segment.text)).toEqual(["v1.10.0 via npx"]);
+    // The row reads the flag to avoid saying the channel twice.
+    expect(segments[0]?.namesNpx).toBe(true);
+    const local = providerVersionSegments(providerWith({ latestVersion: "1.10.0" }));
+    expect(local.map((segment) => segment.text)).toEqual(["v1.10.0 available"]);
+    expect(local[0]?.namesNpx).toBeUndefined();
   });
 
   it("flags the agent report with a tooltip and hides it when it matches", () => {

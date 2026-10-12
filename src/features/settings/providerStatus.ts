@@ -87,10 +87,12 @@ export function modelCountText(count: number): string | null {
  * the installed CLI version (or none is installed); otherwise it is noise.
  * Each segment carries its own tooltip; the render maps without re-deriving.
  */
-interface ProviderVersionSegment {
+export interface ProviderVersionSegment {
   text: string;
   /** Hover explanation; absent when the text speaks for itself. */
   title?: string;
+  /** Set when `text` already names the npx channel, so a row says it once. */
+  namesNpx?: boolean;
 }
 
 const AGENT_VERSION_TITLE =
@@ -114,10 +116,11 @@ export function providerVersionSegments(provider: ProviderInfo): ProviderVersion
       segments.push({ text: "up to date", title: LATEST_VERSION_TITLE });
     }
   } else if (latest) {
+    const npx = provider.installChannel === "npx-registry";
     segments.push({
-      text:
-        provider.installChannel === "npx-registry" ? `v${latest} via npx` : `v${latest} available`,
+      text: npx ? `v${latest} via npx` : `v${latest} available`,
       title: LATEST_VERSION_TITLE,
+      ...(npx ? { namesNpx: true } : {}),
     });
   }
   if (agent && agent !== installed) {

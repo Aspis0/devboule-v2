@@ -210,6 +210,19 @@ describe("ProviderRow", () => {
     expect(container.textContent).not.toContain("via npx");
   });
 
+  it("says via npx once when the version line already carries it", async () => {
+    await renderRow({
+      viaNpx: true,
+      provider: providerWith({
+        installedVersion: null,
+        installChannel: "npx-registry",
+        latestVersion: "1.10.0",
+      }),
+    });
+    const said = (container.textContent ?? "").match(/via npx/g) ?? [];
+    expect(said).toHaveLength(1);
+  });
+
   it("shows Updating… on the row line while its npm run is in flight", async () => {
     await renderRow({ busyVerb: "update" });
     expect(container.querySelector(".prov-row .prov-busy")?.textContent).toBe("Updating…");

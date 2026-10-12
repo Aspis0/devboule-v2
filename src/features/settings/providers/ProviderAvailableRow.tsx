@@ -3,6 +3,7 @@ import { CopyableLines, type CopyableLine } from "./CopyableLines";
 import { ProviderConsentBlock } from "./ProviderConsentBlock";
 import { ProviderNpmFailure } from "./ProviderNpmFailure";
 import { ProviderVersionLine, type ProviderRowConsent } from "./ProviderRow";
+import { providerVersionSegments } from "../providerStatus";
 import { SHELL_QUERY_LOADING } from "./terminalShell";
 import { providerInstallPackage } from "./providerTerminalCommands";
 
@@ -46,7 +47,7 @@ export function ProviderAvailableRow({
         {(provider.npmPackage ?? provider.executable) ? (
           <span className="prov-available-sub">{provider.npmPackage ?? provider.executable}</span>
         ) : null}
-        <ProviderVersionLine provider={provider} />
+        <ProviderVersionLine segments={providerVersionSegments(provider)} />
       </span>
       {notice !== null ? (
         <span className="provider-card-block prov-terminal-note" role="status">
