@@ -43,6 +43,7 @@ fn attach_replay_suppresses_codex_tasks_for_a_card_marked_turn() {
     let session_id = "s.codex.attach.card";
     let dir = crate::test_dirs::test_temp_dir("devboule-codex-attach-card");
     let verdict = SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "turn-T-plan".to_string(),
         status: Some("completed".to_string()),
         text: None,

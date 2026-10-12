@@ -96,6 +96,7 @@ pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<Se
     if completed {
         let (text, images, refusals) = result_content(item);
         let mut events = vec![SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: id.to_string(),
             status,
             text,

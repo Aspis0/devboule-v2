@@ -169,11 +169,16 @@ pub(crate) fn acp_diff_edits(
                 .get("path")
                 .and_then(Value::as_str)
                 .filter(|path| !path.is_empty())?;
+            // A delete leaves nothing behind, whatever `newText` the element sent.
+            let new = match kind {
+                AgentEditKind::Delete => None,
+                _ => text_field(element, "newText"),
+            };
             Some(replace_or_none(
                 edit_path(path, cwd),
                 kind,
                 text_field(element, "oldText"),
-                text_field(element, "newText"),
+                new,
             ))
         })
         .collect();
@@ -189,6 +194,45 @@ const TEXT_KEY_BYTES: usize = "\"text\":".len() + 1;
 /// The brackets of the edits array, and the comma each edit may add to it.
 const ARRAY_BYTES: usize = 2;
 const COMMA_BYTES: usize = 1;
+
+/// Pi's file tools, read from the arguments its `toolcall_end` carries: `edit`
+/// names one `oldText`/`newText` replace per `edits` entry on the file, and
+/// `write` names the whole file's `content`.
+pub(crate) fn pi_tool_edits(
+    name: &str,
+    arguments: Option<&Value>,
+    cwd: Option<&Path>,
+) -> Option<Vec<AgentToolEdit>> {
+    let arguments = arguments?;
+    let path = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(|path| edit_path(path, cwd))?;
+    let edits = match name {
+        "edit" => arguments
+            .get("edits")
+            .and_then(Value::as_array)?
+            .iter()
+            .map(|entry| {
+                replace_or_none(
+                    path.clone(),
+                    AgentEditKind::Edit,
+                    text_field(entry, "oldText"),
+                    text_field(entry, "newText"),
+                )
+            })
+            .collect(),
+        "write" => vec![replace_or_none(
+            path,
+            AgentEditKind::Write,
+            None,
+            text_field(arguments, "content"),
+        )],
+        _ => return None,
+    };
+    capped(edits)
+}
 
 /// Cut the call's edits to its budget, in the order the provider sent them. The
 /// budget is the JSON the edits encode to: an edit's path, kind, counts and

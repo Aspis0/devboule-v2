@@ -165,6 +165,7 @@ pub(super) fn failed_generation_events(id: &str, item: &Value) -> Vec<SessionEve
             background: None,
         },
         SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: id.to_string(),
             status: Some("failed".to_string()),
             text: Some(capped(&text)),

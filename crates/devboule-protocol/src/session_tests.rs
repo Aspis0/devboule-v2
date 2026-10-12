@@ -535,6 +535,7 @@ fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
     assert_eq!(decoded, command);
 
     let update = SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "exec-1".to_string(),
         status: Some("failed".to_string()),
         text: None,
@@ -595,6 +596,7 @@ fn old_tool_rows_without_command_and_exit_code_still_parse() {
 
 fn tool_update(replace: bool) -> SessionEvent {
     SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "tc-1".to_string(),
         status: None,
         text: Some("whole output".to_string()),
@@ -1338,6 +1340,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
     assert_eq!(decoded, without);
 
     let update = SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "t".to_string(),
         status: Some("completed".to_string()),
         text: Some("ok".to_string()),

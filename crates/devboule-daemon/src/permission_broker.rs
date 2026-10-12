@@ -1317,6 +1317,7 @@ impl PermissionBroker {
                     background: None,
                 };
                 let update = SessionEvent::AgentToolUpdate {
+                    edits: None,
                     tool_call_id: pending.tool_call_id.clone(),
                     status: Some("completed".to_string()),
                     text: Some(output),
@@ -1743,6 +1744,7 @@ fn publish_plan_outcome_for(
     {
         let (status, title) = outcome.status_and_title();
         let published = runtime.publish_daemon_event(SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: tool_call_id.to_string(),
             status: Some(status.to_string()),
             text: None,

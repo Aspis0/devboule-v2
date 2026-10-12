@@ -68,6 +68,7 @@ fn background_call(id: &str) -> SessionEvent {
 
 fn update(id: &str, status: &str) -> SessionEvent {
     SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: id.to_string(),
         status: Some(status.to_string()),
         text: None,

@@ -354,3 +354,21 @@ fn the_budget_counts_each_paths_bytes_not_only_the_text() {
     assert!(edits.last().is_some_and(|edit| edit.truncated));
     assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
 }
+
+#[test]
+fn an_acp_delete_leaves_no_new_side_whatever_new_text_it_sent() {
+    let edits = acp_diff_edits(
+        Some(&json!([{"type": "diff", "path": "gone.txt", "oldText": "bye\n", "newText": "stale\n"}])),
+        Some("delete"),
+        None,
+    )
+    .expect("diff");
+    assert_eq!(
+        edits[0].text,
+        Some(AgentEditText::Replace {
+            old: "bye\n".to_string(),
+            new: String::new(),
+        })
+    );
+    assert_eq!((edits[0].added, edits[0].removed), (0, 1));
+}

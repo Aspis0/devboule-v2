@@ -1015,6 +1015,7 @@ mod tests {
             "threadId": "t-1",
             "plan": [{"step": "Planned", "status": "pending"}]}});
         let verdict = SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: "turn-T-plan".to_string(),
             status: Some("completed".to_string()),
             text: None,

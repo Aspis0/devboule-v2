@@ -244,7 +244,14 @@ fn view_from_session_update(
             let added = memory.new_text(tool_call_id, update.get("content"), status);
             let replace = added.as_ref().is_some_and(|added| added.replace);
             let (command, exit_code) = command_row_from_update(update, Frame::Update);
+            let kind = update
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let edits =
+                crate::agent_edit::acp_diff_edits(update.get("content"), kind.as_deref(), cwd);
             Some(SessionEvent::AgentToolUpdate {
+                edits,
                 tool_call_id: tool_call_id.to_string(),
                 // A `failed` shell that only exited non-zero is a finished command; the code stays.
                 status: status.map(|status| settled_command_status(status, exit_code)),
@@ -254,10 +261,7 @@ fn view_from_session_update(
                     .and_then(serde_json::Value::as_str)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
-                kind: update
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
+                kind,
                 locations: locations_from_value(update.get("locations"), cwd, true),
                 parent_tool_use_id: None,
                 spawn_depth: None,
@@ -2864,6 +2868,44 @@ mod tests {
             panic!("models update must become SessionManifest, got {view:?}");
         };
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+    }
+
+    #[test]
+    fn tool_call_update_carries_the_diff_it_was_sent() {
+        let cwd = std::path::Path::new(crate::test_support::FIXTURE_ROOT);
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": SESSION,
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call-edit",
+                    "status": "completed",
+                    "content": [{
+                        "type": "diff",
+                        "path": crate::test_support::fixture_path("src/lib.rs").to_string_lossy(),
+                        "oldText": "one
+        ",
+                        "newText": "two
+        "
+                    }]
+                }
+            }
+        });
+        match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                status,
+                edits: Some(edits),
+                ..
+            }, ..] => {
+                assert_eq!(status.as_deref(), Some("completed"));
+                assert_eq!(edits.len(), 1);
+                assert_eq!(edits[0].path, "src/lib.rs");
+                assert_eq!((edits[0].added, edits[0].removed), (1, 1));
+            }
+            other => panic!("expected a diff-carrying tool update, got {other:?}"),
+        }
     }
 
     #[test]

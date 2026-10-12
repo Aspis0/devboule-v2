@@ -490,6 +490,7 @@ fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
         ("withdrawn-plan", "cancelled", "Withdrawn"),
     ] {
         assert!(runtime.publish_daemon_event(SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: tool_call_id.to_string(),
             status: Some(status.to_string()),
             text: None,

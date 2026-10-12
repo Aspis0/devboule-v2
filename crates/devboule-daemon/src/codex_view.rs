@@ -1483,6 +1483,7 @@ fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
         return Vec::new();
     };
     vec![SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: id.to_string(),
         status: None,
         text: Some(text.to_string()),
@@ -1514,6 +1515,7 @@ fn item_event(
         Some("plan") => {
             if completed {
                 vec![SessionEvent::AgentToolUpdate {
+                    edits: None,
                     tool_call_id: id.to_string(),
                     status: item.get("status").and_then(Value::as_str).map(status_name),
                     text: item
@@ -1569,6 +1571,7 @@ fn item_event(
             if completed {
                 let exit_code = codex_exit_code(item);
                 vec![SessionEvent::AgentToolUpdate {
+                    edits: None,
                     tool_call_id: id.to_string(),
                     // A `failed` that only says the process exited non-zero is a finished command.
                     status: item
@@ -1619,6 +1622,7 @@ fn item_event(
             let locations = locations(item.get("changes"), cwd);
             if completed {
                 vec![SessionEvent::AgentToolUpdate {
+                    edits: None,
                     tool_call_id: id.to_string(),
                     status: item.get("status").and_then(Value::as_str).map(status_name),
                     text: None,

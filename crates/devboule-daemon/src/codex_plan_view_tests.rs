@@ -393,6 +393,7 @@ fn plan_card_marks_its_turn() {
     // The journalled outcome row marks the same turn: the request itself
     // rides live only, the verdict is what the journal keeps.
     let outcome = SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "turn-on-1-plan".to_string(),
         status: Some("completed".to_string()),
         text: None,
@@ -417,6 +418,7 @@ fn plan_card_marks_its_turn() {
         assert_eq!(crate::codex_plan_marks::plan_card_turn_id(&event), None);
     }
     let item_update = SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: "turn-on-1-plan".to_string(),
         status: Some("completed".to_string()),
         text: Some("## Plan".to_string()),

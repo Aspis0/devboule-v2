@@ -146,6 +146,7 @@ pub(super) fn tool_update_from_result(
         .get("content")
         .map(|content| capped(&blocks_text(content)));
     Some(SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id,
         status: Some(tool_status(failed).to_string()),
         text,

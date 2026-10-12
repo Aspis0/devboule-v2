@@ -139,6 +139,20 @@
   },
   {
     "command": "cargo test",
+    "edits": [
+      {
+        "added": 1,
+        "kind": "edit",
+        "path": "src/main.rs",
+        "removed": 1,
+        "text": {
+          "form": "replace",
+          "new": "b\n",
+          "old": "a\n"
+        },
+        "truncated": false
+      }
+    ],
     "exitCode": 1,
     "kind": "edit",
     "locations": [

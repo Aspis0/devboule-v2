@@ -268,6 +268,7 @@ pub(crate) fn call_content_update(
     };
     let added = memory.new_text(tool_call_id, update.get("content"), Some(status.as_str()))?;
     Some(SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: tool_call_id.clone(),
         status: None,
         text: Some(added.text),

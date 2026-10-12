@@ -293,6 +293,7 @@ fn user_tool_result_success_and_error() {
     assert_eq!(
         ok,
         vec![SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: "toolu_ok".to_string(),
             status: Some("completed".to_string()),
             text: Some("devboule-perm-probe".to_string()),
@@ -323,6 +324,7 @@ fn user_tool_result_success_and_error() {
     assert_eq!(
         err,
         vec![SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: "toolu_01SPEx5ftKiRM6gUm1VBwYKz".to_string(),
             status: Some("failed".to_string()),
             text: Some("The user declined this command in the probe.".to_string()),

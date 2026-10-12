@@ -137,6 +137,7 @@ impl ClaudeView {
                                 .map(str::to_string)
                                 .unwrap_or_else(|| "No plan text was provided.".to_string());
                             events.push(SessionEvent::AgentToolUpdate {
+                                edits: None,
                                 tool_call_id: tool_call_id.to_string(),
                                 status: None,
                                 text: Some(plan),

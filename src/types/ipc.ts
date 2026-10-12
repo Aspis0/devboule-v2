@@ -1581,6 +1581,8 @@ export type SessionEvent =
       replace?: boolean;
       /** Images a tool result produced: stored references, shown under this row. */
       images?: AttachmentReference[];
+      /** File changes this update carried, when the diff arrived on the update frame. */
+      edits?: AgentToolEdit[];
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually

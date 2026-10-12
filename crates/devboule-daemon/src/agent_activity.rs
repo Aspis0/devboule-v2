@@ -456,6 +456,7 @@ mod tests {
 
     fn update(id: &str, status: &str, path: Option<&str>) -> SessionEvent {
         SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: id.to_string(),
             status: Some(status.to_string()),
             text: None,

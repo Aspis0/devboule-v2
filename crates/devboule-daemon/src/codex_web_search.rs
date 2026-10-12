@@ -58,6 +58,7 @@ pub(super) fn web_search_events(id: &str, item: &Value, completed: bool) -> Vec<
     let presentation = action_presentation(item);
     if completed {
         vec![SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: id.to_string(),
             status: Some("completed".to_string()),
             text: result_count_text(item),

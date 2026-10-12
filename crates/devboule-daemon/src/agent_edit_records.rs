@@ -176,12 +176,22 @@ fn session_records(
             }
             SessionEvent::AgentToolUpdate {
                 tool_call_id,
-                status: Some(status),
+                status,
+                edits,
                 ..
             } => {
-                if let Some(call) = calls.get_mut(tool_call_id.as_str()) {
+                let call = calls.entry(tool_call_id.as_str()).or_insert(CallState {
+                    at_ms,
+                    status: "pending",
+                    edits: None,
+                });
+                if let Some(status) = status {
                     call.at_ms = at_ms;
                     call.status = status.as_str();
+                }
+                if let Some(edits) = edits {
+                    call.at_ms = at_ms;
+                    call.edits = Some(edits.as_slice());
                 }
             }
             _ => {}

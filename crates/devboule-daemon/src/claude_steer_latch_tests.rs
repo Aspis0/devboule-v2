@@ -481,6 +481,7 @@ fn a_latch_denied_plan_keeps_its_cancelled_plan_row_live_and_in_replay() {
     assert_eq!(
         terminal,
         Some(&SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: "toolu_req-plan".to_string(),
             status: Some("cancelled".to_string()),
             text: None,

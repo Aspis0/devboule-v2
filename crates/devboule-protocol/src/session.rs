@@ -981,6 +981,11 @@ pub enum SessionEvent {
         /// attachment's and rendered under this row.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<AttachmentReference>,
+        /// The file changes this update carried, for a provider that sends the
+        /// diff on the update frame rather than on the call. Absent for every
+        /// other update and for rows written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edits: Option<Vec<AgentToolEdit>>,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {

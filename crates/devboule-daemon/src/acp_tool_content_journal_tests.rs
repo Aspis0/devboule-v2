@@ -120,6 +120,7 @@ fn a_journaled_update_report_keeps_replace() {
         .expect("birth");
     for (seq, replace) in [(1, true), (2, false)] {
         let event = SessionEvent::AgentToolUpdate {
+            edits: None,
             tool_call_id: "tc1".to_string(),
             status: None,
             text: Some(format!("body {seq}")),

@@ -137,6 +137,19 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             background: None,
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
+            // A diff that arrived on the update frame, so the snapshot pins its
+            // wire name next to the call's own.
+            edits: Some(vec![crate::AgentToolEdit {
+                path: "src/main.rs".to_string(),
+                kind: crate::AgentEditKind::Edit,
+                text: Some(crate::AgentEditText::Replace {
+                    old: "a\n".to_string(),
+                    new: "b\n".to_string(),
+                }),
+                truncated: false,
+                added: 1,
+                removed: 1,
+            }]),
             tool_call_id: "toolu_plan".to_string(),
             status: None,
             text: None,

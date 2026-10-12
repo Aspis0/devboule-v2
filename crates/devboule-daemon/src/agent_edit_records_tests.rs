@@ -190,6 +190,7 @@ fn a_closed_child_still_contributes_its_edits() {
 
 fn status_update(tool_call_id: &str, status: &str) -> SessionEvent {
     SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: tool_call_id.to_string(),
         status: Some(status.to_string()),
         text: None,
@@ -302,4 +303,53 @@ fn a_read_skips_sessions_once_the_replay_byte_budget_is_spent() {
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(found.truncated, "the third session would pass the budget");
+}
+
+fn update_with_edits(
+    tool_call_id: &str,
+    status: Option<&str>,
+    edits: Vec<AgentToolEdit>,
+) -> SessionEvent {
+    SessionEvent::AgentToolUpdate {
+        tool_call_id: tool_call_id.to_string(),
+        status: status.map(str::to_string),
+        text: None,
+        title: None,
+        kind: None,
+        locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        replace: false,
+        images: Vec::new(),
+        edits: Some(edits),
+    }
+}
+
+#[test]
+fn edits_carried_on_an_update_are_listed_once_the_call_completes() {
+    let call_without_edits = SessionEvent::AgentToolCall {
+        tool_call_id: "pi-1".to_string(),
+        title: "edit".to_string(),
+        status: "pending".to_string(),
+        kind: Some("edit".to_string()),
+        locations: None,
+        edits: None,
+        subagent_type: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        background: None,
+    };
+    let events = vec![
+        call_without_edits,
+        update_with_edits("pi-1", Some("in_progress"), vec![edit("src/lib.rs", 2)]),
+        status_update("pi-1", "completed"),
+    ];
+    let records = scoped(&events, &[Some(100), Some(110), Some(120)]);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].added, 2);
+    assert_eq!(records[0].at_ms, 120);
 }

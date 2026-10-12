@@ -292,6 +292,13 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
             .and_then(|arguments| arguments.get("command")),
     );
     Some(SessionEvent::AgentToolUpdate {
+        // No cwd here: the records reader resolves a relative path against the
+        // session's own directory, and an absolute one against the root.
+        edits: crate::agent_edit::pi_tool_edits(
+            name.unwrap_or_default(),
+            tool_call.get("arguments"),
+            None,
+        ),
         tool_call_id: tool_call.get("id")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
         text: None,
@@ -311,6 +318,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
 
 fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
     Some(SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: value.get("toolCallId")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
         text: None,
@@ -340,6 +348,7 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         .unwrap_or(false);
     let exit_code = result_exit_code(value.get("result"));
     let mut events = vec![SessionEvent::AgentToolUpdate {
+        edits: None,
         tool_call_id: tool_call_id.to_string(),
         // Only an explicit `exitCode` settles the status: the `code` fallbacks fill
         // the row's number, not a verdict on whether the command ran and exited.
@@ -544,6 +553,10 @@ pub(crate) fn stats_reply_from_response(response: &Value) -> StatsReply {
         window_tokens: context.get("contextWindow").and_then(Value::as_u64),
     }
 }
+
+#[cfg(test)]
+#[path = "pi_view_edit_tests.rs"]
+mod edit_tests;
 
 #[cfg(test)]
 #[path = "pi_view_web_tools_tests.rs"]
