@@ -172,6 +172,7 @@ describe("delegated design mirror", () => {
     if (message?.role === "assistant") {
       expect(message.artifactHtml).toBe("<main>Delegated</main>");
       expect(message.title).toBe("Landing page");
+      expect(message.desc).toBe("Finished by a Design agent.");
     }
   });
 

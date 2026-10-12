@@ -178,7 +178,7 @@ async function writeDelegatedArtifact(
     role: "assistant",
     status: "done",
     title,
-    desc: "Finished by a delegated agent.",
+    desc: "Finished by a Design agent.",
     sources: [],
     nodeIds: [],
     // A history entry records neither the shape the run asked for nor how
