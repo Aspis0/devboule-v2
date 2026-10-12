@@ -353,7 +353,8 @@ use session_registry_state::{
 };
 pub(crate) use session_registry_state::{
     AgentCreation, AgentCreationTicket, AgentCreator, ChildProfileFacts, LiveAgentEntry,
-    PermissionResponse, MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH, MAX_LIVE_TERMINALS_PER_CREATOR,
+    PermissionResponse, MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH, MAX_ATTACHMENT_READ_BYTES,
+    MAX_LIVE_TERMINALS_PER_CREATOR,
 };
 #[cfg(test)]
 use session_registry_state::{

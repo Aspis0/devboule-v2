@@ -344,6 +344,17 @@ pub(crate) const MAX_LIVE_AGENT_SESSIONS: usize = 8;
 /// message over this is reported with a note instead, which is the same shape
 /// as a deposit the store refused.
 pub(crate) const MAX_AGENT_ARTIFACT_BYTES: usize = 32 * 1024;
+/// Largest stored attachment one read reply serves (512 KiB).
+///
+/// Half the 1 MiB frame cap in raw bytes: base64 maps three bytes to four, so
+/// 512 KiB encodes to 699,052 bytes and the rest of the frame holds the
+/// envelope. A larger stored file is refused, never truncated — base64 cut in
+/// the middle is bytes nobody can decode.
+///
+/// The artifact cap above is not this cap: a child's finish report is a few
+/// hundred bytes, while a chat picture is one screenshot and routinely over
+/// 32 KiB.
+pub(crate) const MAX_ATTACHMENT_READ_BYTES: usize = 512 * 1024;
 /// How long one in-flight creation holds its idempotency key (`S5-03`).
 ///
 /// Long enough for a card a human answers and a provider handshake behind it;

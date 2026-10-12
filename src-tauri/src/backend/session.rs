@@ -492,9 +492,9 @@ pub async fn session_attachment_delete(
 /// frame is mapped to a `CommandError` by the same `?`.
 ///
 /// One reference per call is the shape of the protocol, not a choice made
-/// here: the reply carries at most the artifact cap, well under the frame
-/// ceiling, and a second reference would be a second answer with nowhere to
-/// put it.
+/// here: the reply carries at most the read cap (512 KiB of bytes, 699 KB
+/// encoded), well under the frame ceiling, and a second reference would be
+/// a second answer with nowhere to put it.
 #[tauri::command]
 pub async fn session_attachment_read(
     bridge: State<'_, DaemonBridge>,

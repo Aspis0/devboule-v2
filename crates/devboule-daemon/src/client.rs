@@ -843,9 +843,10 @@ impl DaemonClient {
     /// Read back the bytes of one deposited attachment, by reference.
     ///
     /// One reference per call, like one attachment per deposit: the reply
-    /// carries at most the artifact cap, well under the frame ceiling. The
-    /// digest and size are the store's to state, so the reference this
-    /// takes is the value a deposit answered with, verbatim.
+    /// carries at most the read cap (512 KiB of bytes, 699 KB encoded), well
+    /// under the frame ceiling. The digest and size are the store's to state,
+    /// so the reference this takes is the value a deposit answered with,
+    /// verbatim.
     ///
     /// Errors arrive as an `Error` frame on the correlation id, exactly as
     /// they do for a deposit: an id this daemon does not know, a session

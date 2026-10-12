@@ -343,7 +343,7 @@ impl super::SessionRegistry {
     /// same name comes back unless the bytes themselves are verified.
     ///
     /// The read is bounded before it is believed. The file is opened and at
-    /// most [`MAX_AGENT_ARTIFACT_BYTES`] plus one byte is taken, so a file
+    /// most [`MAX_ATTACHMENT_READ_BYTES`] plus one byte is taken, so a file
     /// grown past the cap is never fully allocated and can never reach the
     /// frame. The bytes taken must then be exactly as long as the reference
     /// states, and their SHA-256 must equal its digest — the store hashed
@@ -377,12 +377,12 @@ impl super::SessionRegistry {
             &reference.digest,
             crate::attachment_store::reference_extension_hint(reference).as_deref(),
         )?;
-        if reference.stored_bytes > MAX_AGENT_ARTIFACT_BYTES as u64 {
+        if reference.stored_bytes > MAX_ATTACHMENT_READ_BYTES as u64 {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 format!(
                     "The reference states {} bytes for '{}', over the {}-byte read cap.",
-                    reference.stored_bytes, reference.digest, MAX_AGENT_ARTIFACT_BYTES
+                    reference.stored_bytes, reference.digest, MAX_ATTACHMENT_READ_BYTES
                 ),
             ));
         }
@@ -396,7 +396,7 @@ impl super::SessionRegistry {
             )
         })?;
         let mut bytes = Vec::new();
-        file.take(MAX_AGENT_ARTIFACT_BYTES as u64 + 1)
+        file.take(MAX_ATTACHMENT_READ_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| {
                 WireError::new(

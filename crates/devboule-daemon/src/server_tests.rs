@@ -6048,10 +6048,92 @@ fn a_read_naming_the_wrong_size_is_refused() {
     let _ = std::fs::remove_dir_all(path);
 }
 
-/// The read cap is the artifact cap: one constant, the number the deposit
-/// already enforces. A file over it is refused with the cap named.
+/// A PNG container whose image data alone is 48 KiB: the signature, the
+/// header, one large IDAT and the end marker. The walk keeps critical chunks
+/// as they are, so the stored file is this size.
+fn chat_sized_png() -> Vec<u8> {
+    let mut out = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    for (chunk_type, data) in [
+        (&b"IHDR"[..], vec![0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]),
+        (&b"IDAT"[..], vec![0x0b; 48 * 1024]),
+        (&b"IEND"[..], Vec::new()),
+    ] {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(chunk_type);
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+    }
+    out
+}
+
+/// A chat picture is bigger than the artifact cap, and the read serves it
+/// whole: the bytes on disk come back decoded from the base64 reply.
 #[test]
-fn a_read_over_the_artifact_cap_names_the_cap() {
+fn a_chat_sized_image_reads_back_whole() {
+    let (path, state) = temp_state("read-chat-image");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "chat01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let reference = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("shot.png", &chat_sized_png()),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("the picture is deposited: {other:?}"),
+    };
+    let file = files_under(&path.join("attachments"));
+    assert_eq!(file.len(), 1);
+    let bytes = std::fs::read(&file[0]).expect("the stored picture");
+    assert!(
+        bytes.len() > 32 * 1024,
+        "over the artifact cap: {}",
+        bytes.len()
+    );
+    let attachment = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead { id: 9, reference },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionAttachment { attachment, .. } => attachment,
+        other => panic!("a chat-sized image reads back: {other:?}"),
+    };
+    use base64::Engine;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&attachment.data)
+            .expect("the reply carries base64"),
+        bytes,
+        "the read returns the stored bytes whole"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// The read cap is the attachment cap, not the artifact one: a file over it
+/// is refused with the cap named, never truncated.
+#[test]
+fn a_read_over_the_attachment_cap_names_the_cap() {
     let (path, state) = temp_state("read-cap");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let session_id =
@@ -6081,7 +6163,7 @@ fn a_read_over_the_artifact_cap_names_the_cap() {
     // than the identity one.
     let file = files_under(&path.join("attachments"));
     assert_eq!(file.len(), 1);
-    let grown = crate::session::MAX_AGENT_ARTIFACT_BYTES + 1024;
+    let grown = crate::session::MAX_ATTACHMENT_READ_BYTES + 1024;
     std::fs::write(&file[0], vec![0u8; grown]).expect("grow the stored file");
     let big = AttachmentReference {
         stored_bytes: grown as u64,
@@ -6112,7 +6194,7 @@ fn a_read_over_the_artifact_cap_names_the_cap() {
             "The reference states {} bytes for '{}', over the {}-byte read cap.",
             grown as u64,
             stored.digest,
-            crate::session::MAX_AGENT_ARTIFACT_BYTES
+            crate::session::MAX_ATTACHMENT_READ_BYTES
         ),
         "the refusal names the cap, and only what the reference states"
     );
