@@ -3,11 +3,13 @@
 // Which child the panel mirrors: the most recent finished child whose
 // deposited artifact yields a design. When two children finish close
 // together the later arrival wins and the earlier arrival's slow read is
-// dropped as stale, but a human who deliberately opened an older history
-// entry keeps it: the pin set by `noteHumanOpenedHistory` blocks every
-// later arrival until the human starts a generation or clears it, because
-// a panel that yanks itself out from under the reader is worse than one
-// that waits.
+// dropped as stale. A human who deliberately opened an older history entry
+// keeps it against replays: the pin set by `noteHumanOpenedHistory` holds
+// against any finish this run already knew, and against the pinned child
+// itself. A child finishing for the first time is a new result and lands
+// over the pin, because a finished design the person is waiting for must
+// not be silently kept off the canvas. The pin is released by the human's
+// own next generation or by clearing the session.
 //
 // Displaying is reading. The mirror reads the finished child's deposited
 // bytes through `sessionAttachmentRead` and extracts fenced HTML from the
@@ -66,15 +68,25 @@ let mirrorSequence = 0;
 const mirroredChildIds = new Set<string>();
 let writtenSequence = 0;
 let humanPinnedChildId: string | null = null;
+// Every child whose finish this run has scheduled, written or not. It is what
+// tells a replay of a known finish from a new one while a pin is up.
+const knownFinishedChildIds = new Set<string>();
 
 /**
  * Records that the human deliberately opened a history entry. While pinned,
- * later delegated arrivals neither replay nor write, including the pinned
+ * a replay of a finish this run already knew is held, and so is the pinned
  * child itself (it is already on screen, so a second card would duplicate
- * it). Wired from `DesignSurface.openHistoryEntry`; nothing else may set it.
+ * it). A new child's finish still lands. Wired from
+ * `DesignSurface.openHistoryEntry`; nothing else may set it.
  */
 export function noteHumanOpenedHistory(sessionId: string): void {
   humanPinnedChildId = sessionId;
+}
+
+/** Whether the pin holds this arrival: a replay of a known finish, or the pinned child. */
+function pinHolds(childSessionId: string, newer: boolean): boolean {
+  if (humanPinnedChildId === null) return false;
+  return !newer || childSessionId === humanPinnedChildId;
 }
 
 /**
@@ -90,6 +102,7 @@ export function clearDelegatedMirrorPin(): void {
 export function resetDelegatedMirrorForTests(): void {
   mirrorSequence = 0;
   mirroredChildIds.clear();
+  knownFinishedChildIds.clear();
   writtenSequence = 0;
   humanPinnedChildId = null;
 }
@@ -154,10 +167,11 @@ async function writeDelegatedArtifact(
   html: string,
   ensureHost: () => Promise<DesignHost>,
   store: typeof useAppStoreType,
+  newer: boolean,
 ): Promise<boolean> {
   // The human pinned an entry while the read was in flight, or a duplicate
   // arrival's read finished second: neither may write.
-  if (humanPinnedChildId !== null) return false;
+  if (pinHolds(childSessionId, newer)) return false;
   if (mirroredChildIds.has(childSessionId)) return false;
   let host = store.getState().designSession.host;
   if (host === null) {
@@ -224,10 +238,10 @@ async function writeDelegatedArtifact(
 /**
  * Schedules the mirror for one finished child, fire-and-forget from
  * `AgentSession.handleEvent`. The synchronous prefix is the `completed`
- * gate and the sequence bump only — no store reads, no daemon I/O. Every
- * other check runs after the store resolves; a cleared session first drops
- * the pin and the mirror record, and a pinned arrival performs no daemon
- * read at all. Failures warn and change nothing.
+ * gate, the sequence bump and the known-finish record — no store reads, no
+ * daemon I/O. Every other check runs after the store resolves; a cleared
+ * session first drops the pin and the mirror record, and an arrival the pin
+ * holds performs no daemon read at all. Failures warn and change nothing.
  */
 export function scheduleDelegatedDesignMirror(
   event: ChildFinishedEvent,
@@ -242,6 +256,8 @@ export function scheduleDelegatedDesignMirror(
   // history entry, where the human reads the true state.
   if (event.state !== "completed") return;
   const sequence = ++mirrorSequence;
+  const newer = !knownFinishedChildIds.has(childSessionId);
+  knownFinishedChildIds.add(childSessionId);
 
   void (async () => {
     try {
@@ -256,7 +272,7 @@ export function scheduleDelegatedDesignMirror(
         mirroredChildIds.clear();
         writtenSequence = 0;
       }
-      if (humanPinnedChildId !== null) return;
+      if (pinHolds(childSessionId, newer)) return;
       if (mirroredChildIds.has(childSessionId)) return;
       const readStored =
         deps?.readStored ?? (await import("../../lib/tauri")).sessionAttachmentRead;
@@ -269,7 +285,9 @@ export function scheduleDelegatedDesignMirror(
       // lands after a fast empty one. Among arrivals with content the last
       // writer wins, which converges on the most recent one either way.
       if (sequence < writtenSequence) return;
-      if (await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store)) {
+      if (
+        await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store, newer)
+      ) {
         writtenSequence = sequence;
         mirroredChildIds.add(childSessionId);
       }

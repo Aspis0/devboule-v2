@@ -1332,10 +1332,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           // The oversized error is rendered in the canvas message below, so a banner would duplicate it.
           setHistoryOpenResult(isOversizedArtifact ? null : result);
           if (result.status === "artifact" || isOversizedArtifact) {
-            // A deliberate open that landed pins the panel: later delegated
-            // arrivals replay nothing and write nothing until the human
-            // moves on. A failed open pins nothing — there is no card being
-            // read, so there is nothing to protect from being yanked away.
+            // A deliberate open that landed pins the panel against replays of
+            // finishes the run already knew; a child finishing for the first
+            // time still lands. A failed open pins nothing — there is no card
+            // being read, so there is nothing to protect from being yanked away.
             noteHumanOpenedHistory(entry.sessionId);
             const messageId = `${HISTORY_OPEN_MESSAGE_PREFIX}${++historyOpenMessageCounterRef.current}`;
             // A pointer is not a prompt: a `child` entry's title is the commissioned

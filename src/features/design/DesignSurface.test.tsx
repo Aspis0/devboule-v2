@@ -1203,9 +1203,9 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("holds the panel on an entry whose open succeeded", async () => {
-    // The retained pin: a pick that landed a card keeps later delegations
-    // from replaying at all, until the human moves on.
+  it("lets a new child's finish land over the pinned entry, which stays in the transcript", async () => {
+    // A pin holds against replays only: a child finishing for the first time
+    // is a new result, so it takes the canvas and the entry stays in History.
     historyOpenMocks.open.mockImplementation(
       (_sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
         deps.onResult({ status: "artifact", html: "<main>Old</main>" });
@@ -1225,23 +1225,24 @@ describe("DesignSurface host capabilities", () => {
       store: useAppStore,
     });
     await flushMirror();
+    expect(captured).toHaveLength(1);
+    captured[0].resolve(toBase64Markdown("<main>Delegated</main>"));
+    await flushMirror();
 
-    expect(captured).toEqual([]);
     const session = useAppStore.getState().designSession;
-    expect(session.latestArtifact).toMatchObject({ html: "<main>Old</main>" });
-    expect(session.messages.some((message) => message.id.startsWith("delegated-design-"))).toBe(
-      false,
-    );
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Delegated</main>" });
+    expect(
+      session.messages.some((message) => message.id === "delegated-design-delegated-new"),
+    ).toBe(true);
     await act(async () => root.unmount());
   });
 
-  it("keeps the pin when the surface unmounts, because navigation is not teardown", async () => {
+  it("keeps holding a replay of the pinned entry after the surface unmounts", async () => {
     // A worked Design host survives surface navigation on purpose, so its
     // transcript and artifact are there when the human comes back
     // (`App.tsx:52-55`); "End session" is the teardown they ask for. Dropping
-    // the pin on unmount would let a child that finishes while they are on
-    // Workspace replace the entry they were reading, and they would find it
-    // gone on return.
+    // the pin on unmount would let a replay of the entry they were reading
+    // replace it, and they would find it gone on return.
     historyOpenMocks.open.mockImplementation(
       (_sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
         deps.onResult({ status: "artifact", html: "<main>Old</main>" });
@@ -1257,7 +1258,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
 
     const captured: Array<CapturedRead> = [];
-    scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
+    scheduleDelegatedDesignMirror(delegatedFinish("history-old"), {
       readStored: delegatedRead(captured),
       store: useAppStore,
     });

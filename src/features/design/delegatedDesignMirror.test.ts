@@ -341,7 +341,7 @@ describe("delegated design mirror", () => {
     expect(session.messages).toHaveLength(0);
   });
 
-  it("leaves a human-pinned older entry in place when a later child finishes", async () => {
+  it("lets a newer child finish land over a human-pinned entry, which stays in the transcript", async () => {
     useAppStore.setState({
       designSession: {
         host: HOST,
@@ -366,21 +366,38 @@ describe("delegated design mirror", () => {
       store: useAppStore,
     });
     await flush();
-
-    // Pinned means not even read: no daemon call for the newer child.
-    expect(captured).toHaveLength(0);
-    const session = useAppStore.getState().designSession;
-    expect(session.latestArtifact).toMatchObject({ html: "<main>Old</main>" });
-    expect(session.messages).toHaveLength(1);
-
-    // The pin is the human's to release: after it clears the same arrival mirrors.
-    clearDelegatedMirrorPin();
-    scheduleDelegatedDesignMirror(finishedWithMarkdown("new-child", "Newer design"), {
-      readStored: fakeRead(captured),
-      store: useAppStore,
-    });
+    captured[0]?.resolve(storedMarkdown("```html\n<main>New</main>\n```"));
     await flush();
-    expect(captured).toHaveLength(1);
+
+    const session = useAppStore.getState().designSession;
+    expect(session.latestArtifact).toMatchObject({ html: "<main>New</main>" });
+    expect(session.messages.map((message) => message.id)).toEqual([
+      "old-card",
+      "delegated-design-new-child",
+    ]);
+  });
+
+  it("holds a pin against a replay of a child the run already saw", async () => {
+    const captured: CapturedRead[] = [];
+    const deps = { readStored: fakeRead(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-old", "Older"), deps);
+    await flush();
+    captured[0]?.resolve(storedMarkdown("```html\n<main>Old</main>\n```"));
+    await flush();
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-new", "Newer"), deps);
+    await flush();
+    captured[1]?.resolve(storedMarkdown("```html\n<main>New</main>\n```"));
+    await flush();
+
+    // The human opens the older entry; a replay of that finish must not read or write.
+    noteHumanOpenedHistory("child-old");
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-old", "Older"), deps);
+    await flush();
+
+    expect(captured).toHaveLength(2);
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>New</main>",
+    });
   });
 
   it("writes nothing when the human is already viewing that exact child", async () => {
@@ -659,7 +676,7 @@ describe("delegated design mirror", () => {
     const deps = { readStored: fakeRead(captured), store: useAppStore };
     scheduleDelegatedDesignMirror(finishedWithMarkdown("child-1", "Delegated"), deps);
     await flush();
-    noteHumanOpenedHistory("old-entry");
+    noteHumanOpenedHistory("child-1");
     captured[0].resolve(storedMarkdown("```html\n<main>Delegated</main>\n```"));
     await flush();
     expect(useAppStore.getState().designSession.messages).toHaveLength(0);
