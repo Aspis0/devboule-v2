@@ -34,6 +34,13 @@ pub async fn resize(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Valu
     cdp::present_for(page, &tab.live, size)
         .await
         .map_err(cdp_failure)?;
+    // The pane can show the tab during the await, and `present_for` then clears
+    // the override. The size the pane gave is the one to keep, not this one.
+    if !tab.live.parked() {
+        return Err(host_error(
+            "This tab was shown in its pane while it was being resized, so the pane's size stays. Ask again while it is in the background.",
+        ));
+    }
     tab.live.set_size(size);
     let (width, height) = act::viewport(page).await?;
     Ok(json!({ "width": width, "height": height }))

@@ -1,6 +1,8 @@
 //! `resize`: the override it sends, the size a tab keeps, and the tab on screen
 //! that is left to its pane.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use crate::browser::test_support::{parked_tab, FakePage};
@@ -72,4 +74,33 @@ fn a_tab_on_screen_is_left_to_its_pane_and_no_override_is_sent() {
 
     assert!(error.message.contains("on screen"), "{}", error.message);
     assert_eq!(page.called("Emulation.setDeviceMetricsOverride"), 0);
+}
+
+#[test]
+fn a_tab_the_pane_shows_during_the_resize_keeps_the_size_the_pane_gave_it() {
+    let tab = parked_tab("tab-1");
+    let before = tab.live.size();
+    let presenting = Arc::clone(&tab.live);
+    let page = phone_page().during("Emulation.setDeviceMetricsOverride", move || {
+        presenting.set_parked(false)
+    });
+
+    let error = tauri::async_runtime::block_on(resize(
+        &tab,
+        &page,
+        &json!({ "browserId": "tab-1", "width": 390, "height": 844 }),
+    ))
+    .expect_err("the pane showed the tab while it was resized");
+
+    assert!(
+        error.message.contains("shown in its pane"),
+        "{}",
+        error.message
+    );
+    let kept = tab.live.size();
+    assert_eq!(
+        (kept.width, kept.height),
+        (before.width, before.height),
+        "the remembered size is the pane's"
+    );
 }
