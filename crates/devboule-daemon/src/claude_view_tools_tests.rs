@@ -634,3 +634,50 @@ fn a_read_carries_no_edits() {
         other => panic!("expected a tool call, got {other:?}"),
     }
 }
+
+#[test]
+fn a_denied_edit_is_a_pending_call_then_a_failed_result() {
+    let mut mapper = view();
+    let call = mapper.ingest(&json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg_denied",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_denied",
+                "name": "Edit",
+                "input": {"file_path": "src/lib.rs", "old_string": "one\n", "new_string": "two\n"}
+            }]
+        }
+    }));
+    let result = mapper.ingest(&json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "tool_use_id": "toolu_denied",
+                "type": "tool_result",
+                "content": "The user doesn't want to proceed with this tool use.",
+                "is_error": true
+            }]
+        }
+    }));
+    match (call.as_slice(), result.as_slice()) {
+        (
+            [SessionEvent::AgentToolCall {
+                status,
+                edits: Some(_),
+                ..
+            }],
+            [SessionEvent::AgentToolUpdate {
+                status: Some(result_status),
+                ..
+            }],
+        ) => {
+            assert_eq!(status, "pending");
+            assert_eq!(result_status, "failed");
+        }
+        other => panic!("expected a pending edit then a failed result, got {other:?}"),
+    }
+}

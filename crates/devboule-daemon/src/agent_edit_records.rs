@@ -106,7 +106,17 @@ pub(crate) fn read(
     }
 }
 
-/// The edit records of one session's replay, one per file change of each call.
+/// One tool call as its replay ends: the edits it carried, the status it
+/// finished with, and when that was last recorded.
+struct CallState<'a> {
+    at_ms: u64,
+    status: &'a str,
+    edits: Option<&'a [AgentToolEdit]>,
+}
+
+/// The edit records of one session's replay, one per file change of each call
+/// that finished `completed`. A denied, failed or unfinished call changed
+/// nothing the person can rely on, so it is not listed.
 /// `event_ts_ms` is index-aligned with `events`; an event without a time is
 /// stamped with `fallback_ms`, the session's last update.
 fn session_records(
@@ -116,26 +126,51 @@ fn session_records(
     events: &[SessionEvent],
     event_ts_ms: &[Option<u64>],
 ) -> Vec<AgentEditRecord> {
-    let mut calls: BTreeMap<&str, (u64, &[AgentToolEdit])> = BTreeMap::new();
+    let mut calls: BTreeMap<&str, CallState> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
-        let SessionEvent::AgentToolCall {
-            tool_call_id,
-            edits: Some(edits),
-            ..
-        } = event
-        else {
-            continue;
-        };
         let at_ms = event_ts_ms
             .get(index)
             .copied()
             .flatten()
             .unwrap_or(fallback_ms);
-        calls.insert(tool_call_id.as_str(), (at_ms, edits.as_slice()));
+        match event {
+            SessionEvent::AgentToolCall {
+                tool_call_id,
+                status,
+                edits,
+                ..
+            } => {
+                let call = calls.entry(tool_call_id.as_str()).or_insert(CallState {
+                    at_ms,
+                    status: status.as_str(),
+                    edits: None,
+                });
+                call.at_ms = at_ms;
+                call.status = status.as_str();
+                if let Some(edits) = edits {
+                    call.edits = Some(edits.as_slice());
+                }
+            }
+            SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                status: Some(status),
+                ..
+            } => {
+                if let Some(call) = calls.get_mut(tool_call_id.as_str()) {
+                    call.at_ms = at_ms;
+                    call.status = status.as_str();
+                }
+            }
+            _ => {}
+        }
     }
     calls
         .into_iter()
-        .flat_map(|(tool_call_id, (at_ms, edits))| {
+        .filter(|(_, call)| call.status == "completed")
+        .filter_map(|(tool_call_id, call)| {
+            call.edits.map(|edits| (tool_call_id, call.at_ms, edits))
+        })
+        .flat_map(|(tool_call_id, at_ms, edits)| {
             edits.iter().map(move |edit| AgentEditRecord {
                 session_id: session_id.to_string(),
                 agent: agent.to_string(),

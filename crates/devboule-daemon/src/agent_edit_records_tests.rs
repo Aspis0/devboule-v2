@@ -170,3 +170,48 @@ fn a_closed_child_still_contributes_its_edits() {
     assert_eq!(found.records.len(), 1);
     assert_eq!(found.records[0].agent, "Worker");
 }
+
+fn status_update(tool_call_id: &str, status: &str) -> SessionEvent {
+    SessionEvent::AgentToolUpdate {
+        tool_call_id: tool_call_id.to_string(),
+        status: Some(status.to_string()),
+        text: None,
+        title: None,
+        kind: None,
+        locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        replace: false,
+        images: Vec::new(),
+    }
+}
+
+fn pending_call(tool_call_id: &str, edits: Vec<AgentToolEdit>) -> SessionEvent {
+    let mut event = call(tool_call_id, Some(edits));
+    if let SessionEvent::AgentToolCall { status, .. } = &mut event {
+        *status = "pending".to_string();
+    }
+    event
+}
+
+#[test]
+fn only_a_call_that_finished_completed_is_listed() {
+    let events = vec![
+        pending_call("denied", vec![edit("src/a.rs", 1)]),
+        status_update("denied", "failed"),
+        pending_call("declined", vec![edit("src/b.rs", 1)]),
+        status_update("declined", "declined"),
+        pending_call("unfinished", vec![edit("src/c.rs", 1)]),
+        pending_call("finished", vec![edit("src/d.rs", 1)]),
+        status_update("finished", "completed"),
+    ];
+    let times = vec![Some(100); events.len()];
+    let records = session_records("s.a", "agent", 900, &events, &times);
+    let calls: Vec<&str> = records
+        .iter()
+        .map(|record| record.tool_call_id.as_str())
+        .collect();
+    assert_eq!(calls, ["finished"]);
+}
