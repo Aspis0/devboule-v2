@@ -160,6 +160,8 @@ fn stop_test_snapshot(id: &str, state: SessionState) -> SessionStateSnapshot {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     }
 }
 
@@ -810,6 +812,8 @@ fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -872,6 +876,8 @@ fn ended_while_disconnected_is_delivered_as_ended_without_an_attach() {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -1127,6 +1133,8 @@ fn roster_snapshot(id: &str) -> SessionStateSnapshot {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     }
 }
 

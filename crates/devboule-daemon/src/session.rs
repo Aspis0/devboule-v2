@@ -111,7 +111,7 @@ pub(crate) use permission_broker::release_peer_cards;
 #[path = "session_runtime.rs"]
 mod session_runtime;
 pub(crate) use session_runtime::{
-    roster_task_state, AgentMessageSnapshot, SessionRuntime, TurnToken,
+    roster_task_state, AgentMessageSnapshot, SessionRuntime, TurnTimes, TurnToken,
 };
 #[path = "acp_client.rs"]
 pub(crate) mod acp_client;
@@ -1557,6 +1557,7 @@ impl SessionRegistry {
                             runtime.attention(),
                             Some(activity),
                             goal,
+                            runtime.turn_times(),
                         )
                     })
                     .collect::<Vec<(
@@ -1564,6 +1565,7 @@ impl SessionRegistry {
                         Option<devboule_protocol::Attention>,
                         Option<AgentActivityState>,
                         Option<String>,
+                        TurnTimes,
                     )>>();
                 (sessions, hidden_ids)
             })
@@ -1571,7 +1573,7 @@ impl SessionRegistry {
         let mut sessions = sessions_from_map;
         let live_ids = sessions
             .iter()
-            .map(|(session, _, _, _)| session.id.clone())
+            .map(|(session, _, _, _, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
         if let Some(rows) = self.journal_roster() {
             sessions.extend(rows.into_iter().filter_map(|row| {
@@ -1583,13 +1585,14 @@ impl SessionRegistry {
                 // "idle". Its goal comes from the row's own column — the
                 // durable copy of the last `/goal` change, clear included.
                 let goal = row.goal.clone();
-                (row.owner == owner.user).then(|| (row.to_session(), None, None, goal))
+                (row.owner == owner.user)
+                    .then(|| (row.to_session(), None, None, goal, TurnTimes::default()))
             }));
         }
         sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
             .into_iter()
-            .map(|(session, attention, activity, goal)| {
+            .map(|(session, attention, activity, goal, turns)| {
                 let delegation = self.delegation_state_for(&session);
                 SessionStateSnapshot {
                     id: session.id,
@@ -1617,6 +1620,8 @@ impl SessionRegistry {
                     delegation,
                     activity,
                     goal,
+                    turn_started_at_ms: turns.started_at_ms,
+                    turn_ended_at_ms: turns.ended_at_ms,
                 }
             })
             .collect()
@@ -1630,6 +1635,7 @@ impl SessionRegistry {
                 .map(|entry| {
                     let session = entry.to_session();
                     let delegation = self.delegation_state_for(&session);
+                    let turns = entry.runtime().turn_times();
                     SessionStateSnapshot {
                         id: session.id,
                         workspace_id: session.workspace_id,
@@ -1648,6 +1654,8 @@ impl SessionRegistry {
                         delegation,
                         activity: Some(entry.runtime().activity()),
                         goal: entry.runtime().goal(),
+                        turn_started_at_ms: turns.started_at_ms,
+                        turn_ended_at_ms: turns.ended_at_ms,
                     }
                 })
         });

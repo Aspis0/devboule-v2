@@ -1314,6 +1314,10 @@ export interface SessionStateSnapshot {
   delegation?: DelegationState;
   /** The session's current goal. `undefined`, `null`, and a missing key all mean "no goal". */
   goal?: string | null;
+  /** When the running turn began, in Unix ms. Absent while no turn runs. */
+  turnStartedAtMs?: number;
+  /** When the last turn finished, in Unix ms. Absent while a turn runs or before the first finish. */
+  turnEndedAtMs?: number;
 }
 
 /**

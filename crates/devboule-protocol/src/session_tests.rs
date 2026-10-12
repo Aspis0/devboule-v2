@@ -99,6 +99,8 @@ fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     };
     let encoded = serde_json::to_value(snapshot).expect("snapshot json");
     assert_eq!(encoded["workspaceId"], "ws-1");
@@ -139,6 +141,8 @@ fn snapshot_carries_the_display_name_and_the_creator_in_camel_case() {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     };
     let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
     assert_eq!(encoded["displayName"], "worker");
@@ -1835,6 +1839,8 @@ fn the_roster_snapshot_carries_the_marker_on_every_push() {
 
         activity: None,
         goal: None,
+        turn_started_at_ms: None,
+        turn_ended_at_ms: None,
     };
     for (state, word) in [
         (UnattendedState::Yes, "yes"),
@@ -2207,4 +2213,41 @@ fn tool_call_edits_round_trip_and_a_row_without_them_still_loads() {
         SessionEvent::AgentToolCall { edits, .. } => assert!(edits.is_none()),
         other => panic!("expected an agent tool call, got {other:?}"),
     }
+}
+
+#[test]
+fn a_roster_row_carries_its_turn_times_only_when_it_has_them() {
+    let row = SessionStateSnapshot {
+        id: "s.a.1".to_string(),
+        workspace_id: None,
+        kind: SessionKind::Claude,
+        title: "Ada".to_string(),
+        state: SessionState::Live { generation: 1 },
+        elapsed_ms: None,
+        attention: None,
+        origin: SessionOrigin::local(),
+        display_name: None,
+        created_by: None,
+        profile_id: None,
+        context_id: None,
+        unattended: UnattendedState::No,
+        labels: Default::default(),
+        delegation: None,
+        activity: None,
+        goal: None,
+        turn_started_at_ms: Some(1_700_000_000_000),
+        turn_ended_at_ms: None,
+    };
+    let encoded = serde_json::to_value(&row).expect("row json");
+    assert_eq!(encoded["turnStartedAtMs"], 1_700_000_000_000u64);
+    assert!(encoded.get("turnEndedAtMs").is_none());
+
+    let mut older = encoded;
+    older
+        .as_object_mut()
+        .expect("a row is an object")
+        .retain(|key, _| !key.starts_with("turn"));
+    let decoded: SessionStateSnapshot = serde_json::from_value(older).expect("older row");
+    assert_eq!(decoded.turn_started_at_ms, None);
+    assert_eq!(decoded.turn_ended_at_ms, None);
 }

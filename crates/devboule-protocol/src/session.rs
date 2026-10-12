@@ -465,6 +465,15 @@ pub struct SessionStateSnapshot {
     /// Absent or null means no goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,
+    /// When the running turn began, in Unix ms: the rail's running clock counts
+    /// from it. Absent while no turn runs, and on a row with no live process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_at_ms: Option<u64>,
+    /// When the last turn finished, in Unix ms: the rail's finished age counts
+    /// from it. Absent while a turn runs, before the first finish, and on a row
+    /// with no live process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_ended_at_ms: Option<u64>,
 }
 
 /// The delegation ledger for one agent-created child (snapshot only).

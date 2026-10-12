@@ -1395,6 +1395,8 @@ fn session_state_broadcast_is_a_compact_event_snapshot() {
 
                 activity: None,
                 goal: None,
+                turn_started_at_ms: None,
+                turn_ended_at_ms: None,
             }],
         },
     });

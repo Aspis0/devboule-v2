@@ -131,6 +131,15 @@ pub(crate) struct AgentMessageSnapshot {
     pub(crate) text: String,
 }
 
+/// When a session's turns began and ended, in Unix ms. Each is absent while it
+/// does not apply: no start while idle, no end while a turn runs or before the
+/// first one finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TurnTimes {
+    pub(crate) started_at_ms: Option<u64>,
+    pub(crate) ended_at_ms: Option<u64>,
+}
+
 /// Stream state is one mutex on purpose. Every step that must be atomic
 /// with respect to output application happens under this single hold:
 /// apply-to-emulator + boundary update + per-attachment enqueue, and screen
@@ -185,6 +194,9 @@ pub(crate) struct SessionRuntime {
     pub(crate) plan_mark_scan_probe: Mutex<Option<Box<dyn Fn() + Send>>>,
     turn_counter: AtomicU64,
     turn_active: AtomicBool,
+    /// Unix ms the running turn began and the last one ended; 0 until set.
+    turn_started_ms: AtomicU64,
+    turn_ended_ms: AtomicU64,
     /// The turn status last *published* on this session's roster row, kept so a
     /// change can be announced and a non-change stays quiet. [`SessionRuntime::
     /// activity`] is the live reading; this is what clients were told.
@@ -639,6 +651,8 @@ impl SessionRuntime {
             plan_mark_scan_probe: Mutex::new(None),
             turn_counter: AtomicU64::new(0),
             turn_active: AtomicBool::new(false),
+            turn_started_ms: AtomicU64::new(0),
+            turn_ended_ms: AtomicU64::new(0),
             // Nothing has been published yet, so the first reading of a live
             // session is a change and reaches the client that attached for it.
             published_activity: AtomicU8::new(activity_code(AgentActivityState::Idle)),
@@ -1967,7 +1981,10 @@ impl SessionRuntime {
     pub(crate) fn begin_turn(&self) {
         let push = {
             let _hold = self.lock_turn_hold();
-            self.turn_active.store(true, Ordering::Release);
+            if !self.turn_active.swap(true, Ordering::AcqRel) {
+                self.turn_started_ms
+                    .store(crate::agent_activity::wall_now_ms(), Ordering::Release);
+            }
             if let Ok(mut slot) = self.agent_stop_reason.lock() {
                 *slot = None;
                 // A stop sent before this turn began is the kill that ends it.
@@ -2086,6 +2103,8 @@ impl SessionRuntime {
     fn end_turn_under_hold(&self) -> (bool, Option<Box<dyn FnOnce() + Send>>) {
         let ended = if self.turn_active.swap(false, Ordering::AcqRel) {
             self.turn_counter.fetch_add(1, Ordering::AcqRel);
+            self.turn_ended_ms
+                .store(crate::agent_activity::wall_now_ms(), Ordering::Release);
             true
         } else {
             false
@@ -2614,6 +2633,16 @@ impl SessionRuntime {
     /// question, asked without a turn id.
     pub(crate) fn is_running_turn(&self) -> bool {
         self.turn_active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn turn_times(&self) -> TurnTimes {
+        let running = self.is_running_turn();
+        let started = self.turn_started_ms.load(Ordering::Acquire);
+        let ended = self.turn_ended_ms.load(Ordering::Acquire);
+        TurnTimes {
+            started_at_ms: (running && started != 0).then_some(started),
+            ended_at_ms: (!running && ended != 0).then_some(ended),
+        }
     }
 
     /// Whether a permission card is parked right now. Ground truth for the
@@ -4776,3 +4805,7 @@ mod tests;
 #[cfg(test)]
 #[path = "session_runtime_marker_pair_tests.rs"]
 mod marker_pair_tests;
+
+#[cfg(test)]
+#[path = "session_runtime_turn_times_tests.rs"]
+mod turn_times_tests;
