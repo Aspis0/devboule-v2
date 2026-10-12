@@ -446,6 +446,25 @@
   color: var(--silence);
 }
 
+/* A line's one action: a quiet underlined word after the line's text, not a button. */
+.workspace-chat-activity-action {
+  margin-left: var(--space-4);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
+  cursor: pointer;
+}
+
+.workspace-chat-activity-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
 /* The chevron that opens and folds a clipped summary: an icon, not a sentence. */
 .workspace-chat-activity-toggle {
   align-self: flex-start;

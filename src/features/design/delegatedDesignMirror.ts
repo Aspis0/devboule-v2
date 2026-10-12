@@ -55,6 +55,11 @@ export interface DelegatedMirrorDeps {
  */
 export const DELEGATED_DESIGN_MESSAGE_PREFIX = "delegated-design-";
 
+/** The id of the card this mirror writes for one child. */
+export function delegatedDesignCardId(childSessionId: string): string {
+  return `${DELEGATED_DESIGN_MESSAGE_PREFIX}${childSessionId}`;
+}
+
 let mirrorSequence = 0;
 // Every child whose card is on the canvas. Dedupe is by membership, not by the
 // last child: a replayed finish of an earlier child is skipped without a read.
@@ -172,7 +177,7 @@ async function writeDelegatedArtifact(
     }
   }
   const title = displayName.length > 0 ? displayName : childSessionId.slice(0, 8);
-  const cardId = `${DELEGATED_DESIGN_MESSAGE_PREFIX}${childSessionId}`;
+  const cardId = delegatedDesignCardId(childSessionId);
   const card = {
     id: cardId,
     role: "assistant",

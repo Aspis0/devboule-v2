@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type { AgentChatItem } from "../../lib/agentSession";
 import { boundByGraphemes, graphemeCount } from "../../lib/graphemeBound";
 import { ActivityRow } from "./ActivityRow";
+import { DelegatedDesignOpenAction } from "./DelegatedDesignOpenAction";
 
 type DaemonNoticeItem = Extract<AgentChatItem, { role: "daemon_notice" }>;
 type DaemonNotice = DaemonNoticeItem["notice"];
@@ -185,7 +186,12 @@ export function DaemonNoticeCard({ item }: { item: DaemonNoticeItem }) {
       title={titleParts.length > 0 ? titleParts.join(" · ") : undefined}
       summary={
         notice.recognized ? (
-          recognizedSummary(notice)
+          <>
+            {recognizedSummary(notice)}
+            {notice.kind === "agent_finished" ? (
+              <DelegatedDesignOpenAction childSessionId={notice.childSessionId} />
+            ) : null}
+          </>
         ) : (
           <>
             <span>Unknown notice</span>

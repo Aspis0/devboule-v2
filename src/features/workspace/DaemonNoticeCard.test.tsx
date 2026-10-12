@@ -6,14 +6,35 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentChatItem } from "../../lib/agentSession";
 import { parseAgentDaemonNotice } from "../../lib/agentDaemonNotice";
+import { useAppStore } from "../../store/appStore";
+import type { DesignHost, DesignMessage } from "../design/designHost";
+import { delegatedDesignCardId } from "../design/delegatedDesignMirror";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 
 type DaemonNoticeItem = Extract<AgentChatItem, { role: "daemon_notice" }>;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const DESIGN_DOCUMENT = {
+  name: "",
+  path: "",
+  contextPrefix: "Editing",
+  draftPlaceholder: "Describe the change…",
+  noContextPlaceholder: "Describe what to generate…",
+  initialState: { zoom: 1, saved: false, draft: "", hiddenLayerIds: [] },
+  selectedLayerId: "",
+  grounded: true,
+  layers: [],
+  messages: [],
+  workingMessage: { title: "Generating…", desc: "Asking the agent." },
+};
+
+const DESIGN_HOST: DesignHost = {
+  loadDocument: async () => ({ ...DESIGN_DOCUMENT }),
+};
 
 interface FinishOptions {
   /** `null` leaves the state line out of the frame. */
@@ -103,6 +124,61 @@ async function press(button: HTMLButtonElement | null): Promise<void> {
 function copyText(): string | null | undefined {
   return host.querySelector(".workspace-chat-activity-line")?.textContent;
 }
+
+describe("the Open in Design action on a finish line", () => {
+  beforeEach(() => {
+    useAppStore.setState({
+      activeSurface: "workspace",
+      designSession: {
+        host: DESIGN_HOST,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+    useAppStore.getState().setDesignDocument(DESIGN_HOST, { ...DESIGN_DOCUMENT }, [
+      {
+        id: delegatedDesignCardId("s.child.7"),
+        role: "assistant",
+        status: "done",
+        title: "worker one",
+        desc: "Finished by a Design agent.",
+        sources: [],
+        nodeIds: [],
+        artifactHtml: "<main>Worker</main>",
+      } as DesignMessage,
+    ]);
+  });
+
+  afterEach(() => {
+    useAppStore.setState({
+      designSession: {
+        host: null,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+  });
+
+  it("is on the line of a finished child the canvas mirrors", async () => {
+    await render(itemFrom(finish({ summary: ["ok"] })));
+
+    expect(host.querySelector(".workspace-chat-activity-line button")?.textContent).toBe(
+      "Open in Design",
+    );
+  });
+
+  it("is not on the line of a finished child the canvas does not mirror", async () => {
+    await render(itemFrom(finish({ summary: ["ok"] }).replaceAll("s.child.7", "s.other.1")));
+
+    expect(host.querySelector(".workspace-chat-activity-line button")).toBeNull();
+  });
+});
 
 describe("the finish report's header", () => {
   it("names the child and its state as a message from the subagent", async () => {
