@@ -1409,7 +1409,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | expect-type | 1.4.0 | npm transitive | Apache-2.0 |
 | fdir | 6.5.0 | npm transitive | MIT |
 | fsevents | 2.3.3 | npm transitive optional/platform | MIT |
-| happy-dom | 20.13.2 | npm direct build/test | MIT |
+| happy-dom | 21.0.0 | npm direct build/test | MIT |
 | lightningcss | 1.33.0 | npm transitive | MPL-2.0 |
 | lightningcss-android-arm64 | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
 | lightningcss-darwin-arm64 | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
