@@ -474,6 +474,48 @@ fn worktree_create_refuses_when_live_git_is_not_a_repository() {
     );
 }
 
+/// A folder registered before `git init` offers worktrees once the list is
+/// read again, and the recorded state follows, so the next read agrees.
+#[test]
+fn a_folder_registered_before_git_init_offers_worktrees_on_the_next_list() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join("LateRepo");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+    assert_eq!(
+        project.worktree_support,
+        devboule_protocol::WorktreeSupport::Unsupported
+    );
+
+    let status = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(&root)
+        .status()
+        .expect("git init runs");
+    assert!(status.success(), "git init");
+
+    for _ in 0..2 {
+        let listed = registry.projects_list().expect("list projects");
+        let row = listed
+            .iter()
+            .find(|listed| listed.id == project.id)
+            .expect("the registered folder is listed");
+        assert_eq!(
+            row.worktree_support,
+            devboule_protocol::WorktreeSupport::Supported
+        );
+    }
+    let stored = journal
+        .project_get(&project.id)
+        .expect("get project")
+        .expect("project row stands");
+    assert_eq!(stored.git_state, "repository");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn worktree_refusal_names_the_project_and_the_real_cause() {
     let missing = refuse_worktree_unless_live_git_allows("unknown", "not_installed", "Blog")

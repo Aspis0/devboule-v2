@@ -279,9 +279,9 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
   const newProjectTriggerRef = useRef<HTMLButtonElement>(null);
   const loadGenerationRef = useRef(0);
 
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
     const generation = ++loadGenerationRef.current;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     try {
       const listedProjects = await projectsList();
       const records = await Promise.all(
@@ -312,6 +312,10 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
       setError(errorSentence(cause));
     }
   }, []);
+
+  // Re-read on each sheet opening, without the loading line: the daemon
+  // re-probes a folder recorded outside a repository on every list.
+  const refreshProjects = useCallback(() => loadProjects({ quiet: true }), [loadProjects]);
 
   // There is deliberately no mount load: until the daemon first answers
   // "connected" the IPC pipe is not open, so a startup load only races it and
@@ -552,5 +556,6 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     handleCreateProject,
     newProjectTriggerRef,
     retryProjects: loadProjects,
+    refreshProjects,
   };
 }

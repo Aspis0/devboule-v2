@@ -1881,6 +1881,33 @@ describe("Workspace sessions", () => {
     ).toBe("hello");
   });
 
+  it("re-reads the projects when the sheet opens, with no loading line, so a folder git init'ed since the last read offers worktrees", async () => {
+    vi.mocked(projectsList).mockResolvedValueOnce([{ ...project, worktreeSupport: "unsupported" }]);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    expect(projectsList).toHaveBeenCalledTimes(1);
+
+    let answer: (projects: Project[]) => void = () => undefined;
+    vi.mocked(projectsList).mockReturnValueOnce(
+      new Promise<Project[]>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    await openSheet();
+
+    expect(projectsList).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Loading projects");
+    expect(sheetLabels()).not.toContain("Isolation");
+
+    await act(async () => answer([{ ...project, worktreeSupport: "supported" }]));
+    await act(async () => undefined);
+    expect(sheetLabels()).toContain("Isolation");
+  });
+
   it("New workspace opens the sheet and asks for no provider: providers are read for the first message only", async () => {
     root = createRoot(container);
     await act(async () => {

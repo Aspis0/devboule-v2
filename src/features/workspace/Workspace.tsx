@@ -366,6 +366,7 @@ export function Workspace({
     handleCreateProject,
     newProjectTriggerRef,
     retryProjects,
+    refreshProjects,
     renameWorkspace,
     archiveWorkspace,
     deleteWorktree,
@@ -1793,10 +1794,16 @@ export function Workspace({
   // one starts from the project it was asked for and the defaults.
   const [sheet, setSheet] = useState<{ nonce: number; projectId: string | null } | null>(null);
   const sheetTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const handleNewWorkspace = useCallback((trigger: HTMLButtonElement, projectId: string) => {
-    sheetTriggerRef.current = trigger;
-    setSheet((open) => ({ nonce: (open?.nonce ?? 0) + 1, projectId }));
-  }, []);
+  const handleNewWorkspace = useCallback(
+    (trigger: HTMLButtonElement, projectId: string) => {
+      sheetTriggerRef.current = trigger;
+      setSheet((open) => ({ nonce: (open?.nonce ?? 0) + 1, projectId }));
+      // The sheet's worktree option depends on git's answer now, not on the
+      // last list: a `git init` since then must show up when the sheet opens.
+      void refreshProjects();
+    },
+    [refreshProjects],
+  );
   const closeSheet = useCallback(() => {
     setSheet(null);
     sheetTriggerRef.current?.focus({ preventScroll: true });

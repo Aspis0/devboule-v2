@@ -189,6 +189,19 @@ describe("the new-workspace sheet's groups", () => {
     expect(rowLabels()).toEqual(["Project"]);
   });
 
+  it("draws the isolation row once a fresher list says the open folder is a repository", async () => {
+    await render({
+      projects: [{ id: "p-1", name: "notes", hostId: THIS_PC, worktreeSupport: "unsupported" }],
+    });
+    expect(rowLabels()).toEqual(["Project"]);
+
+    await render({
+      projects: [{ id: "p-1", name: "notes", hostId: THIS_PC, worktreeSupport: "supported" }],
+    });
+
+    expect(rowLabels()).toEqual(["Project", "Isolation"]);
+  });
+
   it("keeps the isolation row when git's answer for the folder is unknown", async () => {
     await render({
       projects: [{ id: "p-1", name: "notes", hostId: THIS_PC, worktreeSupport: "unknown" }],
