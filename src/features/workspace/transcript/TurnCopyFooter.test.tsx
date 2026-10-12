@@ -86,6 +86,36 @@ describe("TurnCopyFooter", () => {
     ).not.toBeNull();
     expect(container.querySelector(".workspace-chat-turn-worked")).toBeNull();
   });
+
+  it("says the turn was stopped, with its length, when the provider stopped it abnormally", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TurnCopyFooter text="partial" workedMs={274_000} stopReason="max_tokens" />);
+    });
+    const stopped = container.querySelector(".workspace-chat-turn-stopped");
+    expect(stopped?.textContent).toBe("Stopped after 4m 34s");
+    expect(stopped?.getAttribute("title")).toBe("Stopped: max_tokens");
+    expect(container.querySelector(".workspace-chat-turn-worked")).toBeNull();
+  });
+
+  it("says only that it stopped when its length is not known", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TurnCopyFooter text="partial" stopReason="max_tokens" />);
+    });
+    expect(container.querySelector(".workspace-chat-turn-stopped")?.textContent).toBe("Stopped");
+  });
+
+  it("keeps Worked for after a normal end, whatever the provider's word for it", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TurnCopyFooter text="the answer" workedMs={10_000} stopReason="end_turn" />);
+    });
+    expect(container.querySelector(".workspace-chat-turn-worked")?.textContent).toBe(
+      "Worked for 10s",
+    );
+    expect(container.querySelector(".workspace-chat-turn-stopped")).toBeNull();
+  });
 });
 
 describe("the transcript's turn footers", () => {

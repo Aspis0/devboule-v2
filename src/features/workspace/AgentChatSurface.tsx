@@ -67,7 +67,6 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { TurnRail } from "./timeline/TurnRail";
-import { TurnFooter } from "./timeline/TurnFooter";
 import { MarkdownText } from "../../components/MarkdownText";
 import { WorkingLine } from "./transcript/WorkingLine";
 import { useInterruptOnEscape } from "./interruptOnEscape";
@@ -963,9 +962,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             onRevealChange={onRevealChange}
           />
           {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
-          {state.lastFinished !== null ? (
-            <TurnFooter finished={state.lastFinished} providerId={manifest?.providerId} />
-          ) : null}
         </div>
         <div className="workspace-pending-cards">{auxiliary}</div>
       </div>

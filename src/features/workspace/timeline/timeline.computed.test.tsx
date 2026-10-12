@@ -21,10 +21,6 @@ const blockCss = assembleCssProof([
   read("src/styles/tokens.css"),
   read("src/components/codeBlocks.css"),
 ]);
-const footerCss = assembleCssProof([
-  read("src/styles/tokens.css"),
-  read("src/features/workspace/timeline/TurnFooter.css"),
-]);
 
 afterEach(removeCssProof);
 
@@ -251,25 +247,5 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(typing).fontSize).toBe("13px");
     system.remove();
     rail.remove();
-  });
-
-  it("holds the turn footer to a 12 px line over one ledger disclosure", () => {
-    footerCss.inject([".turn-footer"]);
-    const footer = document.createElement("div");
-    footer.className = "turn-footer";
-    document.body.appendChild(footer);
-
-    expect(getComputedStyle(footer).fontSize).toBe("12px");
-    expect(getComputedStyle(footer).color).toBe("#484640");
-    expect(getComputedStyle(footer).fontFamily).toContain("Inter");
-    // The trigger is a control, so it is a 24 px target. happy-dom computes
-    // no width on a <summary>, so its box is read off the rule.
-    const trigger = footerCss.rulesFor(".turn-footer-detail-trigger");
-    expect(trigger).toContain("width: 24px");
-    expect(trigger).toContain("height: 24px");
-    // The disclosure shares the line's row: opening it adds the ledger to a
-    // turn that already had its line, never a row under it.
-    expect(footerCss.rulesFor(".turn-footer")).toContain("display: flex");
-    footer.remove();
   });
 });

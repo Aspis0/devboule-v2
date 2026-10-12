@@ -10,13 +10,19 @@ function user(id: string, text: string): AgentChatItem {
   return { id, role: "user", text, messageId: null };
 }
 
-function assistant(id: string, text: string, workedMs?: number): AgentChatItem {
+function assistant(
+  id: string,
+  text: string,
+  workedMs?: number,
+  stopReason?: string,
+): AgentChatItem {
   return {
     id,
     role: "assistant",
     text,
     messageId: null,
     ...(workedMs === undefined ? {} : { workedMs }),
+    ...(stopReason === undefined ? {} : { stopReason }),
   };
 }
 
@@ -33,6 +39,14 @@ function tool(id: string): AgentChatItem {
 }
 
 describe("turnEnds", () => {
+  it("carries the provider's stop reason on the turn's end", () => {
+    const ends = turnEnds(
+      [user("u1", "question"), assistant("a1", "partial", 9_000, "max_tokens")],
+      false,
+    );
+    expect(ends.get("a1")).toEqual({ text: "partial", workedMs: 9_000, stopReason: "max_tokens" });
+  });
+
   it("ends each completed turn on its last assistant row, with the turn's words and length", () => {
     const entries = groupToolCalls([
       user("u1", "first question"),

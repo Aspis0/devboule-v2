@@ -75,6 +75,12 @@ export type AgentChatItem =
        * or replayed turn has no clock, so its footer names no time.
        */
       workedMs?: number;
+      /**
+       * The provider's stop reason for the turn, set on the same row as
+       * `workedMs` when the agent finishes. The footer names an abnormal one;
+       * a replayed turn has none.
+       */
+      stopReason?: string;
     }
   | {
       id: string;
@@ -197,17 +203,25 @@ function turnWorkedMs(
 }
 
 /**
- * The items with the turn's length stamped on its last assistant row: the last
+ * The items with the turn's end stamped on its last assistant row: the last
  * one after the most recent user row. A turn with no assistant row keeps the
- * list as it was, so its length has nowhere to show.
+ * list as it was, so its end has nowhere to show.
  */
-function stampTurnLength(items: AgentChatItem[], workedMs: number): AgentChatItem[] {
+function stampTurnEnd(
+  items: AgentChatItem[],
+  stopReason: string,
+  workedMs: number | undefined,
+): AgentChatItem[] {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.role === "user") return items;
     if (item.role === "assistant") {
       const stamped = [...items];
-      stamped[index] = { ...item, workedMs: Math.max(0, workedMs) };
+      stamped[index] = {
+        ...item,
+        ...(workedMs === undefined ? {} : { workedMs: Math.max(0, workedMs) }),
+        stopReason,
+      };
       return stamped;
     }
   }
@@ -1228,9 +1242,8 @@ export class AgentSession {
         this.deps.onTurnFinished?.();
         this.closeActiveBlocks();
         const workedMs = turnWorkedMs(event.atMs, this.state.items, this.state.turnStartedAtMs);
-        if (workedMs !== undefined) {
-          this.update({ items: stampTurnLength(this.state.items, workedMs) });
-        }
+        const items = stampTurnEnd(this.state.items, event.stopReason, workedMs);
+        if (items !== this.state.items) this.update({ items });
         this.setStatus("idle", {
           streaming: false,
           // The turn is over whoever started it: no step is still running.

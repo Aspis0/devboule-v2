@@ -171,7 +171,8 @@
   height: 14px;
 }
 
-.workspace-chat-turn-worked {
+.workspace-chat-turn-worked,
+.workspace-chat-turn-stopped {
   white-space: nowrap;
 }
 

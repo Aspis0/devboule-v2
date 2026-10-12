@@ -133,6 +133,22 @@ describe("the length of a turn this view saw start", () => {
   });
 });
 
+describe("the stop reason of a finished turn", () => {
+  it("is stamped on the turn's last assistant row, normal or not", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    await session.send("go");
+    emit({ type: "agent_message", messageId: "m-1", text: "first part. " });
+    emit({ type: "agent_message", messageId: "m-2", text: "partial" });
+    emit({ type: "agent_finished", stopReason: "max_tokens" });
+
+    const assistants = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []));
+    expect(assistants.map((item) => item.stopReason)).toEqual([undefined, "max_tokens"]);
+  });
+});
+
 describe("the length of a turn the daemon timed", () => {
   it("is read from the turn's user row and its finish, with no send from this view", async () => {
     const { session, emit } = harness();

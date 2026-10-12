@@ -199,7 +199,11 @@ export const TranscriptRow = memo(function TranscriptRow({
         <ChatImageThumbnails images={item.images} />
       ) : null}
       {turnEnd !== undefined ? (
-        <TurnCopyFooter text={turnEnd.text} workedMs={turnEnd.workedMs} />
+        <TurnCopyFooter
+          text={turnEnd.text}
+          workedMs={turnEnd.workedMs}
+          stopReason={turnEnd.stopReason}
+        />
       ) : null}
     </div>
   );

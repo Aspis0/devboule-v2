@@ -173,11 +173,6 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     ground: menu,
   },
   {
-    file: "src/features/workspace/timeline/TurnFooter.css",
-    match: ".turn-footer-detail-trigger:focus-visible",
-    ground: centre,
-  },
-  {
     file: "src/features/workspace/timeline/TurnRail.css",
     match: ".turn-rail-dot:focus-visible",
     ground: centre,
