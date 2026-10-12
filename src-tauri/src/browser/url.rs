@@ -48,10 +48,34 @@ pub fn gate(candidate: &Url) -> Result<(), Refusal> {
 /// The refusal comes back as the sentence the chrome shows, so a command has
 /// nothing left to phrase.
 pub fn accept(raw: &str) -> Result<Url, String> {
-    let parsed =
-        Url::parse(raw.trim()).map_err(|_| Refusal::Unusable(raw.trim().to_owned()).to_string())?;
-    gate(&parsed).map_err(|refusal| refusal.to_string())?;
+    check(raw).map_err(|refusal| refusal.to_string())
+}
+
+/// The same gate, for an agent's own address: the refusal is the reason in one
+/// line and what the person can do about it, since the agent is the one reading it.
+pub fn accept_for_agent(raw: &str) -> Result<Url, String> {
+    check(raw).map_err(|refusal| refusal.for_agent())
+}
+
+fn check(raw: &str) -> Result<Url, Refusal> {
+    let trimmed = raw.trim();
+    let parsed = Url::parse(trimmed).map_err(|_| Refusal::Unusable(trimmed.to_owned()))?;
+    gate(&parsed)?;
     Ok(parsed)
+}
+
+impl Refusal {
+    fn for_agent(&self) -> String {
+        match self {
+            Refusal::Unusable(_) => {
+                "That is not a web address: give the whole address, starting with https:// or http://."
+                    .to_owned()
+            }
+            Refusal::NotWeb(scheme) => format!(
+                "`{scheme}:` addresses are never opened for an agent, and no setting allows them: serve the page over http from localhost, and the person can allow that port in the chat."
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +121,30 @@ mod tests {
         assert_eq!(accept("   ").expect_err("must refuse"), NOT_A_URL);
         assert_eq!(accept("https://").expect_err("must refuse"), NOT_A_URL);
         assert_eq!(accept("http://").expect_err("must refuse"), NOT_A_URL);
+    }
+
+    #[test]
+    fn an_agent_refused_a_file_address_is_told_why_and_how_the_page_can_be_reached() {
+        let said = accept_for_agent("file:///C:/mockups/index.html").expect_err("must refuse");
+
+        assert!(
+            said.starts_with("`file:` addresses are never opened for an agent"),
+            "{said}"
+        );
+        assert!(
+            said.contains("serve the page over http from localhost"),
+            "{said}"
+        );
+        assert!(said.contains("allow that port in the chat"), "{said}");
+        assert!(!said.contains('\n'), "one line: {said}");
+    }
+
+    #[test]
+    fn an_agent_refused_text_that_is_not_a_url_is_told_the_form_to_use() {
+        let said = accept_for_agent("not a url").expect_err("must refuse");
+
+        assert!(said.starts_with("That is not a web address"), "{said}");
+        assert!(said.contains("https://"), "{said}");
     }
 
     #[test]

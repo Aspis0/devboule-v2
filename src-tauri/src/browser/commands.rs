@@ -261,8 +261,8 @@ pub async fn dispatch(
     // The agent's own entry: a URL it names is checked before anything is
     // asked of a page or a child, and the refusal names the address.
     if let Some(raw) = agent_named_url(command, &request.args) {
-        let target =
-            super::url::accept(raw).map_err(|error| refused(BrowserErrorCode::HostError, error))?;
+        let target = super::url::accept_for_agent(raw)
+            .map_err(|error| refused(BrowserErrorCode::HostError, error))?;
         if let Err(blocked) =
             policy_of(app).admit_for(&target, Audience::Agent, &request.caller.local_ports)
         {
