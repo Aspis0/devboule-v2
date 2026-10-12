@@ -500,6 +500,8 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     setSearch(event.target.value);
   }
 
+  const clearSearch = useCallback(() => setSearch(""), []);
+
   const query = useMemo(() => search.trim().toLowerCase(), [search]);
   const visibleProjects = useMemo(
     () =>
@@ -538,6 +540,7 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     setSessionFacts,
     search,
     handleSearchChange,
+    clearSearch,
     createWorkspace,
     renameWorkspace,
     archiveWorkspace,

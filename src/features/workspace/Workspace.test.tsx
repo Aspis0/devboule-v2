@@ -578,11 +578,25 @@ async function openSidebarSearch(): Promise<HTMLInputElement> {
   return field;
 }
 
-/** The sidebar's History top action opens the full page in the main area. */
-async function toggleHistoryPanel(): Promise<void> {
+/** The sidebar's History top action; `aria-current` marks its page shown. */
+function historyAction(): HTMLButtonElement {
   const button = document.querySelector<HTMLButtonElement>('.sidebar-action[aria-label="History"]');
   if (button === null) throw new Error("the sidebar History action did not render");
-  await act(async () => button.click());
+  return button;
+}
+
+/** A workspace row by the text it prints; the tree is the only list of them. */
+function workspaceRow(text: string): HTMLButtonElement {
+  const row = [...document.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+    (candidate) => candidate.textContent?.includes(text) === true,
+  );
+  if (row === undefined) throw new Error(`the ${text} workspace row did not render`);
+  return row;
+}
+
+/** The sidebar's History top action opens the full page in the main area. */
+async function toggleHistoryPanel(): Promise<void> {
+  await act(async () => historyAction().click());
 }
 
 /** The History page's own search field, always open with the page. */
@@ -1253,6 +1267,102 @@ describe("Workspace sessions", () => {
     await toggleHistoryPanel();
     expect(historySearchField().value).toBe("");
     expect(sessionResume).not.toHaveBeenCalled();
+  });
+
+  it("leaves the History page when another workspace's row is clicked", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await toggleHistoryPanel();
+    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
+    expect(historyAction().getAttribute("aria-current")).toBe("true");
+
+    await act(async () => workspaceRow("other-main").click());
+
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(historyAction().getAttribute("aria-current")).toBeNull();
+    expect(container.querySelector('.workspace-row[aria-pressed="true"]')?.textContent).toContain(
+      "other-main",
+    );
+    expect(container.textContent).toContain("No tabs yet");
+  });
+
+  it("leaves the History page when the row already in force is clicked", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await toggleHistoryPanel();
+
+    const selected = container.querySelector<HTMLButtonElement>(
+      '.workspace-row[aria-pressed="true"]',
+    );
+    if (selected === null) throw new Error("no workspace row was selected");
+    await act(async () => selected.click());
+
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(historyAction().getAttribute("aria-current")).toBeNull();
+    expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+  });
+
+  it("clears the sidebar's search when a row is clicked", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const field = await openSidebarSearch();
+    await act(async () => setSearchValue(field, "other-main"));
+
+    await act(async () => workspaceRow("other-main").click());
+
+    expect(field.value).toBe("");
+    expect(container.querySelector('.workspace-row[aria-pressed="true"]')?.textContent).toContain(
+      "other-main",
+    );
+    // The query's filter is gone with it: the row is back to searching nothing.
+    expect(container.querySelectorAll(".workspace-row").length).toBe(2);
+  });
+
+  it("leaves the History page when a sidebar agent row is opened", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace]);
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      acpSession("agent-1", "Feature agent"),
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await toggleHistoryPanel();
+
+    const row = container.querySelector<HTMLDivElement>(".agent-row");
+    if (row === null) throw new Error("the sidebar agent row did not render");
+    await act(async () => row.click());
+
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(historyAction().getAttribute("aria-current")).toBeNull();
+    expect(
+      container.querySelector("#workspace-session-tab-agent-1")?.getAttribute("aria-selected"),
+    ).toBe("true");
   });
 
   it("finds a hidden workspace's branch in History while the tree search hides its row", async () => {

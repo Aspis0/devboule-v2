@@ -359,6 +359,7 @@ export function Workspace({
     setSessionFacts,
     search,
     handleSearchChange,
+    clearSearch,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,
@@ -424,6 +425,13 @@ export function Workspace({
   // The workspace the History page lists when opened from a rail's overflow; null lists all.
   const [historyWorkspace, setHistoryWorkspace] = useState<WorkspaceKey | null>(null);
   const [historyHost, setHistoryHost] = useState("all");
+  // A workspace row is navigation: the views the sidebar opened — the History
+  // page, its search, the tree's query — give way to the workspace it names.
+  const closeSidebarViews = useCallback(() => {
+    setHistoryOpen(false);
+    setHistorySearch("");
+    clearSearch();
+  }, [clearSearch]);
   const [permissionQueue, setPermissionQueue] =
     useState<QueuedPermission[]>(pendingPermissionRequests);
   // Drop one session's cards. The close acts call this on success and on a
@@ -1542,10 +1550,9 @@ export function Workspace({
       openSession(session);
       const key = session.workspaceId === null ? null : localWorkspaceKey(session.workspaceId);
       if (key !== null) setSelectedKey(key);
-      setHistoryOpen(false);
-      setHistorySearch("");
+      closeSidebarViews();
     },
-    [openSession, setSelectedKey, standDownToolTab],
+    [openSession, setSelectedKey, standDownToolTab, closeSidebarViews],
   );
   const handleReopenAgent = useCallback(
     (session: Session) => {
@@ -1564,10 +1571,11 @@ export function Workspace({
       // existing open path tabs and selects the session. No workspace
       // switch: every non-null overview row already lives in the selected
       // workspace, and a legacy null-workspace row has no home to go to.
+      closeSidebarViews();
       standDownToolTab();
       openSession(session);
     },
-    [sessions, openSession, standDownToolTab],
+    [sessions, openSession, standDownToolTab, closeSidebarViews],
   );
   const handleOpenSubagent = useCallback(
     (sessionId: string) => {
@@ -2126,9 +2134,10 @@ export function Workspace({
   }, [loadChatProviders]);
   const selectWorkspace = useCallback(
     (key: WorkspaceKey) => {
-      // The row already in force is not navigation: no workspace changes, so
-      // nothing is chosen either — which keeps it from reading the tool pane
-      // again, a nudge that belongs to a click on the tab itself.
+      // A click on a row leaves the views the sidebar opened — even when the
+      // row names the workspace already in force, which changes nothing else:
+      // choosing a tab again belongs to a click on the tab itself.
+      closeSidebarViews();
       if (key === selectedKey) return;
       userNavigatedRef.current = true;
       setSelectedKey(key);
@@ -2138,7 +2147,7 @@ export function Workspace({
       // selectTab leaves the old workspace's tool tab behind with it.
       selectTab(landingTabFor(key));
     },
-    [landingTabFor, selectTab, selectedKey, setSelectedKey],
+    [landingTabFor, selectTab, selectedKey, setSelectedKey, closeSidebarViews],
   );
   // A click on an attention toast is this surface's own act, through the roads
   // a row click uses: the session opens as its tab, and a session the roster no
