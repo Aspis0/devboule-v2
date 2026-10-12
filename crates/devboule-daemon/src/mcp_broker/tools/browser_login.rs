@@ -371,7 +371,7 @@ fn saved_login_card(
         // Forced: a card with one allow option per login is answered by option
         // id, which only a chooser reports back.
         is_chooser: Some(true),
-        kind: None,
+        kind: Some(devboule_protocol::PermissionRequestKind::Always),
         plan: None,
         questions: None,
         origin: SessionOrigin::unknown(),

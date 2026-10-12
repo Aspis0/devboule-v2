@@ -3361,14 +3361,21 @@ impl SessionRuntime {
             SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id.as_str()),
             _ => None,
         };
-        self.raise_attention(reason, card)
+        let always = matches!(
+            event,
+            SessionEvent::PermissionRequest {
+                kind: Some(devboule_protocol::PermissionRequestKind::Always),
+                ..
+            }
+        );
+        self.raise_attention(reason, card, always)
     }
 
     /// Whether the raise took the row to a client: `false` on every path that
     /// stayed silent — no hooks, a suppressed presence, a raise already standing
     /// at equal or higher priority — which is exactly when a status change has to
     /// speak for itself.
-    fn raise_attention(&self, reason: AttentionReason, card: Option<&str>) -> bool {
+    fn raise_attention(&self, reason: AttentionReason, card: Option<&str>, always: bool) -> bool {
         let hooks = self
             .attention_hooks
             .lock()
@@ -3418,7 +3425,11 @@ impl SessionRuntime {
             .as_millis()
             .try_into()
             .unwrap_or(u64::MAX);
-        *attention = Some(Attention { reason, at_ms });
+        *attention = Some(Attention {
+            reason,
+            at_ms,
+            always,
+        });
         drop(attention);
         // The daemon's end of the attention clock: the app's own lines carry
         // the same stamp, so daemon-to-toast latency is their difference. Off

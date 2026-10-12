@@ -504,7 +504,15 @@ export function fireAttentionToast(
       return;
     }
     // Only a raise the person must answer reaches the OS; the rest stays in the app.
-    if (!shouldToast({ ...context, reason: attention.reason, away: mayAnnounce })) return;
+    if (
+      !shouldToast({
+        ...context,
+        reason: attention.reason,
+        away: mayAnnounce,
+        always: attention.always === true,
+      })
+    )
+      return;
     // The dedupe records here — after
     // the gate, before the send, and with no await between the test and the
     // write, so two publications of one raise cannot both land: the first has

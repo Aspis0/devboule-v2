@@ -1167,6 +1167,22 @@ describe("fireAttentionToast: only what the person must answer", () => {
     vi.useRealTimers();
   });
 
+  it("toasts a child's card the person must answer in every mode", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast(
+      target("child-always"),
+      "child",
+      { ...attention("permission", 6000), always: true },
+      { send, ...hidden },
+      child,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("raises one toast for an agent's cards while the first one still stands", async () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());

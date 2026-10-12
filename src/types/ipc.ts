@@ -615,7 +615,7 @@ export interface PermissionRequest {
    * question form only for `"question"`; plans render Markdown; a marked
    * chooser the daemon stamped underneath stays the fallback for older clients.
    */
-  kind?: "tool" | "question" | "plan";
+  kind?: "tool" | "question" | "plan" | "always";
   /**
    * The model's questions, one entry per asked item. Present only on a
    * `"question"` request; the card renders one group per entry (radio
@@ -1219,6 +1219,8 @@ export type AttentionReason = "finished" | "error" | "permission";
 export interface Attention {
   reason: AttentionReason;
   atMs: number;
+  /** A card the person must answer in every mode, whichever agent holds it. */
+  always?: boolean;
 }
 
 /**

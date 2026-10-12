@@ -73,9 +73,11 @@ fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
     let attention = Attention {
         reason: AttentionReason::Permission,
         at_ms: 42,
+        always: false,
     };
     let encoded = serde_json::to_value(attention).expect("attention json");
     assert_eq!(encoded["reason"], "permission");
+    assert_eq!(encoded["always"], false);
     assert_eq!(encoded["atMs"], 42);
 
     let snapshot = SessionStateSnapshot {

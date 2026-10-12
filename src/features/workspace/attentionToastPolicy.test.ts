@@ -9,8 +9,31 @@ interface Row {
   away: boolean;
   topLevel: boolean;
   childBusy: boolean;
+  /** A card the person must answer in every mode. */
+  always?: boolean;
   toast: boolean;
 }
+
+const ALWAYS_TABLE: readonly Row[] = [
+  // A command for another machine or a saved login reaches the person from any depth.
+  {
+    reason: "permission",
+    away: true,
+    topLevel: false,
+    childBusy: false,
+    always: true,
+    toast: true,
+  },
+  { reason: "permission", away: true, topLevel: true, childBusy: false, always: true, toast: true },
+  {
+    reason: "permission",
+    away: false,
+    topLevel: false,
+    childBusy: false,
+    always: true,
+    toast: false,
+  },
+];
 
 const TABLE: readonly Row[] = [
   // A card: the person answers only the cards of a session they started.
@@ -36,7 +59,7 @@ const TABLE: readonly Row[] = [
 ];
 
 describe("the toast filter", () => {
-  it.each(TABLE)(
+  it.each([...TABLE, ...ALWAYS_TABLE])(
     "$reason, away=$away, topLevel=$topLevel, childBusy=$childBusy → toast=$toast",
     (row) => {
       const candidate: ToastCandidate = {
@@ -44,6 +67,7 @@ describe("the toast filter", () => {
         away: row.away,
         topLevel: row.topLevel,
         childBusy: row.childBusy,
+        always: row.always ?? false,
       };
       expect(shouldToast(candidate)).toBe(row.toast);
     },

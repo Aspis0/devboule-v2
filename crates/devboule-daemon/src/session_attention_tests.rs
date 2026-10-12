@@ -813,3 +813,20 @@ fn auto_answer_grants_without_raising_attention() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A card the person must answer in every mode raises an attention that says so,
+/// and an ordinary card does not: the app's toast depends on it.
+#[test]
+fn an_always_card_raises_attention_that_says_the_person_must_answer() {
+    let runtime = Arc::new(SessionRuntime::new());
+    let mut always = permission_card("always-1");
+    if let SessionEvent::PermissionRequest { kind, .. } = &mut always {
+        *kind = Some(devboule_protocol::PermissionRequestKind::Always);
+    }
+    runtime.publish_agent_event(always, None);
+    assert!(runtime.attention().expect("attention").always);
+
+    let runtime = Arc::new(SessionRuntime::new());
+    runtime.publish_agent_event(permission_card("ordinary-1"), None);
+    assert!(!runtime.attention().expect("attention").always);
+}

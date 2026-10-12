@@ -249,7 +249,7 @@ fn peer_command_card(
         // Forced: the card is answered by option id, which only a chooser
         // reports back.
         is_chooser: Some(true),
-        kind: None,
+        kind: Some(devboule_protocol::PermissionRequestKind::Always),
         plan: None,
         questions: None,
         origin: SessionOrigin::unknown(),

@@ -14,14 +14,17 @@ export interface ToastCandidate {
   childBusy: boolean;
   /** The person is not looking at this session: unfocused, hidden, or showing another. */
   away: boolean;
+  /** A card the person must answer in every mode: a command for another machine, or a saved login. */
+  always: boolean;
 }
 
 export function shouldToast(candidate: ToastCandidate): boolean {
   if (!candidate.away) return false;
   switch (candidate.reason) {
-    // A child's card is answered by the agent that created the child.
+    // A child's card is answered by the agent that created the child, unless the
+    // person must answer it in every mode.
     case "permission":
-      return candidate.topLevel;
+      return candidate.always || candidate.topLevel;
     // A finish waits for the children, whose work reports back to this session.
     case "finished":
       return candidate.topLevel && !candidate.childBusy;

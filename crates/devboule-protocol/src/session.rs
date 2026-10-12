@@ -223,6 +223,10 @@ impl AttentionReason {
 pub struct Attention {
     pub reason: AttentionReason,
     pub at_ms: u64,
+    /// The raise is a card the person must answer in every mode, whichever agent
+    /// holds it.
+    #[serde(default)]
+    pub always: bool,
 }
 
 /// Whether a session can pass a permission moment with no human answering.
@@ -1566,6 +1570,9 @@ pub enum PermissionRequestKind {
     Tool,
     Question,
     Plan,
+    /// A card the person must answer in every mode: a command bound for another
+    /// machine, or a saved login. No mode and no agent answers it.
+    Always,
 }
 
 /// One question a model asked the person, as carried on a `question`
