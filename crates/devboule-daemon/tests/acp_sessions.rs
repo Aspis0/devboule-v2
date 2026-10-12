@@ -5185,12 +5185,10 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     );
 }
 
-/// The thinking option the card named is delivered on the same wire —
-/// the effort the child's `session/set_model` request carried is what the
-/// stub writes down, and the card's thinking line names the value the human
-/// approved.
+/// The profile's thinking option is delivered on the wire: the effort the
+/// child's `session/set_model` request carried is what the stub writes down.
 #[test]
-fn the_child_is_delivered_the_thinking_option_the_card_named() {
+fn the_child_is_delivered_the_thinking_option_its_profile_names() {
     let _lock = lock_tests();
     let mut profiles = worker_profile_document();
     profiles["profiles"][0]["thinkingOptionId"] = serde_json::json!("low");
@@ -5209,11 +5207,6 @@ fn the_child_is_delivered_the_thinking_option_the_card_named() {
     let child = test.child_of(&creator.id);
     assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
 
-    let description = creation_card_description(&events);
-    assert!(
-        description.contains("thinking low"),
-        "the card names the delivered thinking option: {description}"
-    );
     let effort = test.wait_for_observations("set model effort.txt", 1);
     assert_eq!(
         effort[0].trim(),

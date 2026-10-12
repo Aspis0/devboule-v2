@@ -1,12 +1,8 @@
 //! What a creation delivers to the child, as one typed value.
 //!
-//! The consent card names the profile's provider, model, mode, thinking
-//! option and features. Until this struct existed, `AgentCreation` carried
-//! the provider and the mode and nothing else of what the card printed: the
-//! model, the thinking option and the `autoAccept` feature died at the card,
-//! and the child started on the provider's default model. This module gives
-//! the delivery one shape so the signature cannot grow a fourth scalar the
-//! way an argument list does — the provider-trait refactor's gate (`DESIGN-
+//! The provider, model, mode, thinking option and features a child is started
+//! with. The delivery has one shape so the signature cannot grow a fourth
+//! scalar the way an argument list does — the provider-trait refactor's gate (`DESIGN-
 //! provider-trait-refactor.md` §8.1) names exactly this surface:
 //!
 //! > `session.rs` passes **one typed `ProfileDelivery`** and holds no
@@ -183,9 +179,7 @@ impl ProfileDelivery {
 /// but a profile written by an older daemon can still hold a key with a value
 /// no control produces. Delivering it would be reading a tick out of a string;
 /// refusing the whole creation over it would break a profile whose child runs
-/// fine today. So the undeliverable value goes and the rest is delivered — and
-/// because the card prints this same list, the card cannot name what is not
-/// here.
+/// fine today. So the undeliverable value goes and the rest is delivered.
 pub(crate) fn delivered_features(
     features: &serde_json::Map<String, Value>,
 ) -> Vec<DeliveredFeature> {
@@ -224,8 +218,8 @@ pub(crate) fn feature_is_true(features: &serde_json::Map<String, Value>, key: &s
 /// broker or the provider itself ([`crate::provider_catalog::mode_self_answers`]).
 ///
 /// A profile combination never fails the creation (owner bug #16): a tick
-/// over a mode that asks the human resolves to off — the child asks, the
-/// card says so — instead of refusing. Resolving toward asking is the safe
+/// over a mode that asks the human resolves to off — the child asks — instead
+/// of refusing. Resolving toward asking is the safe
 /// direction: escalating the mode to an auto one would grant a privilege
 /// nobody approved, while dropping the tick only ever asks the human more.
 /// Unticked stays unticked whatever the mode.

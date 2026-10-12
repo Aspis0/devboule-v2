@@ -311,7 +311,7 @@ fn run_creation(
     // tick over a mode that answers its own permission prompts — the
     // daemon's broker or the provider itself, like Claude's `auto`
     // classifier — stands; over a mode that asks the human it resolves to
-    // off, so the child asks and the card says so. Resolving toward asking
+    // off, so the child asks. Resolving toward asking
     // is the safe direction: escalating the mode would grant a privilege
     // nobody approved. The client re-checks the resolved delivery at spawn.
     let ticked = crate::profile_delivery::feature_is_true(
