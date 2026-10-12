@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type { WorkspaceGitRow } from "../../types/ipc";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useMenuOpen } from "../../lib/menuOpen";
@@ -102,42 +102,59 @@ export const FileIcon = (
   </svg>
 );
 
+/** What a row's acts reach. Stable across renders, so a memoised row holds. */
+interface RowActions {
+  onSelect: (path: string) => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
+  onToggleMenu: (path: string) => void;
+  acting: boolean;
+  /** No acts and no menus: nothing behind these rows writes (a remote
+   * listing). Row clicks open file tabs instead of diffs. */
+  readOnly: boolean;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  workspaceKey: WorkspaceKey;
+}
+
+/** The tree's state for one render: what is selected and open, which folders are
+ * collapsed, and the acts. Each level hands its rows only the part they show. */
+interface TreeView {
+  selection: string | null;
+  menuPath: string | null;
+  collapsed: ReadonlySet<string>;
+  onToggle: (path: string) => void;
+  actions: RowActions;
+}
+
 const FileNode = memo(function FileNode({
   path,
   name,
   row,
   depth,
-  selection,
-  onSelect,
-  onStage,
-  onUnstage,
-  onDiscard,
-  menuPath,
-  onToggleMenu,
-  acting,
-  readOnly,
-  onOpenFile,
-  workspaceKey,
+  selected,
+  menuOpen,
+  actions,
 }: {
   path: string;
   name: string;
   row: WorkspaceGitRow;
   depth: number;
-  selection: string | null;
-  onSelect: (path: string) => void;
-  onStage: (paths: string[]) => void;
-  onUnstage: (paths: string[]) => void;
-  onDiscard: (paths: string[]) => void;
-  menuPath: string | null;
-  onToggleMenu: (path: string) => void;
-  acting: boolean;
-  /** No acts and no menus: nothing behind these rows writes (a remote
-   * listing). Row clicks open file tabs instead of diffs. */
-  readOnly?: boolean;
-  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
-  workspaceKey: WorkspaceKey;
+  selected: boolean;
+  menuOpen: boolean;
+  actions: RowActions;
 }) {
-  const selected = selection === path;
+  const {
+    onSelect,
+    onStage,
+    onUnstage,
+    onDiscard,
+    onToggleMenu,
+    onOpenFile,
+    acting,
+    readOnly,
+    workspaceKey,
+  } = actions;
   const { head, tail } = splitFileName(name);
   const tone = isNewRow(row)
     ? " workspace-changes-file-add"
@@ -216,7 +233,7 @@ const FileNode = memo(function FileNode({
               type="button"
               className="workspace-tree-menu-trigger"
               aria-label={`${path} actions`}
-              aria-expanded={menuPath === path}
+              aria-expanded={menuOpen}
               disabled={acting}
               onClick={() => onToggleMenu(path)}
             >
@@ -253,7 +270,7 @@ const FileNode = memo(function FileNode({
           exists nowhere else. Its confirmation is the writer hook's
           own — this menu can reach the discard only through it. No menu
           on remote rows: nothing there writes. */}
-      {!readOnly && menuPath === path ? (
+      {!readOnly && menuOpen ? (
         <div className="workspace-tree-menu" role="menu">
           <button
             type="button"
@@ -273,16 +290,13 @@ const FileNode = memo(function FileNode({
 const FolderNode = memo(function FolderNode({
   folder,
   depth,
-  expanded,
-  onToggle,
-  children,
+  view,
 }: {
   folder: ChangesTreeFolder;
   depth: number;
-  expanded: boolean;
-  onToggle: (path: string) => void;
-  children: (nodes: ChangesTreeNode[], nextDepth: number) => ReactNode;
+  view: TreeView;
 }) {
+  const expanded = !view.collapsed.has(folder.path);
   const groupId = groupIdFor(folder.path);
   return (
     <li className="workspace-changes-folder-row">
@@ -296,7 +310,7 @@ const FolderNode = memo(function FolderNode({
         aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.path}`}
         title={folder.path}
         style={indent(depth)}
-        onClick={() => onToggle(folder.path)}
+        onClick={() => view.onToggle(folder.path)}
       >
         <span className="workspace-changes-chevron" aria-hidden="true">
           {expanded ? "▾" : "▸"}
@@ -311,10 +325,43 @@ const FolderNode = memo(function FolderNode({
       </button>
       {expanded ? (
         <ul id={groupId} className="workspace-changes-group">
-          {children(folder.children, depth + 1)}
+          <NodeList nodes={folder.children} depth={depth + 1} view={view} />
         </ul>
       ) : null}
     </li>
+  );
+});
+
+/** One group of the tree: its file rows and folders, each given only its own
+ * selected and open flags, so a change to one row leaves the others alone. */
+const NodeList = memo(function NodeList({
+  nodes,
+  depth,
+  view,
+}: {
+  nodes: ChangesTreeNode[];
+  depth: number;
+  view: TreeView;
+}) {
+  return (
+    <>
+      {nodes.map((node) =>
+        node.kind === "file" ? (
+          <FileNode
+            key={node.path}
+            path={node.path}
+            name={node.name}
+            row={node.row}
+            depth={depth}
+            selected={view.selection === node.path}
+            menuOpen={view.menuPath === node.path}
+            actions={view.actions}
+          />
+        ) : (
+          <FolderNode key={node.path} folder={node} depth={depth} view={view} />
+        ),
+      )}
+    </>
   );
 });
 
@@ -347,39 +394,38 @@ export const ChangesTreeView = memo(function ChangesTreeView({
     });
   }, []);
 
-  const renderNodes = (list: ChangesTreeNode[], depth: number): ReactNode =>
-    list.map((node) =>
-      node.kind === "file" ? (
-        <FileNode
-          key={node.path}
-          path={node.path}
-          name={node.name}
-          row={node.row}
-          depth={depth}
-          selection={selection}
-          onSelect={onSelect}
-          onStage={onStage}
-          onUnstage={onUnstage}
-          onDiscard={onDiscard}
-          menuPath={menuPath}
-          onToggleMenu={onToggleMenu}
-          acting={acting}
-          readOnly={readOnly}
-          onOpenFile={onOpenFile}
-          workspaceKey={workspaceKey}
-        />
-      ) : (
-        <FolderNode
-          key={node.path}
-          folder={node}
-          depth={depth}
-          expanded={!collapsed.has(node.path)}
-          onToggle={toggle}
-        >
-          {renderNodes}
-        </FolderNode>
-      ),
-    );
+  const actions = useMemo<RowActions>(
+    () => ({
+      onSelect,
+      onStage,
+      onUnstage,
+      onDiscard,
+      onToggleMenu,
+      acting,
+      readOnly,
+      onOpenFile,
+      workspaceKey,
+    }),
+    [
+      onSelect,
+      onStage,
+      onUnstage,
+      onDiscard,
+      onToggleMenu,
+      acting,
+      readOnly,
+      onOpenFile,
+      workspaceKey,
+    ],
+  );
+  const view = useMemo<TreeView>(
+    () => ({ selection, menuPath, collapsed, onToggle: toggle, actions }),
+    [selection, menuPath, collapsed, toggle, actions],
+  );
 
-  return <ul className="workspace-changes-tree">{renderNodes(nodes, 0)}</ul>;
+  return (
+    <ul className="workspace-changes-tree">
+      <NodeList nodes={nodes} depth={0} view={view} />
+    </ul>
+  );
 });

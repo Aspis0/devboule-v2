@@ -1,5 +1,5 @@
 import { rememberChangesStatus } from "./changesStatusCache";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -128,19 +128,20 @@ export function useWorkspaceChanges(workspaceKey: WorkspaceKey | null): Workspac
     [workspaceKey],
   );
 
-  // Stays useCallback-wrapped on exactly these deps: the writer hook's
-  // `run` and the surface's act identities hang off `refresh`, and the
-  // memoised Changes tree re-renders per commit-field keystroke the day
-  // this closure churns on anything shallower (a keystroke touches none
-  // of the four deps, so the tree's twelve props hold still). No test
-  // can see that — memo is invisible in happy-dom — so the invariant
-  // lives here as a comment instead of a guard.
+  // `refresh` must keep its identity across selections: the writer hook's
+  // `run` and the surface's act identities hang off it, and the memoised
+  // Changes rows take those identities as props. The selection is read
+  // through a ref, so choosing a row does not re-render every row.
+  const selectionRef = useRef(selection);
+  useLayoutEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
   const refresh = useCallback((): void => {
     void readStatus();
-    const path =
-      selection !== null && selection.workspaceKey === workspaceKey ? selection.path : null;
+    const current = selectionRef.current;
+    const path = current !== null && current.workspaceKey === workspaceKey ? current.path : null;
     if (path !== null) void readDiff(path);
-  }, [readDiff, readStatus, selection, workspaceKey]);
+  }, [readDiff, readStatus, workspaceKey]);
 
   const select = useCallback(
     (path: string): void => {

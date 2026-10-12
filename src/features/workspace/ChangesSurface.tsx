@@ -330,6 +330,7 @@ export const ChangesSurface = memo(function ChangesSurface({
     },
     [runAct, discard, menuAnchorRef, armAsk],
   );
+  const closeMenu = useCallback((): void => setMenuPath(null), []);
   const toggleMenu = useCallback(
     (path: string): void => {
       // The trigger's own click still holds focus here; the menu item the
@@ -476,7 +477,7 @@ export const ChangesSurface = memo(function ChangesSurface({
                     onDiscard={runDiscard}
                     menuPath={menuPath}
                     onToggleMenu={toggleMenu}
-                    onCloseMenu={() => setMenuPath(null)}
+                    onCloseMenu={closeMenu}
                     acting={acting}
                     onOpenFile={onOpenFile}
                   />
