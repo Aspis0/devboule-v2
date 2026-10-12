@@ -15,6 +15,7 @@ import { DiffCard } from "./DiffCard";
 import { RefreshButton } from "./RefreshButton";
 import { useRevealedPath, type RevealRequest } from "./useRevealedPath";
 import { AgentChanges } from "./agentChanges/AgentChanges";
+import { CommittedEdit } from "./agentChanges/CommittedEdit";
 import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
 
@@ -259,6 +260,14 @@ export const ChangesSurface = memo(function ChangesSurface({
   // the panel landing when a landed discard takes its own row with it.
   const { armAsk, menuAnchorRef, panelRef } = useAskFocus(reply?.rows ?? null, acting);
   const [message, setMessage] = useState("");
+  // A complete status list without the selected file means the file has no
+  // uncommitted change any more: its recorded edit stands in for the git diff.
+  // A withheld or refused list proves nothing about the file, so it claims nothing.
+  const committedSelection =
+    selection !== null &&
+    reply !== null &&
+    reply.error === null &&
+    !reply.rows.some((row) => row.path === selection);
   const caveat = caveatOf(reply);
   const notice = caveat ?? status.failure;
   const loading = workspaceId !== null && reply === null && status.failure === null;
@@ -462,7 +471,11 @@ export const ChangesSurface = memo(function ChangesSurface({
                   No uncommitted changes in this workspace.
                 </div>
               ) : null}
-              {selection !== null ? <DiffCard path={selection} diff={diff} /> : null}
+              {selection === null ? null : committedSelection ? (
+                <CommittedEdit workspaceKey={workspaceKey} path={selection} />
+              ) : (
+                <DiffCard path={selection} diff={diff} />
+              )}
               <CommitRow
                 message={message}
                 onMessage={setMessage}

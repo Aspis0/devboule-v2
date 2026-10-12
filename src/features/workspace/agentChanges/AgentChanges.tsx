@@ -6,7 +6,8 @@ import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { ChangeCounts } from "../ChangeCounts";
 import { FileIcon } from "../ChangesTreeView";
 import { RefreshButton } from "../RefreshButton";
-import { DiffNote, DiffRows, InlineDiff } from "../inlineDiff";
+import { DiffNote, InlineDiff } from "../inlineDiff";
+import { AgentDiffBody } from "./AgentDiffBody";
 import { useRevealedPath, type RevealRequest } from "../useRevealedPath";
 import { useTaskClock } from "../useTaskClock";
 import { editedAgo, editsText, filesText, splitPath } from "./agentChangesView";
@@ -109,28 +110,7 @@ export function AgentChanges({ workspaceKey, onRefresh, revealPath }: AgentChang
           counts={<ChangeCounts additions={selected.additions} deletions={selected.deletions} />}
           meta={editMeta(selected, now)}
         >
-          {diff.reply === null ? (
-            diff.failure === null ? (
-              <DiffNote>Loading diff…</DiffNote>
-            ) : (
-              <DiffNote alert>
-                <ErrorText
-                  sentence={diff.failure.sentence}
-                  detail={diff.failure.detail}
-                  id="agent-diff-error"
-                />
-              </DiffNote>
-            )
-          ) : diff.reply.status === "error" ? (
-            <DiffNote alert>{diff.reply.error}</DiffNote>
-          ) : (
-            <>
-              {diff.reply.status === "truncated" ? (
-                <DiffNote>Part of this diff is not kept.</DiffNote>
-              ) : null}
-              <DiffRows lines={diff.reply.lines} />
-            </>
-          )}
+          <AgentDiffBody diff={diff} errorId="agent-diff-error" />
         </InlineDiff>
       )}
       <p className="workspace-agent-changes-note">{AGENT_CHANGES_NOTE}</p>
