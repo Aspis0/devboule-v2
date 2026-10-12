@@ -173,13 +173,18 @@ async fn new_tab(
     // `browserId` at the top of the result is the whole tab-ownership
     // contract with the daemon: it reads this one key to learn which host owns
     // this tab (see `BrowserOutcome` in the protocol crate).
-    Ok(json!({
-        "browserId": id,
-        "url": opened.url,
-        "title": opened.title,
-        "reused": false,
-        "tabs": tabs,
-    }))
+    // Opening the tab loads its address, so a redirect the policy refuses is
+    // reported here as it would be on any other navigation.
+    Ok(super::with_refusal(
+        json!({
+            "browserId": id,
+            "url": opened.url,
+            "title": opened.title,
+            "reused": false,
+            "tabs": tabs,
+        }),
+        registry.drive_of(&id).as_deref(),
+    ))
 }
 
 /// The tab this session opened and left in the background, at the address asked

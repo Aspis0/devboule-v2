@@ -35,7 +35,7 @@ use super::cdp::{Bounded, CdpError, Page, WebviewPage};
 use super::credentials::fill_login;
 use super::deadline::Deadline;
 use super::destination::{Audience, DestinationPolicy};
-use super::registry::{BrowserRegistry, TabInfo};
+use super::registry::{AgentDrive, BrowserRegistry, TabInfo};
 use super::scrub;
 use super::tab_guard;
 use super::view;
@@ -338,20 +338,19 @@ pub async fn dispatch(
         }
         Routed::Tab => on_tab(&tab, &page, command, &request.args, deadline).await,
     };
-    let answer = scrubbed(outcome)?;
-    // A navigation the hook refused while this command ran is reported to the
-    // agent here, on the next answer it gets.
-    let refused_navigation = drive.as_ref().and_then(|drive| drive.take_refusal());
-    Ok(match refused_navigation {
-        None => answer,
-        Some(reason) => {
-            let mut answer = answer;
-            if let Some(object) = answer.as_object_mut() {
-                object.insert("refusedNavigation".to_string(), Value::String(reason));
-            }
-            answer
+    Ok(with_refusal(scrubbed(outcome)?, drive.as_deref()))
+}
+
+/// The answer with the navigation the hook refused while its command ran, if
+/// one is waiting. The refusal is reported once, on the next answer the agent
+/// gets; a navigation the policy refuses is never reported as a success.
+pub(super) fn with_refusal(mut answer: Value, drive: Option<&AgentDrive>) -> Value {
+    if let Some(reason) = drive.and_then(AgentDrive::take_refusal) {
+        if let Some(object) = answer.as_object_mut() {
+            object.insert("refusedNavigation".to_string(), Value::String(reason));
         }
-    })
+    }
+    answer
 }
 
 /// The answer of one command, or the refusal of one, with whatever this process

@@ -384,3 +384,18 @@ fn a_screenshot_takes_the_tab_lock_the_way_a_resize_does() {
     assert!(!takes_tab_lock("snapshot"));
     assert!(!takes_tab_lock("read_text"));
 }
+
+#[test]
+fn a_refused_navigation_is_reported_once_in_the_answer_that_follows_it() {
+    let drive = crate::browser::registry::AgentDrive::opened_by_agent(&[], "s-1");
+    drive.note_refusal("the destination is blocked".to_owned());
+
+    let answered = with_refusal(json!({ "browserId": "tab-1" }), Some(&drive));
+    assert_eq!(answered["refusedNavigation"], "the destination is blocked");
+
+    let next = with_refusal(json!({ "browserId": "tab-1" }), Some(&drive));
+    assert!(
+        next.get("refusedNavigation").is_none(),
+        "taken once: {next}"
+    );
+}
