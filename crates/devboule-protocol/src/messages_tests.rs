@@ -86,6 +86,7 @@ fn an_unset_origin_is_absent_from_the_wire_not_null() {
         state: VocabularyState::Absent,
         origin: None,
         items: Vec::new(),
+        default_id: None,
     };
     let json = serde_json::to_value(&axis).expect("json");
     assert!(json.get("origin").is_none(), "got {json}");
@@ -97,6 +98,7 @@ fn an_unset_origin_is_absent_from_the_wire_not_null() {
         state: VocabularyState::Present,
         origin: Some(VocabularyOrigin::Provider),
         items: Vec::new(),
+        default_id: None,
     };
     let json = serde_json::to_value(&axis).expect("json");
     assert_eq!(json.get("origin"), Some(&serde_json::json!("provider")));
@@ -114,11 +116,13 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
             state: VocabularyState::Present,
             origin: Some(VocabularyOrigin::Provider),
             items: Vec::new(),
+            default_id: None,
         },
         modes: VocabularyModes {
             state: VocabularyState::Present,
             origin: Some(VocabularyOrigin::Daemon),
             items: Vec::new(),
+            default_id: None,
         },
         features: None,
         source: VocabularySource::Probe,
@@ -136,11 +140,13 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
             state: VocabularyState::Present,
             origin: Some(VocabularyOrigin::Provider),
             items: Vec::new(),
+            default_id: None,
         },
         modes: VocabularyModes {
             state: VocabularyState::Absent,
             origin: None,
             items: Vec::new(),
+            default_id: None,
         },
         // The features axis the daemon answers with today: a present list
         // whose authorship sits on the row, because one provider's list mixes
@@ -273,6 +279,7 @@ fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
             state,
             origin,
             items: Vec::new(),
+            default_id: None,
         })
         .expect("json")
     }
@@ -3658,7 +3665,7 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
 /// dialect that added it is the one this crate speaks.
 #[test]
 fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
-    assert_eq!(crate::PROTOCOL_VERSION, 39);
+    assert_eq!(crate::PROTOCOL_VERSION, 40);
     let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
     // The same payload, with the key the v30 dialect added, still decodes.
     let current = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null,"gitMissing":true}}"#;

@@ -148,6 +148,8 @@ pub(crate) mod claude_client;
 mod claude_steer_latch;
 #[path = "claude_task_seed.rs"]
 mod claude_task_seed;
+#[path = "codex_catalog_probe.rs"]
+pub(crate) mod codex_catalog_probe;
 #[path = "codex_client.rs"]
 mod codex_client;
 #[path = "codex_elicitations.rs"]

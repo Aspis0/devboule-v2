@@ -1842,6 +1842,7 @@ describe("Workspace sessions", () => {
       provider: "claude",
       models: {
         state: "present",
+        defaultId: "sonnet",
         items: [
           {
             modelId: "sonnet",
@@ -1853,7 +1854,7 @@ describe("Workspace sessions", () => {
           },
         ],
       },
-      modes: { state: "present", items: [{ id: "plan", name: "Plan" }] },
+      modes: { state: "present", defaultId: "plan", items: [{ id: "plan", name: "Plan" }] },
       source: "probe",
     } as never);
     root = createRoot(container);
@@ -1885,7 +1886,11 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
     vi.mocked(providerVocabularyGet).mockResolvedValue({
       provider: "claude",
-      models: { state: "present", items: [{ modelId: "sonnet", name: "Sonnet" }] },
+      models: {
+        state: "present",
+        defaultId: "sonnet",
+        items: [{ modelId: "sonnet", name: "Sonnet" }],
+      },
       modes: { state: "present", items: [] },
       source: "probe",
     } as never);
@@ -1928,7 +1933,11 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
     vi.mocked(providerVocabularyGet).mockResolvedValue({
       provider: "claude",
-      models: { state: "present", items: [{ modelId: "sonnet", name: "Sonnet" }] },
+      models: {
+        state: "present",
+        defaultId: "sonnet",
+        items: [{ modelId: "sonnet", name: "Sonnet" }],
+      },
       modes: { state: "present", items: [] },
       source: "probe",
     } as never);

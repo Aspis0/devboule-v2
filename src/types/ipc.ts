@@ -2122,6 +2122,8 @@ export interface VocabularyModels {
   origin?: VocabularyOrigin | null;
   /** Empty unless `state` is `"present"`: a `present` with no items is a collapsed absence, never sent. */
   items: SessionModel[];
+  /** The model a session starts on when none was picked: one of `items`, or absent when the family names none. */
+  defaultId?: string | null;
 }
 
 /** The modes axis of a `ProviderVocabulary` reply. Same shape discipline as `VocabularyModels`. */
@@ -2130,6 +2132,8 @@ export interface VocabularyModes {
   origin?: VocabularyOrigin | null;
   /** Empty unless `state` is `"present"`. */
   items: SessionModeView[];
+  /** The mode a session starts in when none was picked: one of `items`, or absent when the family names none. */
+  defaultId?: string | null;
 }
 
 /**

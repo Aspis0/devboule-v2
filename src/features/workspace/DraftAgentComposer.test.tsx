@@ -108,9 +108,11 @@ describe("the first-message composer's model, effort and mode", () => {
       { modelId: "haiku", name: "Haiku", providerId: "claude" },
     ],
     modes: [{ id: "plan", name: "Plan" }],
+    defaultModelId: "sonnet",
+    defaultModeId: "plan",
   } as never;
 
-  it("shows the first model, its default effort and the first mode when nothing is picked", async () => {
+  it("shows the catalog's default model, its default effort and its default mode when nothing is picked", async () => {
     await act(async () =>
       root.render(
         <DraftAgentComposer
@@ -185,11 +187,12 @@ describe("the first-message composer's model, effort and mode", () => {
 });
 
 describe("resolveDraftSelection", () => {
-  it("resolves to what the composer shows: the first model and its default effort", () => {
+  it("resolves to the catalog's default model, its default effort and its default mode", () => {
     expect(
       resolveDraftSelection(
         {
           models: [
+            { modelId: "haiku", name: "Haiku" },
             {
               modelId: "sonnet",
               name: "Sonnet",
@@ -199,14 +202,66 @@ describe("resolveDraftSelection", () => {
               ],
             },
           ],
-          modes: [{ id: "plan", name: "Plan" }],
+          modes: [
+            { id: "ask", name: "Ask" },
+            { id: "plan", name: "Plan" },
+          ],
+          defaultModelId: "sonnet",
+          defaultModeId: "plan",
         } as never,
         { modelId: null, effort: null, modeId: null },
       ),
     ).toEqual({ modelId: "sonnet", effort: "high", modeId: "plan" });
   });
 
-  it("keeps a pick that exists and falls back when a pick is gone", () => {
+  it("leaves the model and mode unset when the catalog names no default and nothing was picked", () => {
+    const choices = {
+      models: [
+        { modelId: "a", name: "A" },
+        { modelId: "b", name: "B" },
+      ],
+      modes: [{ id: "m1", name: "M1" }],
+      defaultModelId: null,
+      defaultModeId: null,
+    } as never;
+
+    expect(resolveDraftSelection(choices, { modelId: null, effort: null, modeId: null })).toEqual({
+      modelId: null,
+      effort: null,
+      modeId: null,
+    });
+  });
+
+  it("keeps a pick that exists and falls back to the default, not the first row, when a pick is gone", () => {
+    const choices = {
+      models: [
+        {
+          modelId: "a",
+          name: "A",
+          efforts: [
+            { id: "x", label: "X" },
+            { id: "y", label: "Y", default: true },
+          ],
+        },
+        { modelId: "b", name: "B" },
+      ],
+      modes: [],
+      defaultModelId: "b",
+    } as never;
+
+    expect(resolveDraftSelection(choices, { modelId: "a", effort: "x", modeId: null })).toEqual({
+      modelId: "a",
+      effort: "x",
+      modeId: null,
+    });
+    expect(resolveDraftSelection(choices, { modelId: "gone", effort: "y", modeId: null })).toEqual({
+      modelId: "b",
+      effort: null,
+      modeId: null,
+    });
+  });
+
+  it("leaves an effort unset when the model names no default effort", () => {
     const choices = {
       models: [
         {
@@ -217,28 +272,15 @@ describe("resolveDraftSelection", () => {
             { id: "y", label: "Y" },
           ],
         },
-        { modelId: "b", name: "B" },
       ],
       modes: [],
+      defaultModelId: "a",
     } as never;
-    expect(resolveDraftSelection(choices, { modelId: "b", effort: null, modeId: null })).toEqual({
-      modelId: "b",
+
+    expect(resolveDraftSelection(choices, { modelId: null, effort: null, modeId: null })).toEqual({
+      modelId: "a",
       effort: null,
       modeId: null,
     });
-    // The model falls back to the first; an effort that model offers is kept.
-    expect(resolveDraftSelection(choices, { modelId: "gone", effort: "y", modeId: null })).toEqual({
-      modelId: "a",
-      effort: "y",
-      modeId: null,
-    });
-    // An effort the fallback model does not offer falls back to its first.
-    expect(resolveDraftSelection(choices, { modelId: "gone", effort: "zz", modeId: null })).toEqual(
-      {
-        modelId: "a",
-        effort: "x",
-        modeId: null,
-      },
-    );
   });
 });

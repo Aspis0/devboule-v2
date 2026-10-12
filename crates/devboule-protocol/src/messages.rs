@@ -3658,9 +3658,20 @@ pub struct VocabularyModels {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<VocabularyOrigin>,
     pub items: Vec<SessionModel>,
+    /// The model a session starts on when the person picked none: the id of
+    /// one of `items`, or `None` when the family names no default and the
+    /// person must choose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_id: Option<String>,
 }
 
 impl VocabularyModels {
+    /// The same axis, naming the model a session starts on by default.
+    pub fn with_default_id(mut self, default_id: Option<String>) -> Self {
+        self.default_id = default_id;
+        self
+    }
+
     /// The way every axis builder constructs this struct: it refuses the two
     /// pairs the biconditional forbids — an `origin` on a `none`/`absent`
     /// axis, and a `present` axis without one — so an illegal combination is
@@ -3682,6 +3693,7 @@ impl VocabularyModels {
             state,
             origin,
             items,
+            default_id: None,
         })
     }
 }
@@ -3859,9 +3871,19 @@ pub struct VocabularyModes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<VocabularyOrigin>,
     pub items: Vec<SessionModeView>,
+    /// The mode a session starts in when the person picked none: the id of one
+    /// of `items`, or `None` when the family names no default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_id: Option<String>,
 }
 
 impl VocabularyModes {
+    /// The same axis, naming the mode a session starts in by default.
+    pub fn with_default_id(mut self, default_id: Option<String>) -> Self {
+        self.default_id = default_id;
+        self
+    }
+
     /// Same discipline as [`VocabularyModels::new`]: the biconditional as
     /// code, refusing the pairs no builder may emit.
     pub fn new(
@@ -3879,6 +3901,7 @@ impl VocabularyModes {
             state,
             origin,
             items,
+            default_id: None,
         })
     }
 }

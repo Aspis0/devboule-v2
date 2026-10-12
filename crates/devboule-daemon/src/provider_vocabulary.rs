@@ -357,12 +357,15 @@ pub(crate) fn claude_axes(state: &Arc<ServerState>) -> (VocabularyModels, Vocabu
     // The current mode is a live-session fact and belongs to the manifest;
     // the vocabulary carries only the available list, so the "current" id
     // the shared builder requires is filled and dropped.
+    let available = crate::claude_view::mode_state("default").available_modes;
+    let default_id = first_mode_id(&available);
     let modes = VocabularyModes::new(
         VocabularyState::Present,
         Some(VocabularyOrigin::Daemon),
-        crate::claude_view::mode_state("default").available_modes,
+        available,
     )
-    .expect("a present modes axis always carries its origin");
+    .expect("a present modes axis always carries its origin")
+    .with_default_id(default_id);
     (models, modes)
 }
 
@@ -377,8 +380,10 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
         crate::claude_catalog::ClaudeCatalogState::Derived => VocabularyOrigin::Provider,
         crate::claude_catalog::ClaudeCatalogState::Provisional => VocabularyOrigin::Daemon,
     };
+    let default_id = snapshot.models.first().map(|model| model.model_id.clone());
     VocabularyModels::new(VocabularyState::Present, Some(origin), snapshot.models)
         .expect("a present models axis always carries its origin")
+        .with_default_id(default_id)
 }
 
 /// The `absent` answer: items empty, origin omitted — both, in both
@@ -392,6 +397,11 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
 /// an ACP read every 30 minutes — restarting a provider a person is not waiting
 /// on — or pin it forever, which would freeze a `sonnet` answer for an `opus`
 /// form. Recon `D6` names this and the split is its answer.
+/// The id of the first mode a family lists: the default for a family that names none.
+pub(crate) fn first_mode_id(modes: &[devboule_protocol::SessionModeView]) -> Option<String> {
+    modes.first().map(|mode| mode.id.clone())
+}
+
 pub(crate) fn absent_axes() -> (VocabularyModels, VocabularyModes) {
     (
         VocabularyModels::new(VocabularyState::Absent, None, Vec::new())
@@ -648,11 +658,13 @@ mod tests {
                 state: VocabularyState::Present,
                 origin: Some(VocabularyOrigin::Daemon),
                 items: crate::claude_catalog::fallback_models(),
+                default_id: None,
             },
             VocabularyModes {
                 state: VocabularyState::Present,
                 origin: Some(VocabularyOrigin::Daemon),
                 items: crate::claude_view::mode_state("default").available_modes,
+                default_id: None,
             },
         );
         // The provisional answer is live: the facts a real cold read stored

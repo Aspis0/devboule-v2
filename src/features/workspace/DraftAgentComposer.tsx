@@ -9,6 +9,9 @@ import { WorkspaceComposer } from "./WorkspaceComposer";
 export interface DraftChoices {
   models: readonly SessionModel[];
   modes: readonly SessionModeView[];
+  /** The catalog's default model and mode ids; a null one is left unset, never replaced by the first row. */
+  defaultModelId?: string | null;
+  defaultModeId?: string | null;
 }
 
 const NO_SELECTION: DraftSelection = { modelId: null, effort: null, modeId: null };
@@ -33,14 +36,17 @@ export function resolveDraftSelection(
   selection: DraftSelection,
 ): ResolvedDraftSelection {
   const models = choices?.models ?? [];
-  const model = models.find((candidate) => candidate.modelId === selection.modelId) ?? models[0];
+  const model =
+    models.find((candidate) => candidate.modelId === selection.modelId) ??
+    models.find((candidate) => candidate.modelId === choices?.defaultModelId);
   const efforts = model?.efforts ?? [];
   const effort =
     efforts.find((candidate) => candidate.id === selection.effort) ??
-    efforts.find((candidate) => candidate.default === true) ??
-    efforts[0];
+    efforts.find((candidate) => candidate.default === true);
   const modes = choices?.modes ?? [];
-  const mode = modes.find((candidate) => candidate.id === selection.modeId) ?? modes[0];
+  const mode =
+    modes.find((candidate) => candidate.id === selection.modeId) ??
+    modes.find((candidate) => candidate.id === choices?.defaultModeId);
   return { modelId: model?.modelId ?? null, effort: effort?.id ?? null, modeId: mode?.id ?? null };
 }
 

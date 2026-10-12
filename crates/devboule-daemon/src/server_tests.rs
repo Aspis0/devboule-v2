@@ -2471,11 +2471,13 @@ fn the_vocabulary_cache_never_feeds_the_live_catalog_path() {
                 current_effort: None,
                 efforts: None,
             }],
+            default_id: None,
         },
         devboule_protocol::VocabularyModes {
             state: devboule_protocol::VocabularyState::Absent,
             origin: None,
             items: Vec::new(),
+            default_id: None,
         },
     );
     // The catalog path still answers from the derivation/cache chain,

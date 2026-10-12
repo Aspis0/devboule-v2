@@ -1,31 +1,49 @@
-//! Codex's vocabulary before any agent runs: its models, read from the model
-//! cache Codex keeps under its home, and its permission modes, from the
-//! daemon's own mode table.
+//! Codex's vocabulary before any agent runs: the models a short-lived Codex
+//! app-server lists, or failing that Codex's model cache while it is fresh,
+//! and its permission modes from the daemon's own mode table.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
-use devboule_protocol::{
-    SessionModel, SessionModelEffort, VocabularyModels, VocabularyModes, VocabularyOrigin,
-    VocabularyState,
+use devboule_protocol::{VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularyState};
+use serde_json::{json, Value};
+
+use crate::codex_model_catalog::{
+    catalog_from_listing, configured_defaults, CodexModelCatalog, ConfiguredDefaults,
 };
-use serde_json::Value;
+use crate::session::codex_catalog_probe::{read_catalog, CodexCatalogRead};
 
 const MODELS_CACHE_FILE: &str = "models_cache.json";
+/// A cache older than this is not offered: it may list models Codex has since retired.
+const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
-/// Codex's models and modes. A missing or unreadable model cache leaves the
-/// models axis absent; the modes are the daemon's table and always present.
+/// Codex's models and modes. Without a live answer and without a fresh cache
+/// the models axis is absent; the modes are the daemon's table and always present.
 pub(crate) fn codex_axes() -> (VocabularyModels, VocabularyModes) {
-    codex_axes_in(&crate::codex_command_catalog::resolve_home())
+    let home = crate::codex_command_catalog::resolve_home();
+    models_and_modes(read_catalog(), &home, SystemTime::now())
 }
 
-fn codex_axes_in(home: &Path) -> (VocabularyModels, VocabularyModes) {
-    let models = match cached_models(&home.join(MODELS_CACHE_FILE)) {
-        Some(models) if !models.is_empty() => VocabularyModels::new(
+fn models_and_modes(
+    probe: Option<CodexCatalogRead>,
+    home: &Path,
+    now: SystemTime,
+) -> (VocabularyModels, VocabularyModes) {
+    let catalog = match probe {
+        Some(read) => Some(catalog_from_listing(
+            &read.rows,
+            &configured_defaults(&read.config),
+        )),
+        None => cached_catalog(&home.join(MODELS_CACHE_FILE), now),
+    };
+    let models = match catalog {
+        Some(catalog) if !catalog.models.is_empty() => VocabularyModels::new(
             VocabularyState::Present,
             Some(VocabularyOrigin::Provider),
-            models,
+            catalog.models,
         )
-        .expect("a present models axis always carries its origin and items"),
+        .expect("a present models axis always carries its origin and items")
+        .with_default_id(catalog.default_id),
         _ => crate::provider_vocabulary::absent_axes().0,
     };
     let modes = VocabularyModes::new(
@@ -33,78 +51,80 @@ fn codex_axes_in(home: &Path) -> (VocabularyModels, VocabularyModes) {
         Some(VocabularyOrigin::Daemon),
         crate::codex_view::available_mode_views(),
     )
-    .expect("a present modes axis always carries its origin");
+    .expect("a present modes axis always carries its origin")
+    .with_default_id(Some(crate::codex_view::DEFAULT_MODE.to_string()));
     (models, modes)
 }
 
-/// The listed models of the cache, in Codex's own priority order. A file that
-/// is missing, unreadable or not the expected shape answers `None`: nothing is
-/// guessed from it.
-fn cached_models(path: &Path) -> Option<Vec<SessionModel>> {
+/// The catalog a cache file holds, when the file is recent and well-formed.
+/// The cache names no configured default, so the draft leaves the model unset.
+fn cached_catalog(path: &Path, now: SystemTime) -> Option<CodexModelCatalog> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    if !now
+        .duration_since(modified)
+        .is_ok_and(|age| age <= CACHE_MAX_AGE)
+    {
+        return None;
+    }
     let text = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
-    let mut listed: Vec<(i64, SessionModel)> = value
+    let rows = cache_rows(&value)?;
+    Some(catalog_from_listing(&rows, &ConfiguredDefaults::default()))
+}
+
+/// The cache's listed models as `model/list` rows, in its priority order.
+fn cache_rows(value: &Value) -> Option<Vec<Value>> {
+    let mut listed: Vec<(i64, Value)> = value
         .get("models")?
         .as_array()?
         .iter()
         .filter(|entry| entry.get("visibility").and_then(Value::as_str) == Some("list"))
         .filter(|entry| entry.get("supported_in_api").and_then(Value::as_bool) != Some(false))
-        .filter_map(|entry| {
+        .map(|entry| {
             let priority = entry
                 .get("priority")
                 .and_then(Value::as_i64)
                 .unwrap_or(i64::MAX);
-            Some((priority, model_from_entry(entry)?))
+            (priority, listing_row(entry))
         })
         .collect();
     listed.sort_by_key(|(priority, _)| *priority);
-    Some(listed.into_iter().map(|(_, model)| model).collect())
+    Some(listed.into_iter().map(|(_, row)| row).collect())
 }
 
-fn model_from_entry(entry: &Value) -> Option<SessionModel> {
-    let model_id = entry.get("slug")?.as_str()?.to_string();
-    let default_effort = entry.get("default_reasoning_level").and_then(Value::as_str);
-    let efforts = entry
-        .get("supported_reasoning_levels")?
-        .as_array()?
-        .iter()
-        .filter_map(|level| {
-            let id = level.get("effort")?.as_str()?.to_string();
-            Some(SessionModelEffort {
-                label: id.clone(),
-                default: Some(Some(id.as_str()) == default_effort),
-                description: level
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                id,
-            })
+fn listing_row(entry: &Value) -> Value {
+    let levels: Vec<Value> = entry
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .map(|level| {
+                    json!({
+                        "reasoningEffort": level.get("effort"),
+                        "description": level.get("description"),
+                    })
+                })
+                .collect()
         })
-        .collect();
-    Some(SessionModel {
-        name: entry
-            .get("display_name")
-            .and_then(Value::as_str)
-            .unwrap_or(&model_id)
-            .to_string(),
-        description: entry
-            .get("description")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        model_id,
-        provider_id: None,
-        context_tokens: None,
-        current_effort: None,
-        efforts: Some(efforts),
-        // The cache names no input modalities, so an image goes as a path line.
-        accepts_images: false,
+        .unwrap_or_default();
+    json!({
+        "model": entry.get("slug"),
+        "displayName": entry.get("display_name"),
+        "description": entry.get("description"),
+        "defaultReasoningEffort": entry.get("default_reasoning_level"),
+        "supportedReasoningEfforts": levels,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::codex_axes_in;
+    use super::{models_and_modes, CACHE_MAX_AGE};
+    use crate::session::codex_catalog_probe::CodexCatalogRead;
     use devboule_protocol::{VocabularyOrigin, VocabularyState};
+    use serde_json::{json, Value};
+    use std::path::Path;
+    use std::time::SystemTime;
 
     fn home_with_cache(tag: &str, body: &str) -> std::path::PathBuf {
         let home = crate::test_dirs::test_temp_dir(&format!("devboule-codex-vocabulary-{tag}"));
@@ -142,29 +162,65 @@ mod tests {
         ]
     }"#;
 
+    fn empty_home(tag: &str) -> std::path::PathBuf {
+        let home = crate::test_dirs::test_temp_dir(&format!("devboule-codex-vocabulary-{tag}"));
+        std::fs::create_dir_all(&home).expect("codex home");
+        home
+    }
+
     #[test]
-    fn listed_models_come_from_the_cache_in_its_priority_order() {
-        let home = home_with_cache("listed", CACHE);
-        let (models, _) = codex_axes_in(&home);
+    fn a_live_answer_lists_its_models_with_the_configured_default() {
+        let probe = CodexCatalogRead {
+            rows: vec![
+                json!({"model": "gpt-a", "displayName": "GPT-A", "isDefault": true,
+                       "defaultReasoningEffort": "low",
+                       "supportedReasoningEfforts": [{"reasoningEffort": "low"}]}),
+                json!({"model": "gpt-b", "displayName": "GPT-B", "isDefault": false,
+                       "defaultReasoningEffort": "low",
+                       "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "xhigh"}]}),
+            ],
+            config: json!({"config": {"model": "gpt-b", "model_reasoning_effort": "xhigh"}}),
+        };
+        let (models, modes) = models_and_modes(Some(probe), &empty_home("live"), SystemTime::now());
+
+        assert_eq!(models.state, VocabularyState::Present);
+        assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
+        assert_eq!(models.default_id.as_deref(), Some("gpt-b"));
+        assert_eq!(modes.default_id.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn a_failed_probe_falls_back_to_a_fresh_cache_with_no_default() {
+        let home = home_with_cache("fresh", CACHE);
+        let (models, _) = models_and_modes(None, &home, SystemTime::now());
 
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
         let ids: Vec<&str> = models.items.iter().map(|m| m.model_id.as_str()).collect();
         assert_eq!(ids, ["gpt-a", "gpt-b"], "a hidden model is not offered");
-        let first = &models.items[0];
-        assert_eq!(first.name, "GPT-A");
-        let efforts = first.efforts.as_ref().expect("efforts");
-        let effort_ids: Vec<&str> = efforts.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(effort_ids, ["low", "xhigh"]);
-        assert_eq!(efforts[0].default, Some(true), "the cache's default effort");
-        assert_eq!(efforts[1].default, Some(false));
+        assert_eq!(models.default_id, None, "the draft leaves the model unset");
+        let efforts = models.items[0].efforts.as_ref().expect("efforts");
+        assert_eq!(efforts[0].label, "Low");
+        assert_eq!(efforts[1].label, "Extra high");
     }
 
     #[test]
-    fn a_missing_cache_leaves_models_absent_and_modes_present() {
-        let home = crate::test_dirs::test_temp_dir("devboule-codex-vocabulary-missing");
-        std::fs::create_dir_all(&home).expect("codex home");
-        let (models, modes) = codex_axes_in(&home);
+    fn a_stale_cache_is_not_offered() {
+        let home = home_with_cache("stale", CACHE);
+        let file = std::fs::File::options()
+            .write(true)
+            .open(home.join("models_cache.json"))
+            .expect("cache file");
+        let month_old = SystemTime::now() - CACHE_MAX_AGE * 2;
+        file.set_modified(month_old).expect("age the cache");
+        let (models, _) = models_and_modes(None, &home, SystemTime::now());
+
+        assert_eq!(models.state, VocabularyState::Absent);
+    }
+
+    #[test]
+    fn no_answer_and_no_cache_leave_models_absent_and_modes_present() {
+        let (models, modes) = models_and_modes(None, &empty_home("missing"), SystemTime::now());
 
         assert_eq!(models.state, VocabularyState::Absent);
         assert_eq!(modes.state, VocabularyState::Present);
@@ -176,7 +232,18 @@ mod tests {
     #[test]
     fn a_cache_that_is_not_the_expected_shape_leaves_models_absent() {
         let home = home_with_cache("shape", r#"{"models": "not a list"}"#);
-        let (models, _) = codex_axes_in(&home);
+        let (models, _) = models_and_modes(None, &home, SystemTime::now());
+
+        assert_eq!(models.state, VocabularyState::Absent);
+    }
+
+    #[test]
+    fn a_probe_with_no_rows_leaves_models_absent() {
+        let probe = CodexCatalogRead {
+            rows: Vec::new(),
+            config: Value::Null,
+        };
+        let (models, _) = models_and_modes(Some(probe), Path::new("unused"), SystemTime::now());
 
         assert_eq!(models.state, VocabularyState::Absent);
     }

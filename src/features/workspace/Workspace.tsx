@@ -1825,7 +1825,12 @@ export function Workspace({
     void providerVocabularyGet(draftProviderPick, "", false).then(
       (vocabulary) => {
         if (current) {
-          setDraftChoices({ models: vocabulary.models.items, modes: vocabulary.modes.items });
+          setDraftChoices({
+            models: vocabulary.models.items,
+            modes: vocabulary.modes.items,
+            defaultModelId: vocabulary.models.defaultId ?? null,
+            defaultModeId: vocabulary.modes.defaultId ?? null,
+          });
         }
       },
       () => {

@@ -728,6 +728,9 @@ impl PiProvider {
             super::pi_client::available_mode_views(),
         )
         .expect("a present modes axis always carries its origin")
+        .with_default_id(crate::provider_vocabulary::first_mode_id(
+            &super::pi_client::available_mode_views(),
+        ))
     }
 
     /// Start the catalog read when this caller won the claim. One process

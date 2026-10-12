@@ -287,7 +287,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Protocol 39 adds `BrowserCaller.local_ports`, the local ports the daemon
 /// allowed an agent to open. The host enforces it, so an older host that ignores
 /// the field would not enforce the allowance; the dialect moves.
-pub const PROTOCOL_VERSION: u32 = 39;
+///
+/// Protocol 40 adds `defaultId` to the models and modes vocabulary axes: the
+/// model or mode a session starts on when the person picked none. An older
+/// reader ignores it and offers no default. The dialect moves.
+pub const PROTOCOL_VERSION: u32 = 40;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

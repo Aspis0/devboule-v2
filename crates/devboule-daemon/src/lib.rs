@@ -71,6 +71,8 @@ mod codex_compaction;
 #[cfg(feature = "server")]
 mod codex_goals;
 #[cfg(feature = "server")]
+mod codex_model_catalog;
+#[cfg(feature = "server")]
 mod codex_plan_marks;
 #[cfg(feature = "server")]
 mod codex_prompt_expand;

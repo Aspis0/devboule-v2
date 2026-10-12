@@ -1607,7 +1607,7 @@ fn perform_handshake(
     })
 }
 
-fn initialize_params() -> Value {
+pub(super) fn initialize_params() -> Value {
     // A non-originating identity: Codex keeps its own CLI identity in
     // provider usage logs instead of showing the daemon as the originator.
     serde_json::json!({

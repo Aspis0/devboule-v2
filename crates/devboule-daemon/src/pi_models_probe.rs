@@ -220,12 +220,14 @@ pub(crate) fn pi_models_axis(
         return VocabularyModels::new(VocabularyState::None, None, Vec::new())
             .expect("a none models axis carries no origin");
     }
+    let default_id = models.first().map(|model| model.model_id.clone());
     VocabularyModels::new(
         VocabularyState::Present,
         Some(VocabularyOrigin::Provider),
         models,
     )
     .expect("a present models axis always carries its origin and items")
+    .with_default_id(default_id)
 }
 
 /// Run one pi read on the calling thread and settle the claim with it. The
