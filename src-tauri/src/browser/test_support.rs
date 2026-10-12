@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use super::ax::AxTree;
 use super::cdp::{Call, CdpError, Page};
-use super::registry::{BrowserRegistry, OwnedTab, TabInfo};
+use super::registry::{AgentDrive, BrowserRegistry, OwnedTab, TabInfo};
 use super::tab::BrowserViewState;
 
 /// A page that answers from a table, and remembers what it was asked.
@@ -147,6 +147,11 @@ pub fn parked_tab(id: &str) -> TabInfo {
 
 /// A registry holding one tab, in a workspace, at an address.
 pub fn registry_with(id: &str) -> BrowserRegistry {
+    registry_with_drive(id, Arc::default())
+}
+
+/// As [`registry_with`], with the tab driven by `drive`.
+pub fn registry_with_drive(id: &str, drive: Arc<AgentDrive>) -> BrowserRegistry {
     let registry = BrowserRegistry::new();
     registry
         .claim(
@@ -163,7 +168,7 @@ pub fn registry_with(id: &str) -> BrowserRegistry {
                     ..BrowserViewState::default()
                 })),
                 sink: Arc::new(Mutex::new(tauri::ipc::Channel::new(|_| Ok(())))),
-                drive: Arc::default(),
+                drive,
                 guard: Arc::default(),
             },
         )

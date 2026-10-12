@@ -16,12 +16,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 
-use super::super::cdp::{Bounded, Page, WebviewPage};
+use super::super::cdp::Page;
 use super::super::deadline::Deadline;
-use super::super::destination::Audience;
 use super::super::registry::{AgentDrive, BrowserRegistry, TabInfo};
 use super::super::scrub;
 use super::super::tab;
+use super::super::tab_guard;
 use super::super::url::accept;
 use super::{act, host_error, refused, tab_not_found};
 
@@ -125,16 +125,22 @@ async fn new_tab(
 ) -> Result<Value, BrowserError> {
     let asked: NewTabArgs = super::args_of(args)?;
     let workspace = workspace_of(caller)?;
-    if let Some(existing) = open_at(registry, &workspace, &asked.url) {
-        let page = WebviewPage::new(app, &existing.label);
-        reload_tab(&existing, &Bounded::new(&page, deadline), deadline).await?;
-        return Ok(json!({
-            "browserId": existing.browser_id,
-            "url": existing.url,
-            "title": existing.title,
-            "reused": true,
-            "tabs": tab_list(registry, &workspace),
-        }));
+    // A new tab opens in the background and never changes the person's view
+    // (refs/paseo-src/packages/server/src/server/browser-tools/tools.ts:95-103),
+    // so the one tab taken back is handed over as it is: not shown, not reloaded.
+    if let Some(found) = reusable_at(registry, &workspace, &asked.url, &caller.caller_session_id) {
+        let _held = tab_guard::hold(registry, &found.browser_id, deadline).await?;
+        // The pane may have shown the tab while the lock was waited for.
+        if let Some(tab) = reusable_at(registry, &workspace, &asked.url, &caller.caller_session_id)
+        {
+            return Ok(json!({
+                "browserId": tab.browser_id,
+                "url": tab.url,
+                "title": tab.title,
+                "reused": true,
+                "tabs": tab_list(registry, &workspace),
+            }));
+        }
     }
     let id = mint_id()?;
     // The page reports into a channel no JavaScript side holds yet: the strip
@@ -148,7 +154,10 @@ async fn new_tab(
         &workspace,
         Channel::new(|_| Ok(())),
         deadline,
-        Arc::new(AgentDrive::opened_by_agent(&caller.local_ports)),
+        Arc::new(AgentDrive::opened_by_agent(
+            &caller.local_ports,
+            &caller.caller_session_id,
+        )),
     )
     .await
     .map_err(|error| host_error(format!("This address could not be opened: {error}")))?;
@@ -173,30 +182,25 @@ async fn new_tab(
     }))
 }
 
-/// The agent's own tab of this workspace already open at the address asked for,
-/// if there is one. A tab the agent has not opened or acted on is the person's,
-/// and is never reloaded for an agent. The asked text is parsed the way opening
-/// it would parse it, so an address the app would refuse finds nothing.
-fn open_at(registry: &BrowserRegistry, workspace: &str, raw: &str) -> Option<TabInfo> {
+/// The tab this session opened and left in the background, at the address asked
+/// for, if there is one. A tab on screen is the person's to look at, and a tab
+/// another session opened is that session's, so neither is taken back. The asked
+/// text is parsed the way opening it would parse it, so an address the app would
+/// refuse finds nothing.
+fn reusable_at(
+    registry: &BrowserRegistry,
+    workspace: &str,
+    raw: &str,
+    session: &str,
+) -> Option<TabInfo> {
     let target = accept(raw).ok()?.to_string();
     registry.tabs_of(workspace).into_iter().find(|tab| {
         tab.url == target
+            && tab.live.parked()
             && registry
                 .drive_of(&tab.browser_id)
-                .is_some_and(|drive| drive.audience() == Audience::Agent)
+                .is_some_and(|drive| drive.created_by() == Some(session))
     })
-}
-
-/// Reload a tab's page and wait for it to settle, so what is read next is the
-/// page as it is now and not the copy a retry would have shown.
-async fn reload_tab(
-    tab: &TabInfo,
-    page: &dyn Page,
-    deadline: Deadline,
-) -> Result<(), BrowserError> {
-    act::call(page, "Page.reload", json!({})).await?;
-    act::settled(tab, page, deadline).await?;
-    Ok(())
 }
 
 /// The workspace's tabs as an agent sees them: what `list_tabs` answers, and what

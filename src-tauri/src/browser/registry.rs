@@ -109,17 +109,26 @@ pub struct AgentDrive {
     /// The local ports the daemon last allowed the agent that drives this tab.
     /// A navigation the page makes later is judged against the same list.
     local_ports: Mutex<Vec<u16>>,
+    /// The calling session that opened this tab, when an agent opened it. Only
+    /// that session may take the tab back from `new_tab`.
+    created_by: Option<String>,
 }
 
 impl AgentDrive {
     /// The drive of a tab an agent creates: tainted from the first byte it
     /// loads, so the page's own redirects are already the agent's to police.
-    pub fn opened_by_agent(local_ports: &[u16]) -> Self {
+    pub fn opened_by_agent(local_ports: &[u16], session: &str) -> Self {
         Self {
             tainted: AtomicBool::new(true),
             local_ports: Mutex::new(local_ports.to_vec()),
+            created_by: Some(session.to_owned()),
             ..Self::default()
         }
+    }
+
+    /// The session that opened this tab, if an agent did.
+    pub fn created_by(&self) -> Option<&str> {
+        self.created_by.as_deref()
     }
 
     /// The local ports the daemon allowed the agent on its latest command.
