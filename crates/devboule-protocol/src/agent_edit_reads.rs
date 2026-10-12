@@ -34,6 +34,9 @@ pub struct WorkspaceAgentEditFile {
     /// When that newest edit was recorded, in epoch milliseconds.
     pub last_at_ms: u64,
     pub calls: Vec<AgentCallRef>,
+    /// Some edit of this file kept less text than it was sent, or the calls
+    /// past the per-file cap were not listed.
+    pub truncated: bool,
 }
 
 /// The files this workspace's agents changed, newest edits within the last

@@ -85,9 +85,10 @@ fn read(
     }
 }
 
-/// The rows of every selected edit, in order. An edit with rows is labelled
-/// `Edit n of m` when more than one of them has any; an edit with no text
-/// contributes nothing.
+/// The rows of every selected edit, in order, within the reply's byte budget.
+/// An edit with rows is labelled `Edit n of m` when more than one of them has
+/// any; an edit with no text contributes nothing. Rows past the budget are
+/// dropped and the reply says so.
 fn lines_for(records: &[&AgentEditRecord]) -> (Vec<WorkspaceGitDiffLine>, bool) {
     let built: Vec<(Vec<WorkspaceGitDiffLine>, bool)> = records
         .iter()
@@ -95,24 +96,36 @@ fn lines_for(records: &[&AgentEditRecord]) -> (Vec<WorkspaceGitDiffLine>, bool) 
         .collect();
     let contributing = built.iter().filter(|(rows, _)| !rows.is_empty()).count();
     let mut lines = Vec::new();
+    // The array's brackets; each row adds its own comma below.
+    let mut bytes = 2usize;
     let mut truncated = false;
     let mut seen = 0usize;
-    for (rows, cut) in built {
+    'edits: for (rows, cut) in built {
         truncated |= cut;
         if rows.is_empty() {
             continue;
         }
         seen += 1;
-        if contributing > 1 {
-            lines.push(WorkspaceGitDiffLine {
-                kind: WorkspaceGitDiffLineKind::Header,
-                text: format!("Edit {seen} of {contributing}"),
-            });
+        let header = (contributing > 1).then(|| WorkspaceGitDiffLine {
+            kind: WorkspaceGitDiffLineKind::Header,
+            text: format!("Edit {seen} of {contributing}"),
+        });
+        for row in header.into_iter().chain(rows) {
+            let size = serde_json::to_vec(&row).map_or(usize::MAX, |bytes| bytes.len() + 1);
+            if bytes.saturating_add(size) > MAX_DIFF_REPLY_BYTES {
+                truncated = true;
+                break 'edits;
+            }
+            bytes += size;
+            lines.push(row);
         }
-        lines.extend(rows);
     }
     (lines, truncated)
 }
+
+/// The encoded bytes one diff reply's rows may take, well under the 1 MiB frame
+/// cap: several calls on one file can each carry a full text budget.
+const MAX_DIFF_REPLY_BYTES: usize = 512 * 1024;
 
 fn record_lines(record: &AgentEditRecord) -> Vec<WorkspaceGitDiffLine> {
     match &record.text {

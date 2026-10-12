@@ -1492,6 +1492,8 @@ export interface WorkspaceAgentEditFile {
   /** When that newest edit was recorded, in epoch milliseconds. */
   lastAtMs: number;
   calls: AgentCallRef[];
+  /** Some edit kept less text than was sent, or calls past the per-file cap were not listed. */
+  truncated: boolean;
 }
 
 /** The files this workspace's agents changed, one row per path, sorted by path. */

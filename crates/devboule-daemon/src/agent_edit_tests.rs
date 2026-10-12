@@ -1,10 +1,13 @@
 //! The edit readers and the per-call budget: one provider frame in, one edit
 //! list out.
 
-use devboule_protocol::{AgentEditKind, AgentEditText};
+use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit};
 use serde_json::json;
 
-use super::{acp_diff_edits, claude_tool_edits, codex_file_change_edits, MAX_EDIT_CALL_BYTES};
+use super::{
+    acp_diff_edits, claude_tool_edits, codex_file_change_edits, MAX_EDITS_PER_CALL,
+    MAX_EDIT_CALL_BYTES,
+};
 
 #[test]
 fn claude_edit_and_multiedit_keep_their_texts() {
@@ -152,8 +155,9 @@ fn a_text_over_the_call_budget_is_cut_and_flagged() {
     let Some(AgentEditText::Replace { new, .. }) = &edits[0].text else {
         panic!("expected a replace, got {:?}", edits[0].text);
     };
-    assert_eq!(new.len(), MAX_EDIT_CALL_BYTES);
+    assert!(new.len() < MAX_EDIT_CALL_BYTES);
     assert!(edits[0].truncated);
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
 }
 
 #[test]
@@ -168,9 +172,8 @@ fn control_bytes_are_budgeted_by_their_json_size() {
     let Some(AgentEditText::Replace { new, .. }) = &edits[0].text else {
         panic!("expected a replace, got {:?}", edits[0].text);
     };
-    assert_eq!(new.chars().count(), MAX_EDIT_CALL_BYTES / 6);
-    let encoded = serde_json::to_string(new).expect("encode");
-    assert!(encoded.len() <= MAX_EDIT_CALL_BYTES + 2);
+    assert!(new.chars().count() <= MAX_EDIT_CALL_BYTES / 6);
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
     assert!(edits[0].truncated);
 }
 
@@ -186,8 +189,9 @@ fn a_multibyte_cut_lands_on_a_character_boundary() {
     let Some(AgentEditText::Replace { new, .. }) = &edits[0].text else {
         panic!("expected a replace, got {:?}", edits[0].text);
     };
-    assert_eq!(new.len(), MAX_EDIT_CALL_BYTES);
+    assert!(new.len() < MAX_EDIT_CALL_BYTES);
     assert!(edits[0].truncated);
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
 }
 
 #[test]
@@ -207,22 +211,15 @@ fn the_budget_is_shared_by_every_edit_of_the_call() {
         None,
     )
     .expect("multiedit");
-    assert_eq!(edits.len(), 3, "every edit still names the file");
     assert!(!edits[0].truncated);
     assert!(edits[1].truncated);
-    let Some(AgentEditText::Replace { new, .. }) = &edits[1].text else {
-        panic!("expected a replace, got {:?}", edits[1].text);
-    };
-    assert_eq!(new.len(), MAX_EDIT_CALL_BYTES - 200 * 1024 - "later".len());
-    assert!(edits[2].truncated);
-    assert_eq!(
-        edits[2].text,
-        Some(AgentEditText::Replace {
-            old: String::new(),
-            new: String::new(),
-        }),
-        "an edit past the budget keeps no text"
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
+    assert_eq!(edits.len(), 2, "the third edit's path no longer fits");
+    assert!(
+        edits[1].truncated,
+        "the last kept edit says the call changed more"
     );
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
 }
 
 #[test]
@@ -312,4 +309,48 @@ fn counts_come_from_the_whole_text_not_the_cut_one() {
     .expect("write");
     assert!(edits[0].truncated);
     assert_eq!(edits[0].added, 60_000);
+}
+
+fn encoded_total(edits: &[AgentToolEdit]) -> usize {
+    serde_json::to_vec(edits).expect("encode").len()
+}
+
+#[test]
+fn a_call_keeps_at_most_64_edits_and_flags_the_last_one() {
+    let entries: Vec<serde_json::Value> = (0..100)
+        .map(|index| {
+            json!({"old_string": format!("a{index}
+"), "new_string": format!("b{index}
+")})
+        })
+        .collect();
+    let edits = claude_tool_edits(
+        "MultiEdit",
+        &json!({"file_path": "src/lib.rs", "edits": entries}),
+        None,
+    )
+    .expect("multiedit");
+    assert_eq!(edits.len(), MAX_EDITS_PER_CALL);
+    assert!(edits.last().is_some_and(|edit| edit.truncated));
+    assert!(edits[..edits.len() - 1].iter().all(|edit| !edit.truncated));
+}
+
+#[test]
+fn the_budget_counts_each_paths_bytes_not_only_the_text() {
+    let long_path = format!("deep/{}/file.rs", "d".repeat(5_000));
+    let entries: Vec<serde_json::Value> = (0..60)
+        .map(|index| {
+            json!({"old_string": "", "new_string": format!("{index}
+")})
+        })
+        .collect();
+    let edits = claude_tool_edits(
+        "MultiEdit",
+        &json!({"file_path": long_path, "edits": entries}),
+        None,
+    )
+    .expect("multiedit");
+    assert!(edits.len() < 60, "the paths alone overflow the budget");
+    assert!(edits.last().is_some_and(|edit| edit.truncated));
+    assert!(encoded_total(&edits) <= MAX_EDIT_CALL_BYTES);
 }

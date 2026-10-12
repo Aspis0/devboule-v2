@@ -3,7 +3,7 @@
 
 use devboule_protocol::{AgentEditText, WorkspaceGitDiffLine, WorkspaceGitDiffLineKind};
 
-use super::lines_for;
+use super::{lines_for, MAX_DIFF_REPLY_BYTES};
 use crate::agent_edit_records::AgentEditRecord;
 
 fn record(text: Option<AgentEditText>, truncated: bool) -> AgentEditRecord {
@@ -95,4 +95,14 @@ fn an_edit_with_no_text_contributes_no_rows() {
     let (lines, truncated) = lines_for(&[&empty]);
     assert!(lines.is_empty());
     assert!(!truncated);
+}
+
+#[test]
+fn the_diff_reply_stops_at_its_byte_budget() {
+    let body = "+abcdefghij\n".repeat(30_000);
+    let record = record(Some(AgentEditText::Diff { text: body }), false);
+    let (lines, truncated) = lines_for(&[&record]);
+    assert!(truncated);
+    let encoded = serde_json::to_vec(&lines).expect("encode");
+    assert!(encoded.len() <= MAX_DIFF_REPLY_BYTES);
 }

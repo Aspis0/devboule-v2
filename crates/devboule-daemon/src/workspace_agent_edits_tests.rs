@@ -1,7 +1,7 @@
 //! The per-workspace fold: one row per path, the sums of what each call
 //! recorded, and the newest edit's agent.
 
-use super::{fold, MAX_FILES};
+use super::{fold, MAX_CALLS_PER_FILE, MAX_FILES, MAX_REPLY_BYTES};
 use crate::agent_edit_records::AgentEditRecord;
 
 fn record(
@@ -88,4 +88,28 @@ fn two_spellings_of_one_file_on_windows_are_one_row() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "src/lib.rs");
     assert_eq!((files[0].additions, files[0].deletions), (2, 1));
+}
+
+#[test]
+fn a_file_past_the_call_cap_lists_its_first_calls_and_flags_its_row() {
+    let records: Vec<AgentEditRecord> = (0..=MAX_CALLS_PER_FILE)
+        .map(|index| record("src/lib.rs", "s.a", &format!("call-{index}"), 100, 1, 0))
+        .collect();
+    let (files, totals, _) = fold(&records);
+    assert_eq!(files[0].calls.len(), MAX_CALLS_PER_FILE);
+    assert!(files[0].truncated);
+    assert_eq!(totals.additions, MAX_CALLS_PER_FILE as u64 + 1);
+}
+
+#[test]
+fn the_reply_stops_adding_rows_past_its_byte_budget() {
+    let long = "p".repeat(4_000);
+    let records: Vec<AgentEditRecord> = (0..MAX_FILES)
+        .map(|index| record(&format!("{long}{index:03}"), "s.a", "call-1", 100, 1, 0))
+        .collect();
+    let (files, _, capped) = fold(&records);
+    assert!(capped);
+    assert!(files.len() < MAX_FILES);
+    let encoded = serde_json::to_vec(&files).expect("encode");
+    assert!(encoded.len() <= MAX_REPLY_BYTES);
 }

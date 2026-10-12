@@ -37,6 +37,7 @@ fn an_agent_edits_reply_spells_its_fields_in_camel_case() {
                 session_id: "s.a".to_string(),
                 tool_call_id: "toolu_1".to_string(),
             }],
+            truncated: false,
         }],
         totals: WorkspaceGitTotals {
             additions: 3,

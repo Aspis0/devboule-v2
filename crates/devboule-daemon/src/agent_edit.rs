@@ -14,8 +14,8 @@ use serde_json::Value;
 use crate::line_diff::{changed_counts, replace_lines, unified_lines};
 use crate::tool_paths::relativize_tool_path;
 
-/// How much text one tool call keeps across all of its edits, counted as the
-/// bytes that text takes once JSON-encoded.
+/// How much one tool call keeps across all of its edits, counted as the JSON
+/// they encode to: paths, structure and text together.
 pub(crate) const MAX_EDIT_CALL_BYTES: usize = 256 * 1024;
 
 fn text_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -105,7 +105,7 @@ pub(crate) fn claude_tool_edits(
         )],
         _ => return None,
     };
-    (!edits.is_empty()).then(|| capped(edits))
+    capped(edits)
 }
 
 /// Codex's `fileChange` item: one entry per changed file, each with its own
@@ -145,7 +145,7 @@ pub(crate) fn codex_file_change_edits(
             })
         })
         .collect();
-    (!edits.is_empty()).then(|| capped(edits))
+    capped(edits)
 }
 
 /// The `diff` elements of an ACP tool call's `content`. The element carries
@@ -177,37 +177,82 @@ pub(crate) fn acp_diff_edits(
             ))
         })
         .collect();
-    (!edits.is_empty()).then(|| capped(edits))
+    capped(edits)
 }
 
-/// Cut the texts to the call's budget, in the order the provider sent them.
-/// The first text that overflows keeps what fits and is flagged; the ones
-/// after it keep nothing, but every edit still names its path and kind.
-fn capped(edits: Vec<AgentToolEdit>) -> Vec<AgentToolEdit> {
-    let mut remaining = MAX_EDIT_CALL_BYTES;
-    edits
-        .into_iter()
-        .map(|mut edit| {
-            let (text, cut) = match edit.text.take() {
-                None => (None, false),
-                Some(AgentEditText::Replace { old, new }) => {
-                    let (old, old_cut) = keep(&mut remaining, old);
-                    let (new, new_cut) = keep(&mut remaining, new);
-                    (
-                        Some(AgentEditText::Replace { old, new }),
-                        old_cut || new_cut,
-                    )
-                }
-                Some(AgentEditText::Diff { text }) => {
-                    let (text, cut) = keep(&mut remaining, text);
-                    (Some(AgentEditText::Diff { text }), cut)
-                }
-            };
-            edit.text = text;
-            edit.truncated = cut;
-            edit
-        })
-        .collect()
+/// Most edits one call keeps. A call that ran more keeps these and flags the
+/// last one, so the list still says the call changed more files.
+pub(crate) const MAX_EDITS_PER_CALL: usize = 64;
+
+/// The bytes a `"text":` key takes inside an edit, and the separating comma.
+const TEXT_KEY_BYTES: usize = "\"text\":".len() + 1;
+/// The brackets of the edits array, and the comma each edit may add to it.
+const ARRAY_BYTES: usize = 2;
+const COMMA_BYTES: usize = 1;
+
+/// Cut the call's edits to its budget, in the order the provider sent them. The
+/// budget is the JSON the edits encode to: an edit's path, kind, counts and
+/// structure come off it before its text does. An edit the budget cannot hold
+/// is dropped and the last kept edit is flagged truncated; `None` when no edit
+/// fits at all.
+fn capped(edits: Vec<AgentToolEdit>) -> Option<Vec<AgentToolEdit>> {
+    let total = edits.len();
+    let mut remaining = MAX_EDIT_CALL_BYTES - ARRAY_BYTES;
+    let mut kept: Vec<AgentToolEdit> = Vec::new();
+    for mut edit in edits.into_iter().take(MAX_EDITS_PER_CALL) {
+        let text = edit.text.take();
+        let frame = frame_len(&edit)
+            .saturating_add(text.as_ref().map_or(0, text_frame_len))
+            .saturating_add(COMMA_BYTES);
+        if frame > remaining {
+            break;
+        }
+        remaining -= frame;
+        let (text, cut) = match text {
+            None => (None, false),
+            Some(AgentEditText::Replace { old, new }) => {
+                let (old, old_cut) = keep(&mut remaining, old);
+                let (new, new_cut) = keep(&mut remaining, new);
+                (
+                    Some(AgentEditText::Replace { old, new }),
+                    old_cut || new_cut,
+                )
+            }
+            Some(AgentEditText::Diff { text }) => {
+                let (text, cut) = keep(&mut remaining, text);
+                (Some(AgentEditText::Diff { text }), cut)
+            }
+        };
+        edit.text = text;
+        edit.truncated = cut;
+        kept.push(edit);
+    }
+    if kept.len() < total {
+        if let Some(last) = kept.last_mut() {
+            last.truncated = true;
+        }
+    }
+    (!kept.is_empty()).then_some(kept)
+}
+
+/// The bytes an edit takes without its text: path, kind, counts and structure.
+fn frame_len(edit: &AgentToolEdit) -> usize {
+    serde_json::to_vec(edit).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The bytes a text takes inside its edit, key included, with both strings
+/// empty: their content is budgeted by `keep`.
+fn text_frame_len(text: &AgentEditText) -> usize {
+    let empty = match text {
+        AgentEditText::Replace { .. } => AgentEditText::Replace {
+            old: String::new(),
+            new: String::new(),
+        },
+        AgentEditText::Diff { .. } => AgentEditText::Diff {
+            text: String::new(),
+        },
+    };
+    serde_json::to_vec(&empty).map_or(usize::MAX, |bytes| bytes.len() + TEXT_KEY_BYTES)
 }
 
 /// One text under the call's remaining budget: what it keeps, and whether it

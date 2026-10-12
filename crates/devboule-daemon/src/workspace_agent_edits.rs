@@ -20,6 +20,14 @@ use crate::ServerState;
 /// says so.
 pub(crate) const MAX_FILES: usize = 200;
 
+/// Most calls one file row names. A file edited by more calls keeps these and
+/// its row says it was cut.
+pub(crate) const MAX_CALLS_PER_FILE: usize = 200;
+
+/// The encoded bytes the rows of one reply may take: well under the 1 MiB frame
+/// cap, so a busy folder cannot make the reply unencodable.
+pub(crate) const MAX_REPLY_BYTES: usize = 512 * 1024;
+
 /// Resolve `workspace_id` through the registry, never a request field, so an
 /// unknown workspace is refused the way every other workspace read refuses it.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str) -> DaemonMessage {
@@ -62,9 +70,11 @@ fn fold(records: &[AgentEditRecord]) -> (Vec<WorkspaceAgentEditFile>, WorkspaceG
                     last_agent: None,
                     last_at_ms: 0,
                     calls: Vec::new(),
+                    truncated: false,
                 });
         file.additions += record.added;
         file.deletions += record.removed;
+        file.truncated |= record.truncated;
         // The records arrive oldest first, so the last one to pass here is
         // the newest edit on the file.
         if record.at_ms >= file.last_at_ms {
@@ -76,13 +86,28 @@ fn fold(records: &[AgentEditRecord]) -> (Vec<WorkspaceAgentEditFile>, WorkspaceG
             session_id: record.session_id.clone(),
             tool_call_id: record.tool_call_id.clone(),
         };
-        if !file.calls.contains(&call) {
+        if file.calls.contains(&call) {
+            continue;
+        }
+        if file.calls.len() < MAX_CALLS_PER_FILE {
             file.calls.push(call);
+        } else {
+            file.truncated = true;
         }
     }
-    let mut files: Vec<WorkspaceAgentEditFile> = by_path.into_values().collect();
-    let capped = files.len() > MAX_FILES;
-    files.truncate(MAX_FILES);
+    let mut files: Vec<WorkspaceAgentEditFile> = Vec::new();
+    // The array's brackets; each row adds its own comma below.
+    let mut reply_bytes = 2usize;
+    let mut capped = false;
+    for file in by_path.into_values() {
+        let row_bytes = serde_json::to_vec(&file).map_or(usize::MAX, |bytes| bytes.len() + 1);
+        if files.len() == MAX_FILES || reply_bytes.saturating_add(row_bytes) > MAX_REPLY_BYTES {
+            capped = true;
+            break;
+        }
+        reply_bytes += row_bytes;
+        files.push(file);
+    }
     let mut totals = WorkspaceGitTotals::default();
     for file in &files {
         totals.additions += file.additions;
