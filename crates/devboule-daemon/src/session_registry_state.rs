@@ -810,8 +810,6 @@ pub(crate) struct AgentCreator {
     pub(crate) owner: OwnerId,
     pub(crate) origin: SessionOrigin,
     pub(crate) workspace_id: Option<String>,
-    pub(crate) display_name: Option<String>,
-    pub(crate) title: String,
     /// The context this creator belongs to: its own id, or the context of the
     /// session that created *it*. A child inherits this — that inheritance is
     /// the whole rule, and it is what makes a human's session and every
@@ -858,15 +856,6 @@ impl AgentCreator {
             }
             SessionOriginKind::Unknown => false,
         }
-    }
-}
-
-impl AgentCreator {
-    /// The name to tell the human a creation came from: the creator's display
-    /// name when it has one, otherwise its title — the same fallback the app
-    /// renders, so the sentence names a row the human can see.
-    pub(crate) fn name(&self) -> &str {
-        self.display_name.as_deref().unwrap_or(&self.title)
     }
 }
 

@@ -381,10 +381,8 @@ fn run_creation(
         let self_answer_note = self_answer_note(state, caller);
         let card = creation_card(
             &creator_id,
-            creator.name(),
             &request,
             &profile,
-            &labels,
             &ticket,
             self_answer_note.as_deref(),
         );

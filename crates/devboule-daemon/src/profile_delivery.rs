@@ -89,16 +89,6 @@ impl DeliveredFeature {
         }
     }
 
-    /// What the card prints for this value: a toggle names `on` or `off`, a
-    /// select names the option id. One spelling, so the card and the delivery
-    /// cannot describe one value two ways.
-    pub(crate) fn printed(&self) -> String {
-        match self {
-            Self::Toggle { on, .. } => on.to_string(),
-            Self::Choice { value, .. } => value.clone(),
-        }
-    }
-
     /// The stored value, for a client that must check it against what the
     /// provider declares rather than merely forward it. An owned `Value` and
     /// not a reference: the toggle arm would otherwise need a static to point

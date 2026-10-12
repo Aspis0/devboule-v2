@@ -1896,8 +1896,6 @@ impl super::SessionRegistry {
             owner: entry.owner().clone(),
             origin: live.metadata.origin.clone(),
             workspace_id: live.metadata.workspace_id.clone(),
-            display_name: live.metadata.display_name.clone(),
-            title: live.metadata.title.clone(),
             // The context this creator belongs to, which is what its child
             // inherits (`create-from-profile`): one context for a creator and
             // everything it commissions, at any depth. Read from the creator's

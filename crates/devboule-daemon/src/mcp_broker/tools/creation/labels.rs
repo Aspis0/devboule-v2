@@ -18,14 +18,12 @@ const MAX_AGENT_LABELS: usize = 32;
 const MAX_LABEL_KEY_BYTES: usize = 64;
 const MAX_LABEL_VALUE_BYTES: usize = 256;
 
-/// True when a label's text would break out of the line it is written on.
+/// True when a label's text would break out of the line it is shown on.
 ///
-/// Label keys and values are interpolated inline in the creation card the
-/// human approves (`Labels: key=value, …`), with no fence of their own, so
-/// every line terminator the spawn-prompt fence splits on — LF, CR, U+2028,
-/// U+2029, U+0085, VT, FF — and every other C0/C1 control character would
-/// put a line of the caller's own writing among the daemon's metadata. The
-/// prompt gets a marked block; a label gets refused instead.
+/// Label keys and values are caller text with no fence of their own, so every
+/// line terminator the spawn-prompt fence splits on — LF, CR, U+2028, U+2029,
+/// U+0085, VT, FF — and every other C0/C1 control character is refused, not
+/// stored, because a label may be shown on a line of its own.
 fn label_carries_a_break(text: &str) -> bool {
     text.chars()
         .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))

@@ -21,8 +21,6 @@ fn a_peer_creator_without_create_sessions_is_refused_before_anything_is_created(
         owner: OwnerId::new("alex", "app").expect("owner"),
         origin,
         workspace_id: None,
-        display_name: None,
-        title: "Agent".to_string(),
         // The context a child of this creator would inherit (its own id,
         // since this fixture is a root session).
         context_id: "s.parent".to_string(),

@@ -5107,19 +5107,12 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "stub-model-new",
         "the child was started on the profile's model, not the provider's default: {set_model:?}"
     );
-    // And the card named that model and that mode — the human approved what
-    // the child was delivered, by construction.
+    // And the card named that model: the human approved the model the child
+    // was delivered, by construction.
     let description = creation_card_description(&events);
     assert!(
-        description.contains("model stub-model-new, mode default"),
-        "the card names the delivered model and mode: {description}"
-    );
-    // The stub's `default` mode is a vocabulary the provider authored, so the
-    // card asserts neither direction: it says cannot-establish, which is
-    // honest, and never a plain "No".
-    assert!(
-        description.contains("auto accept: Cannot establish"),
-        "a provider-authored mode is not asserted either way: {description}"
+        description.contains("stub-model-new"),
+        "the card names the delivered model: {description}"
     );
 
     wait_for(&events, Duration::from_secs(60), |events| {
@@ -5687,11 +5680,6 @@ fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
     let creator = test.creator_session();
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
-    let description = creation_card_description(&events);
-    assert!(
-        description.contains("auto accept: Yes (mode auto_accept)"),
-        "the card names the answering mode: {description}"
-    );
     let child = test.child_of(&creator.id);
     assert_eq!(
         child.unattended,
@@ -5704,63 +5692,6 @@ fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
         "auto_accept",
         "the child was delivered the mode the tick demands: {switched:?}"
     );
-}
-
-/// A feature key the agent never declared is named on the card **as what it
-/// is**: a value the daemon will set if the agent declares it, and a creation
-/// the daemon refuses rather than starts without it. This is the card's third
-/// rule, rewritten by the feature surface — the old sentence ("stored, delivered
-/// never, promised never") described a daemon that delivered no feature at all,
-/// and that daemon is gone. The wording is part of the guarantee now, so the
-/// test pins both halves: what the human is told, and that the creation still
-/// succeeds for a key the agent does not need to declare.
-#[test]
-fn a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card() {
-    let _lock = lock_tests();
-    let mut profiles = worker_profile_document();
-    profiles["profiles"][0]["features"] = serde_json::json!({"sandbox": "gVisor"});
-    let test = Slice5Test::with_profiles(
-        &serde_json::json!({
-            "title": "feature keeper",
-            "profile": "worker",
-            "initialPrompt": "report your result",
-        }),
-        &profiles,
-        &[],
-    );
-    let creator = test.creator_session();
-    let events = test.attach(&creator);
-    test.allow_creation_card(&creator.id, &events);
-    let description = creation_card_description(&events);
-    // Feature values render as JSON literals, exactly as the store holds them.
-    assert!(
-        description.contains("sandbox=gVisor"),
-        "the card names the stored feature with its value: {description}"
-    );
-    // And it says what will happen to it, because no read has answered this
-    // provider: the child's own handshake is the authority, and a refusal is
-    // the answer rather than a silently missing value.
-    assert!(
-        description.contains("refuses the creation rather than starting without it"),
-        "the card states the condition: {description}"
-    );
-    assert!(
-        !description.contains("not interpreted") && !description.contains("never delivered"),
-        "the old promise-nothing sentence is gone: {description}"
-    );
-    // An uninterpreted key is not a tick — and the provider-authored mode is
-    // not asserted either way: the line says cannot-establish.
-    assert!(
-        description.contains("auto accept: Cannot establish"),
-        "a stored value is not a tick, and the mode is not judged by name: {description}"
-    );
-}
-
-// Retain the main-branch test name across the behavior change while exercising
-// the current card contract in the shared test body above.
-#[test]
-fn an_unknown_feature_key_is_named_as_uninterpreted_on_the_card() {
-    a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card();
 }
 
 /// `S5` block 2's overlay, measured on the child's *own* broker connection:

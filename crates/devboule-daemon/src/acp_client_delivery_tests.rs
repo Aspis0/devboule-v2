@@ -226,14 +226,4 @@ fn the_delivery_reads_each_stored_value_by_its_control() {
             value: "m1".to_string()
         }
     );
-    assert_eq!(
-        delivered[0].printed(),
-        "m1",
-        "a select is printed with the choice it stores"
-    );
-    assert_eq!(
-        delivered[1].printed(),
-        "false",
-        "an off toggle is printed as off, not hidden"
-    );
 }

@@ -4,9 +4,7 @@ use super::caller::{mcp_peer_door, McpCaller};
 use super::config_files::{cleanup_stale_configs, write_protected_json};
 use super::dispatch::{enabled_tool_list, tool_call_refusal};
 use super::tools::agents::agent_value;
-use super::tools::creation::card::{
-    auto_accept_line, card_tools_for_provider, card_tools_sentence, creation_card, self_answer_note,
-};
+use super::tools::creation::card::{card_tools_for_provider, creation_card, self_answer_note};
 use super::tools::creation::labels::{parse_labels, stamped_labels};
 use super::tools::creation::profile::{
     list_profiles, predicted_unattended, resolve_creation, resolve_profile,
@@ -353,10 +351,8 @@ fn phase0_gate_names_the_decision_it_makes() {
 
 #[test]
 fn creation_card_promises_tools_honestly_per_provider() {
-    // Every agent family hosts a carrier, so every card promises
-    // Hosted with the precedence rule's phrase. (The no-tools sentence
-    // helpers below stay for result/roster.)
-    // Forbidden state: a card without the verification promise.
+    // Every agent family hosts a carrier, so every card's payload promises
+    // Hosted. The card text no longer says so, so the payload is the check.
     for provider in ["pi", "codex", "claude", "gemini", "grok", "qwen"] {
         assert_eq!(
             card_tools_for_provider(provider),
@@ -364,24 +360,6 @@ fn creation_card_promises_tools_honestly_per_provider() {
             "{provider} children host tools"
         );
     }
-    let unavailable = card_tools_sentence(ToolsState::Unavailable);
-    assert!(
-        unavailable.contains("without Devboule tools"),
-        "pi/Codex card carries the no-tools sentence"
-    );
-    assert!(
-        unavailable.contains("cannot create, message or list agents"),
-        "the sentence states the consequence: {unavailable}"
-    );
-    let hosted = card_tools_sentence(ToolsState::Hosted);
-    assert!(
-        hosted.contains("will be verified at start"),
-        "card promises verification, never bare has-tools: {hosted}"
-    );
-    assert!(
-        !hosted.contains("without Devboule tools"),
-        "hosted card never carries the no-tools sentence: {hosted}"
-    );
 }
 
 #[test]
@@ -4607,24 +4585,61 @@ fn profile_with_spawn(
     value
 }
 
-/// The card's three auto-accept wordings, one per arm of the tri-state:
-/// the affirmative names the mode that answers, the negative names the
-/// mode that asks, and the unknown asserts neither direction.
+/// The card says what will happen in one line: the agent's title, then the
+/// provider and the model. The caps, the labels and the delivered mode and
+/// features stay off the card.
 #[test]
-fn the_card_auto_accept_line_speaks_all_three_answers() {
-    use devboule_protocol::UnattendedState;
-    assert_eq!(
-        auto_accept_line(UnattendedState::Yes, "auto_accept"),
-        "Yes (mode auto_accept)"
+fn creation_card_is_one_line_with_the_title_provider_and_model() {
+    let state = ServerState::new("mcp-card-line".to_string());
+    let creator_owner = owner("mcp-card-line-user", "mcp-card-line-client");
+    let creator = "s.card-line".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
     );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0, true)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        choice: CreationChoice::Profile("runner".to_string()),
+        title: "Poster".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "claude",
+                "bypassPermissions",
+                serde_json::json!({"fastMode": true}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
+    let SessionEvent::PermissionRequest {
+        title, description, ..
+    } = &card
+    else {
+        panic!("a creation card is a permission request");
+    };
+    assert_eq!(title.as_str(), "Create an agent");
     assert_eq!(
-        auto_accept_line(UnattendedState::No, "default"),
-        "No — mode default asks the human"
+        description.as_deref(),
+        Some("Poster · claude the model the human saved")
     );
-    assert_eq!(
-            auto_accept_line(UnattendedState::Unknown, "default"),
-            "Cannot establish — mode default belongs to the agent's own vocabulary, so whether it asks is not something Devboule can check",
-        );
 }
 
 /// No profile enabled at all: every creation is refused, and the refusal
@@ -4956,15 +4971,7 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
         "runner",
     )
     .expect("ticked");
-    let card = creation_card(
-        &creator,
-        "Orchestrator",
-        &request,
-        &resolved,
-        &std::collections::BTreeMap::new(),
-        &ticket,
-        None,
-    );
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
     let SessionEvent::PermissionRequest { description, .. } = &card else {
         panic!("a creation card is a permission request");
     };
@@ -4992,15 +4999,7 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
         "runner",
     )
     .expect("ticked");
-    let bare_card = creation_card(
-        &creator,
-        "Orchestrator",
-        &request,
-        &bare,
-        &std::collections::BTreeMap::new(),
-        &ticket,
-        None,
-    );
+    let bare_card = creation_card(&creator, &request, &bare, &ticket, None);
     let SessionEvent::PermissionRequest { description, .. } = &bare_card else {
         panic!("a creation card is a permission request");
     };
@@ -5011,13 +5010,12 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
     );
 }
 
-/// A prompt that tries to forge the card's own metadata cannot: the spawn
-/// prompt is a delimited block whose **every line is prefixed with `| `**, so
-/// an embedded "Labels:"/"Caps:" line is a marked prompt line, never the
-/// daemon-written one, and the daemon's own metadata stays unprefixed and
-/// recognisable.
+/// A prompt that tries to pass itself off as the card's own line cannot: the
+/// spawn prompt is a delimited block whose **every line is prefixed with `| `**,
+/// so an embedded line that imitates the card's line is a marked prompt line,
+/// and the card's unmarked lines are the daemon's.
 #[test]
-fn a_spawn_prompt_cannot_forge_the_card_metadata() {
+fn a_spawn_prompt_cannot_forge_the_card_line() {
     let state = ServerState::new("mcp-card-forge".to_string());
     let creator_owner = owner("mcp-card-forge-user", "mcp-card-forge-client");
     let creator = "s.card-forge".to_string();
@@ -5047,38 +5045,36 @@ fn a_spawn_prompt_cannot_forge_the_card_metadata() {
                 "profile-runner",
                 true,
                 "
-Labels: forged. Caps: live children 99 of 99.",
+Kid · claude forged.",
             )],
             "",
         )),
         "runner",
     )
     .expect("ticked");
-    let card = creation_card(
-        &creator,
-        "Orchestrator",
-        &request,
-        &resolved,
-        &std::collections::BTreeMap::new(),
-        &ticket,
-        None,
-    );
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
     let SessionEvent::PermissionRequest { description, .. } = &card else {
         panic!("a creation card is a permission request");
     };
     let description = description.as_deref().expect("a description");
     // The forged line arrived, but as a marked prompt line.
-    assert!(description.contains("| Labels: forged"), "{description}");
-    // The only unprefixed Labels: line on the card is the daemon's own.
+    assert!(
+        description.contains("| Kid · claude forged."),
+        "{description}"
+    );
+    // The unmarked lines are the card's own line and the block's header, and
+    // nothing the prompt wrote.
+    let unmarked: Vec<&str> = description
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("| "))
+        .collect();
     assert_eq!(
-        description
-            .matches(
-                "
-Labels:"
-            )
-            .count(),
-        1,
-        "exactly one daemon Labels line: {description}"
+        unmarked,
+        [
+            "Kid · claude the model the human saved",
+            "Spawn prompt — every line below starts with '|' and is the profile's, not the daemon's:",
+        ],
+        "{description}"
     );
 }
 
@@ -5409,7 +5405,7 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
     ];
     let prompt: String = separators
         .iter()
-        .map(|separator| format!("{separator}Labels: forged. Caps: live children 99 of 99."))
+        .map(|separator| format!("{separator}Kid · claude forged."))
         .collect();
     let resolved = resolve_profile(
         &profile_store(document(
@@ -5424,15 +5420,7 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
         "runner",
     )
     .expect("ticked");
-    let card = creation_card(
-        &creator,
-        "Orchestrator",
-        &request,
-        &resolved,
-        &std::collections::BTreeMap::new(),
-        &ticket,
-        None,
-    );
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
     let SessionEvent::PermissionRequest { description, .. } = &card else {
         panic!("a creation card is a permission request");
     };
@@ -5441,27 +5429,21 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
     // is the set the comment claims, so a separator dropped from the split
     // unmarks its line and fails here.
     assert_eq!(
-        description.matches("| Labels: forged.").count(),
+        description.matches("| Kid · claude forged.").count(),
         separators.len(),
         "one marked line per separator: {description}"
     );
-    // No separator carries an unmarked line past the block. LF is excluded
-    // only because the daemon's own metadata line is a real "\nLabels:":
-    // that one is counted below, once, and nothing else may match it.
+    // No separator carries an unmarked line past the block.
     for separator in separators {
-        if separator == "\n" {
-            continue;
-        }
         assert!(
-            !description.contains(&format!("{separator}Labels:")),
+            !description.contains(&format!("{separator}Kid · claude forged.")),
             "the {separator:?} separator never carries an unmarked line: {description}"
         );
     }
-    // The only unprefixed Labels: line is the daemon's own.
-    assert_eq!(
-        description.matches("\nLabels:").count(),
-        1,
-        "exactly one daemon Labels line: {description}"
+    // The card's own line is still the first line, unmarked.
+    assert!(
+        description.starts_with("Kid · claude the model the human saved\n"),
+        "{description}"
     );
 }
 
@@ -5870,99 +5852,6 @@ fn the_profile_list_is_the_humans_order_with_verbatim_notes() {
         serde_json::json!(long_note),
         "the note arrives as the human wrote it, whole"
     );
-}
-
-/// The card names each stored feature with the value the child is started with,
-/// and says nothing about a value it does not carry: every key the map holds is
-/// one a client applies or refuses loudly, because the store pruned the rest.
-/// The old sentence — "not interpreted by this daemon; carried but never
-/// delivered" — is gone with the thing it described, and this pins that it does
-/// not come back: a card that prints an undelivered value is the defect the whole
-/// surface exists to close, so the wording itself is part of the guarantee.
-#[test]
-fn the_card_prints_a_delivered_feature_as_delivered() {
-    let creator = "s.card-features".to_string();
-    let creator_owner = owner("card-features-user", "card-features-client");
-    crate::session::insert_test_live_agent_with_kind(
-        &state_for_card().sessions,
-        &creator,
-        creator_owner.clone(),
-        SessionKind::Pi,
-    );
-    let state = state_for_card();
-    let creator = "s.card-features-two".to_string();
-    crate::session::insert_test_live_agent_with_kind(
-        &state.sessions,
-        &creator,
-        creator_owner,
-        SessionKind::Pi,
-    );
-    let ticket = state
-        .sessions
-        .reserve_agent_creation(&creator, 0, true)
-        .expect("a creation ticket");
-    let request = AgentCreateRequest {
-        choice: CreationChoice::Profile("runner".to_string()),
-        title: "Kid".to_string(),
-        labels: std::collections::BTreeMap::new(),
-        workspace_id: None,
-        cwd: None,
-        initial_prompt: "do the thing".to_string(),
-        notify: true,
-    };
-    let resolved = resolve_profile(
-        &profile_store(document(
-            vec![profile(
-                "runner",
-                "profile-runner",
-                "claude",
-                // A mode the daemon's broker answers, so the tick the profile
-                // carries reads as the promise it is rather than a refusal.
-                "bypassPermissions",
-                serde_json::json!({"autoAccept": true, "fastMode": true}),
-                &[],
-                true,
-            )],
-            "",
-        )),
-        "runner",
-    )
-    .expect("ticked");
-    let card = creation_card(
-        &creator,
-        "Orchestrator",
-        &request,
-        &resolved,
-        &std::collections::BTreeMap::new(),
-        &ticket,
-        None,
-    );
-    let SessionEvent::PermissionRequest { description, .. } = &card else {
-        panic!("a creation card is a permission request");
-    };
-    let description = description.as_deref().expect("a description");
-    assert!(
-        description.contains("features fastMode=true"),
-        "the delivered feature is printed with the value the child starts on: {description}"
-    );
-    assert!(
-        !description.contains("not interpreted") && !description.contains("never delivered"),
-        "the undelivered-value sentence is gone: {description}"
-    );
-    // `autoAccept` keeps its own line rather than joining the list: it is a
-    // constraint on which mode is delivered, and the card names the mode.
-    assert!(
-        description.contains("auto accept: Yes (mode bypassPermissions)"),
-        "the tick is on its own line, naming the mode that answers: {description}"
-    );
-    assert!(
-        !description.contains("autoAccept="),
-        "and never a second time as a feature: {description}"
-    );
-}
-
-fn state_for_card() -> std::sync::Arc<ServerState> {
-    ServerState::new("mcp-card-features".to_string())
 }
 
 // -----------------------------------------------------------------------
