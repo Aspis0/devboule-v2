@@ -91,10 +91,23 @@ describe("TurnFooter", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("takes no cost for a pi turn, whatever the figure", async () => {
-    const container = await renderFooter(finished(), "pi");
+  it("draws nothing for a normal end whose ledger holds only token counts", async () => {
+    const container = await renderFooter(
+      finished({ usage: { inputTokens: 21_054, outputTokens: 5, totalTokens: 21_059 } }),
+    );
+    expect(container.querySelector(".turn-footer")).toBeNull();
+    expect(container.textContent).toBe("");
+  });
+
+  it("keeps an abnormal end's token ledger, with no cost for pi", async () => {
+    const container = await renderFooter(finished({ stopReason: "length" }), "pi");
     const copy = await openDetail(container);
     expect(copy).not.toContain("$");
     expect(copy).toContain("in 1,200");
+  });
+
+  it("draws nothing for a pi turn's normal end, whose only figure is pi's own estimate", async () => {
+    const container = await renderFooter(finished(), "pi");
+    expect(container.querySelector(".turn-footer")).toBeNull();
   });
 });

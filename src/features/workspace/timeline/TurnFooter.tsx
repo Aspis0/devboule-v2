@@ -14,15 +14,23 @@ function isNormalEnd(stopReason: string): boolean {
 }
 
 /**
+ * The turn's billed cost: absent where the provider reports none, and dropped
+ * for pi, whose figure is its own estimate from a static price list rather
+ * than what the provider charged.
+ */
+function costCopy(finished: AgentFinished, providerId: string | undefined): string | null {
+  const costUsd = finished.usage?.costUsd;
+  if (costUsd === undefined || providerId === "pi") return null;
+  return usdCopy(costUsd);
+}
+
+/**
  * The turn's details, in the order a reader asks: why it stopped when that was
  * abnormal, the token ledger, then what it cost.
  */
-function detailCopy(finished: AgentFinished, providerId: string | undefined): string | null {
+function detailCopy(finished: AgentFinished, cost: string | null): string | null {
   const usage = finished.usage;
   if (usage === undefined) return null;
-  // pi's cost is its own estimate from a static price list, not what the provider
-  // billed, so a pi turn shows none.
-  const cost = providerId === "pi" || usage.costUsd === undefined ? null : usdCopy(usage.costUsd);
   const details = [
     usage.inputTokens === undefined ? null : `in ${usage.inputTokens.toLocaleString()}`,
     usage.outputTokens === undefined ? null : `out ${usage.outputTokens.toLocaleString()}`,
@@ -50,9 +58,14 @@ export function TurnFooter({
   providerId?: string;
 }) {
   if (finished === null) return null;
-  const detail = detailCopy(finished, providerId);
+  const cost = costCopy(finished, providerId);
   const reason = stopReason(finished);
-  if (detail === null && reason === null) return null;
+  const detail = detailCopy(finished, cost);
+  // A stop word on the row or a cost behind it is what earns the disclosure. A
+  // normal end whose ledger holds only token counts draws no footer: the arrow
+  // would stand alone under the reply, opening nothing the row asked for.
+  const disclosure = detail !== null && (reason !== null || cost !== null);
+  if (reason === null && !disclosure) return null;
   return (
     <div className="turn-footer">
       {reason === null ? null : (
@@ -60,12 +73,12 @@ export function TurnFooter({
           stopped
         </span>
       )}
-      {detail === null ? null : (
+      {disclosure ? (
         <details className="turn-footer-detail">
           <summary className="turn-footer-detail-trigger" aria-label="Turn details" />
           <div className="turn-footer-detail-copy">{detail}</div>
         </details>
-      )}
+      ) : null}
     </div>
   );
 }

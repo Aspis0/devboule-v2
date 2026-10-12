@@ -532,7 +532,7 @@ describe("AgentChatSurface", () => {
       channelHarness.emit?.({ type: "session_manifest", providerId: "pi", models: [] });
       channelHarness.emit?.({
         type: "agent_finished",
-        stopReason: "stop",
+        stopReason: "error",
         modelId: "free-model",
         usage: { inputTokens: 20753, totalTokens: 20783, costUsd: 0.00220194 },
       });
@@ -542,6 +542,27 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
       "in 20,753 · total 20,783 tokens",
     );
+
+    await act(async () => root?.unmount());
+  });
+
+  it("draws no turn footer under a reply whose ledger holds only token counts", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-tokens-only" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "agent_finished",
+        stopReason: "completed",
+        modelId: "gpt-5.3-codex",
+        usage: { inputTokens: 21_054, outputTokens: 5, totalTokens: 21_059 },
+      });
+    });
+
+    expect(container.querySelector(".turn-footer")).toBeNull();
 
     await act(async () => root?.unmount());
   });
