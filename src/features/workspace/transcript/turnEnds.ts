@@ -69,8 +69,11 @@ export function turnEnds(
   };
   for (const entry of entries) {
     if (isToolCallGroup(entry)) continue;
-    if (entry.role === "user") close(true);
-    else if (entry.role === "assistant") {
+    // A steer is a user row inside a turn that has not finished yet: it must
+    // not split the turn. Only a row after a finished turn starts a new one.
+    if (entry.role === "user") {
+      if (turn.length === 0 || turn.at(-1)?.stopReason !== undefined) close(true);
+    } else if (entry.role === "assistant") {
       turn.push({
         id: entry.id,
         text: entry.text,

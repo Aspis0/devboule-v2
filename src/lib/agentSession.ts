@@ -203,9 +203,11 @@ function turnWorkedMs(
 }
 
 /**
- * The items with the turn's end stamped on its last assistant row: the last
- * one after the most recent user row. A turn with no assistant row keeps the
- * list as it was, so its end has nowhere to show.
+ * The items with the turn's end stamped on its last assistant row. User rows are
+ * passed over, because a steer lands inside the turn and can trail its last
+ * answer; the walk stops at a row an earlier finish already stamped, which is
+ * the previous turn's end. A turn with no assistant row keeps the list as it
+ * was, so its end has nowhere to show.
  */
 function stampTurnEnd(
   items: AgentChatItem[],
@@ -214,7 +216,7 @@ function stampTurnEnd(
 ): AgentChatItem[] {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item.role === "user") return items;
+    if (item.role === "assistant" && item.stopReason !== undefined) return items;
     if (item.role === "assistant") {
       const stamped = [...items];
       stamped[index] = {

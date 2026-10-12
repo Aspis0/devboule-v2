@@ -54,12 +54,18 @@ const user = (id: string, text: string): AgentChatItem => ({
   messageId: null,
 });
 
-const answer = (id: string, text: string, workedMs?: number): AgentChatItem => ({
+const answer = (
+  id: string,
+  text: string,
+  workedMs?: number,
+  stopReason?: string,
+): AgentChatItem => ({
   id,
   role: "assistant",
   text,
   messageId: null,
   ...(workedMs === undefined ? {} : { workedMs }),
+  ...(stopReason === undefined ? {} : { stopReason }),
 });
 
 describe("TurnCopyFooter", () => {
@@ -144,7 +150,7 @@ describe("the transcript's turn footers", () => {
     const shown = await renderRows(
       [
         user("u1", "first"),
-        answer("a1", "first answer", 4_000),
+        answer("a1", "first answer", 4_000, "end_turn"),
         user("u2", "second"),
         answer("a2", "still writing"),
       ],

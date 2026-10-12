@@ -182,3 +182,59 @@ describe("the length of a turn the daemon timed", () => {
     expect(assistant?.workedMs).toBeUndefined();
   });
 });
+
+describe("a reopened turn", () => {
+  it("keeps the abnormal stop of a turn replayed from the resume tail", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    emit({
+      outcome: "reset",
+      reason: "cursor_gone",
+      oldest_seq: 1,
+      head: 3,
+      tail: {
+        cursor: { generation: 1, seq: 3 },
+        tail_complete: true,
+        events: [
+          {
+            type: "agent_user_message",
+            author: "human",
+            messageId: "u-1",
+            messageKind: "composer",
+            text: "go",
+          },
+          { type: "agent_message", messageId: "m-1", text: "partial" },
+          { type: "agent_finished", stopReason: "max_tokens" },
+        ],
+      },
+    } as unknown as SessionEvent);
+
+    const assistants = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []));
+    expect(assistants.map((item) => item.stopReason)).toEqual(["max_tokens"]);
+  });
+});
+
+describe("a steer that is the last thing before the finish", () => {
+  it("stamps the finish on the turn's last answer, not on the steer", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    await session.send("go");
+    emit({ type: "agent_message", messageId: "m-1", text: "partial" });
+    await session.send("steer", [], "steer");
+    emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "u-2",
+      messageKind: "composer",
+      text: "steer",
+    });
+    emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    const assistants = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []));
+    expect(assistants.map((item) => item.stopReason)).toEqual(["end_turn"]);
+  });
+});

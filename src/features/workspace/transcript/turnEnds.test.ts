@@ -51,13 +51,21 @@ describe("turnEnds", () => {
     const entries = groupToolCalls([
       user("u1", "first question"),
       assistant("a1", "first part."),
-      assistant("a2", "first answer.", 12_000),
+      assistant("a2", "first answer.", 12_000, "end_turn"),
       user("u2", "second question"),
-      assistant("a3", "second answer.", 3_000),
+      assistant("a3", "second answer.", 3_000, "end_turn"),
     ]);
     const ends = turnEnds(entries, false);
-    expect(ends.get("a2")).toEqual({ text: "first part.\n\nfirst answer.", workedMs: 12_000 });
-    expect(ends.get("a3")).toEqual({ text: "second answer.", workedMs: 3_000 });
+    expect(ends.get("a2")).toEqual({
+      text: "first part.\n\nfirst answer.",
+      workedMs: 12_000,
+      stopReason: "end_turn",
+    });
+    expect(ends.get("a3")).toEqual({
+      text: "second answer.",
+      workedMs: 3_000,
+      stopReason: "end_turn",
+    });
     expect(ends.has("a1")).toBe(false);
   });
 
@@ -76,7 +84,7 @@ describe("turnEnds", () => {
   it("gives a running turn no end, while the turns before it keep theirs", () => {
     const entries = groupToolCalls([
       user("u1", "first"),
-      assistant("a1", "first answer.", 5_000),
+      assistant("a1", "first answer.", 5_000, "end_turn"),
       user("u2", "second"),
       assistant("a2", "still writing"),
     ]);
@@ -87,7 +95,7 @@ describe("turnEnds", () => {
   it("hands an unchanged turn back as the same object, so its footer's memo holds", () => {
     const entries = groupToolCalls([
       user("u1", "first"),
-      assistant("a1", "first answer.", 4_000),
+      assistant("a1", "first answer.", 4_000, "end_turn"),
       user("u2", "second"),
       assistant("a2", "still writing"),
     ]);
@@ -95,7 +103,7 @@ describe("turnEnds", () => {
     // A later chunk extends the running turn; the finished one is untouched.
     const streamed = groupToolCalls([
       user("u1", "first"),
-      assistant("a1", "first answer.", 4_000),
+      assistant("a1", "first answer.", 4_000, "end_turn"),
       user("u2", "second"),
       assistant("a2", "still writing more"),
     ]);
@@ -117,5 +125,21 @@ describe("turnEnds", () => {
   it("gives a turn with no assistant words no end at all", () => {
     const entries = groupToolCalls([user("u1", "anything?"), assistant("a1", "")]);
     expect(turnEnds(entries, false).size).toBe(0);
+  });
+});
+
+describe("turnEnds with a steer", () => {
+  it("keeps a steer inside the running turn, so one footer covers the partial output and the rest", () => {
+    const ends = turnEnds(
+      [
+        user("u1", "question"),
+        assistant("a1", "partial"),
+        user("u2", "steer"),
+        assistant("a2", "rest", 9_000, "end_turn"),
+      ],
+      false,
+    );
+    expect([...ends.keys()]).toEqual(["a2"]);
+    expect(ends.get("a2")?.text).toBe("partial\n\nrest");
   });
 });
