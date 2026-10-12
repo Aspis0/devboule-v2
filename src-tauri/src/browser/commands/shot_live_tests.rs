@@ -8,10 +8,10 @@
 //!   cargo test -p devboule --lib browser::commands::shot::live_tests -- --ignored
 //! ```
 //!
-//! The first capture is the one the command used to send: the viewport's own
-//! band, left at the document's origin after the page scrolled away from it.
-//! The runtime answers that with a blank picture, which is the fault this guard
-//! exists for; the second is the command's own answer, and it must not be it.
+//! The first capture is the viewport's own band left at the document's origin
+//! after the page scrolled away from it: the runtime answers that with a blank
+//! picture, which is the fault this guards against. The second is the command's
+//! own answer, and it must not be blank.
 
 use std::path::PathBuf;
 
