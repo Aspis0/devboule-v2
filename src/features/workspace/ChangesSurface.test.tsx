@@ -292,8 +292,14 @@ describe("ChangesSurface", () => {
     expect(container.textContent).toContain("workspace_git_status.rs");
     expect(container.textContent).toContain("todo.md");
     expect(container.textContent).toContain("+92 −41");
-    expect(container.textContent).toContain("untracked");
-    expect(container.textContent).toContain("deleted");
+    // The status word is not drawn; the select's label names it for AT.
+    expect(container.querySelector(".workspace-file-change-status")).toBeNull();
+    expect(
+      container.querySelector('.workspace-file-change[aria-label^="todo.md untracked"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('.workspace-file-change[aria-label^="writer.ts deleted"]'),
+    ).not.toBeNull();
     // `capped` says the counts are not exact: a mark, never an invented number.
     // The row's own text, marks included — dropping `≈` changes this string.
     // The row shows the basename; the full path rides its `title`.
@@ -302,7 +308,7 @@ describe("ChangesSurface", () => {
     );
     if (cappedRow === undefined) throw new Error("capped row did not render");
     expect(cappedRow.textContent).toBe("todo.md");
-    expect(cappedRow.parentElement?.textContent).toContain("todo.mduntracked≈+7 −0");
+    expect(cappedRow.parentElement?.textContent).toContain("todo.md≈+7 −0");
     expect(
       container.querySelector('.workspace-file-change[title="src/writer.ts"]')?.className,
     ).toContain("workspace-file-change-muted");

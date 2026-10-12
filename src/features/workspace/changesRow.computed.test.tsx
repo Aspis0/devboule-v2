@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // The Changes file row's no-overlap decisions, through the real sheets in
-// bundle order: the name is the yielding text, status/counts/acts stay out
+// bundle order: the name is the yielding text, counts and acts stay out
 // of each other's boxes, the acts wrap right-aligned on coarse pointers and
 // reveal as a trailing overlay on fine ones, and the select button's floor
 // covers its own fixed chrome at every depth. The proof helper descends
@@ -162,21 +162,21 @@ describe("the changes file row's computed layout decisions", () => {
     expect(rowStyle.justifyContent).toBe("flex-end");
 
     const button = topRow.querySelector(".workspace-file-change");
-    const status = topRow.querySelector(".workspace-file-change-status");
     const stats = topRow.querySelector(".workspace-file-change-stats");
     const actions = topRow.querySelector(".workspace-file-change-actions");
-    if (button === null || status === null || stats === null || actions === null) {
-      throw new Error("the row's four parts did not render");
+    if (button === null || stats === null || actions === null) {
+      throw new Error("the row's three parts did not render");
     }
     // The fixed halves live on the row itself, so the wrap counts them at
     // full width; inside the button a starved line could never see them.
-    expect(status.parentElement).toBe(topRow);
     expect(stats.parentElement).toBe(topRow);
     expect(button.parentElement).toBe(topRow);
 
     // The select's name carries what its text no longer shows: status and
     // counts, as one string, while the visible row stays uncluttered.
     expect(button.getAttribute("aria-label")).toBe("README.md untracked +5 −2");
+    expect(button.getAttribute("title")).toBe("README.md");
+    expect(topRow.querySelector(".workspace-file-change-status")).toBeNull();
     expect(button.textContent).toBe("README.md");
     expect(getComputedStyle(actions).flexShrink).toBe("0");
     expect(getComputedStyle(stats).whiteSpace).toBe("nowrap");
@@ -221,7 +221,7 @@ describe("the changes file row's computed layout decisions", () => {
         Number.parseFloat(getComputedStyle(icon).width);
       // The floor must cover pad + icon + gap, or the line-break lets the
       // button starve below its own padding and the name spills over the
-      // status word; the remaining 16px is the name's room above the floor.
+      // counts; the remaining 16px is the name's room above the floor.
       expect(Number.parseFloat(style.minWidth)).toBeGreaterThanOrEqual(fixedChrome + 16);
     }
     // The overlay's containing block is the row.
@@ -234,7 +234,6 @@ describe("the changes file row's computed layout decisions", () => {
     const rowRule = ruleFor(base, ".workspace-file-change-row");
     expect(rowRule.body).toContain("flex-wrap: wrap");
     expect(rowRule.body).toContain("justify-content: flex-end");
-    expect(ruleFor(base, ".workspace-file-change-status").body).toContain("flex: none");
     expect(ruleFor(base, ".workspace-file-change-stats").body).toContain("flex: none");
     expect(ruleFor(base, ".workspace-file-change-actions").body).toContain("flex: none");
     // The row is the overlay's containing block: nothing between it and
@@ -280,19 +279,15 @@ describe("the changes file row's computed layout decisions", () => {
     expect(reveal.body).toContain("visibility: visible");
     expect(reveal.body).toContain("pointer-events: auto");
 
-    // Status and counts step aside while the acts show — same three states.
-    const aside = ruleFor(gated, ".workspace-file-change-row:hover .workspace-file-change-status");
-    expect(aside.selector).toContain(
-      ".workspace-file-change-row:hover .workspace-file-change-stats",
-    );
+    // Counts step aside while the acts show — same three states.
+    const aside = ruleFor(gated, ".workspace-file-change-row:hover .workspace-file-change-stats");
     expect(aside.selector).toContain(
       ".workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-stats",
     );
     expect(aside.body).toContain("visibility: hidden");
 
     // The last-resort yield: clipped and ellipsized, never spilling.
-    const yieldRule = ruleFor(gated, ".workspace-file-change-row .workspace-file-change-status");
-    expect(yieldRule.selector).toContain(".workspace-file-change-row .workspace-file-change-stats");
+    const yieldRule = ruleFor(gated, ".workspace-file-change-row .workspace-file-change-stats");
     expect(yieldRule.body).toContain("flex: 0 1 auto");
     expect(yieldRule.body).toContain("min-width: 0");
     expect(yieldRule.body).toContain("overflow: hidden");

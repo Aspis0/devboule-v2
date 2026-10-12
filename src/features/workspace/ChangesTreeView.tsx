@@ -151,8 +151,8 @@ const FileNode = memo(function FileNode({
         // so this is current-item marking, never a toggle contract.
         aria-current={selected ? "true" : undefined}
         title={path}
-        // Status and counts live beside the button; the name carries them
-        // for AT as one string, not duplicated into the visible row.
+        // The status word is not drawn beside the name — it took the room
+        // the name needs — so the label is where AT hears it.
         aria-label={`${name} ${row.status} ${countsLabel(row.additions, row.deletions, row.capped)}`}
         // The floor the row's line-break measures (pad 12 + icon 12 +
         // gap 6 + a 16px name, with the depth pad): the line yields
@@ -163,7 +163,6 @@ const FileNode = memo(function FileNode({
         {FileIcon}
         <span className="workspace-file-change-name">{name}</span>
       </button>
-      <span className="workspace-file-change-status">{row.status}</span>
       <span
         className={`workspace-file-change-stats${
           isNewRow(row) ? " workspace-file-change-stats-is-add" : ""

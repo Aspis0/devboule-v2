@@ -419,14 +419,8 @@ ul.workspace-changes-tree {
   background: var(--fill-hover);
 }
 
-.workspace-file-change-status {
-  flex: none;
-  color: var(--silence);
-  font-size: var(--type-meta);
-}
-
-/* Status and counts live on the row, fixed beside the select button:
-   the wrap measures them at full width, so the acts yield first. */
+/* Counts live on the row, fixed beside the select button: the wrap
+   measures them at full width, so the acts yield first. */
 .workspace-file-change-stats {
   flex: none;
   white-space: nowrap;
@@ -509,18 +503,14 @@ ul.workspace-changes-tree {
     background-image: linear-gradient(to right, transparent, var(--fill-tool) 16px);
   }
 
-  .workspace-file-change-row:hover .workspace-file-change-status,
-  .workspace-file-change-row:focus-within .workspace-file-change-status,
-  .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-status,
   .workspace-file-change-row:hover .workspace-file-change-stats,
   .workspace-file-change-row:focus-within .workspace-file-change-stats,
   .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-stats {
     visibility: hidden;
   }
 
-  /* The line is pinned above, so once the name is at its floor these two
-     are what yield: clipped and ellipsized, never spilling the row. */
-  .workspace-file-change-row .workspace-file-change-status,
+  /* The line is pinned above, so once the name is at its floor the counts
+     yield: clipped and ellipsized, never spilling the row. */
   .workspace-file-change-row .workspace-file-change-stats {
     flex: 0 1 auto;
     min-width: 0;
