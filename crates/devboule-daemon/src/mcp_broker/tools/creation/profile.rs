@@ -3,7 +3,7 @@
 use devboule_protocol::SessionKind;
 use serde_json::{json, Value};
 
-use super::posture::agent_child_mode;
+use super::posture::{agent_child_mode, ModeNote};
 use super::request::CreationChoice;
 
 /// The name a profile's labels and the creation record are keyed on: the
@@ -37,8 +37,8 @@ pub(in crate::mcp_broker) struct ResolvedProfile {
     /// bare id, exactly as it reads those profiles today.
     pub(in crate::mcp_broker) model_provider: Option<String>,
     pub(in crate::mcp_broker) mode: String,
-    /// The mode an agent asked for when its child starts in its creator's posture instead.
-    pub(in crate::mcp_broker) replaced_mode: Option<String>,
+    /// What the creator is told about the mode the child started in, when it is not the mode asked for.
+    pub(in crate::mcp_broker) mode_note: Option<ModeNote>,
     /// The provider's thinking option, exactly as saved.
     pub(in crate::mcp_broker) thinking_option_id: Option<String>,
     /// The provider's feature values, exactly as saved.
@@ -113,7 +113,7 @@ pub(in crate::mcp_broker) fn resolve_profile(
         model: profile.model.clone(),
         model_provider: profile.model_provider.clone(),
         mode: profile.mode_id.clone(),
-        replaced_mode: None,
+        mode_note: None,
         thinking_option_id: profile.thinking_option_id.clone(),
         features: profile.features.clone(),
         spawn_prompt: profile.spawn_prompt.clone(),
@@ -236,7 +236,7 @@ pub(in crate::mcp_broker) fn resolve_creation(
         model: model.clone().unwrap_or_default(),
         model_provider: None,
         mode: chosen.mode,
-        replaced_mode: chosen.replaced,
+        mode_note: chosen.note,
         thinking_option_id: effort.clone(),
         features: serde_json::Map::new(),
         spawn_prompt: String::new(),
@@ -341,7 +341,7 @@ mod tests {
         )
         .expect("the named mode");
         assert_eq!(resolved.mode, "acceptEdits");
-        assert_eq!(resolved.replaced_mode, None);
+        assert_eq!(resolved.mode_note, None);
     }
 
     /// An agent's child cannot run in the asking mode the agent names: it takes
@@ -355,7 +355,12 @@ mod tests {
         )
         .expect("the posture is taken");
         assert_eq!(resolved.mode, "auto");
-        assert_eq!(resolved.replaced_mode.as_deref(), Some("default"));
+        assert_eq!(
+            resolved.mode_note,
+            Some(super::super::posture::ModeNote::Replaced(
+                "default".to_string()
+            ))
+        );
     }
 
     /// A preset's asking mode is replaced the same way; the preset's tool overlay stays.

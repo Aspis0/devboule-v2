@@ -24,12 +24,33 @@ enum Posture {
     Bypass,
 }
 
-/// The mode an agent-created child starts in, and the mode the agent asked for
-/// when that one was replaced.
+/// What the creator is told about the mode its child started in, when that is not
+/// the mode it asked for.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::mcp_broker) enum ModeNote {
+    /// The mode the agent asked for was replaced by the creator's posture.
+    Replaced(String),
+    /// Pi has no reviewed mode: a Pi child under a reviewed creator starts in `ask`.
+    PiAsk,
+}
+
+impl ModeNote {
+    /// The one sentence the creator reads, given the mode the child started in.
+    pub(in crate::mcp_broker) fn sentence(&self, mode: &str) -> String {
+        match self {
+            Self::Replaced(requested) => format!(
+                "Mode '{requested}' is not one an agent's child starts in; it starts in your posture, '{mode}'."
+            ),
+            Self::PiAsk => "Pi has no reviewed mode, so this child starts in 'ask'; its permission cards go to you to answer.".to_string(),
+        }
+    }
+}
+
+/// The mode an agent-created child starts in, and what the creator is told about it.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ChildMode {
     pub(super) mode: String,
-    pub(super) replaced: Option<String>,
+    pub(super) note: Option<ModeNote>,
 }
 
 /// The posture a mode of `kind` stands for, or `None` for a mode this table does
@@ -64,9 +85,10 @@ fn child_mode(kind: &SessionKind, posture: Posture) -> Option<&'static str> {
         (SessionKind::Codex, Reviewed) => Some("auto-review"),
         (SessionKind::Codex, Asking) => Some("auto"),
         (SessionKind::Codex, ReadOnly) => Some("read-only"),
-        // Pi has no classifier. `bypass` is its only mode that does not ask, so
-        // a reviewed creator's child is not asked for anything either.
-        (SessionKind::Pi, Bypass | Reviewed) => Some("bypass"),
+        // Pi has no classifier and no reviewed mode. Under a reviewed creator its
+        // child starts in `ask`, the one child that asks; `bypass` would be wider.
+        (SessionKind::Pi, Bypass) => Some("bypass"),
+        (SessionKind::Pi, Reviewed) => Some("ask"),
         (SessionKind::Pi, Asking) => Some("ask"),
         _ => None,
     }
@@ -111,8 +133,9 @@ pub(super) fn agent_child_mode(
                 .filter(|(kind, _)| *kind == child)
                 .map(|(_, mode_id)| mode_id.to_string())
         });
+    let own = creator.and_then(|(kind, mode_id)| posture_of(kind, mode_id));
+    let pi_under_reviewed = *child == SessionKind::Pi && own == Some(Posture::Reviewed);
     if let Some(requested) = requested {
-        let own = creator.and_then(|(kind, mode_id)| posture_of(kind, mode_id));
         let kept = match posture_of(child, requested) {
             Some(Posture::ReadOnly) => true,
             Some(posture) => posture != Posture::Asking && own.is_some_and(|own| posture <= own),
@@ -121,7 +144,7 @@ pub(super) fn agent_child_mode(
         if kept {
             return Ok(ChildMode {
                 mode: requested.to_string(),
-                replaced: None,
+                note: None,
             });
         }
         let mode = inherited.ok_or_else(|| {
@@ -129,24 +152,45 @@ pub(super) fn agent_child_mode(
                 "mode {requested} would let the child ask you or run wider than you, and your own mode does not carry over to this provider; name a read-only mode or a profile"
             )
         })?;
-        let replaced = (mode != requested).then(|| requested.to_string());
-        return Ok(ChildMode { mode, replaced });
+        let note = if pi_under_reviewed {
+            Some(ModeNote::PiAsk)
+        } else {
+            (mode != requested).then(|| ModeNote::Replaced(requested.to_string()))
+        };
+        return Ok(ChildMode { mode, note });
     }
     let mode = inherited.ok_or_else(|| {
         "mode is required: the creating agent's mode does not carry over to this provider"
             .to_string()
     })?;
-    Ok(ChildMode {
-        mode,
-        replaced: None,
-    })
+    let note = pi_under_reviewed.then_some(ModeNote::PiAsk);
+    Ok(ChildMode { mode, note })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_child_mode, inherited_mode};
+    use super::{agent_child_mode, inherited_mode, ModeNote};
     use devboule_protocol::SessionKind;
     use devboule_protocol::SessionKind::{Acp, Claude, Codex, Pi};
+
+    fn replaced(requested: &str) -> Option<ModeNote> {
+        Some(ModeNote::Replaced(requested.to_string()))
+    }
+
+    /// A Pi child under a reviewed creator starts in `ask`, the one exception to an
+    /// agent's child never asking, and the creator is told why.
+    #[test]
+    fn a_pi_child_under_a_reviewed_creator_starts_in_ask_and_says_so() {
+        let chosen = agent_child_mode(&Pi, Some("bypass"), Some((&Codex, "auto-review")))
+            .expect("the exception stands");
+        assert_eq!(chosen.mode, "ask");
+        assert_eq!(chosen.note, Some(ModeNote::PiAsk));
+        let sentence = chosen.note.as_ref().expect("a note").sentence(&chosen.mode);
+        assert!(
+            sentence.contains("its permission cards go to you"),
+            "{sentence}"
+        );
+    }
 
     /// Every creator family and mode this table reads, against each child family.
     /// A `None` row is a pair the table refuses: the caller must name a mode.
@@ -162,7 +206,7 @@ mod tests {
             (Codex, "read-only", Codex, Some("read-only")),
             (Codex, "auto", Codex, Some("auto")),
             (Codex, "full-access", Pi, Some("bypass")),
-            (Codex, "auto-review", Pi, Some("bypass")),
+            (Codex, "auto-review", Pi, Some("ask")),
             (Codex, "auto", Pi, Some("ask")),
             (Codex, "auto", Acp, None),
             (Claude, "default", Claude, Some("default")),
@@ -181,7 +225,7 @@ mod tests {
             (Claude, "default", Codex, Some("auto")),
             (Claude, "plan", Codex, Some("read-only")),
             (Claude, "bypassPermissions", Pi, Some("bypass")),
-            (Claude, "auto", Pi, Some("bypass")),
+            (Claude, "auto", Pi, Some("ask")),
             (Claude, "acceptEdits", Pi, None),
             (Claude, "default", Pi, Some("ask")),
             (Claude, "default", Acp, None),
@@ -210,21 +254,21 @@ mod tests {
     }
 
     /// The mode an agent's child starts in, from the mode the agent asked for and its
-    /// creator's posture: `(mode, replaced)`, or `None` for a refusal.
+    /// creator's posture: `(mode, note)`, or `None` for a refusal.
     #[test]
     fn an_agent_child_never_asks_and_never_outranks_its_creator() {
         type Case<'a> = (
             SessionKind,
             &'a str,
             Option<(SessionKind, &'a str)>,
-            Option<(&'a str, Option<&'a str>)>,
+            Option<(&'a str, Option<ModeNote>)>,
         );
         let cases: &[Case] = &[
             (
                 Claude,
                 "default",
                 Some((Codex, "auto-review")),
-                Some(("auto", Some("default"))),
+                Some(("auto", replaced("default"))),
             ),
             (
                 Claude,
@@ -236,7 +280,7 @@ mod tests {
                 Claude,
                 "bypassPermissions",
                 Some((Claude, "auto")),
-                Some(("auto", Some("bypassPermissions"))),
+                Some(("auto", replaced("bypassPermissions"))),
             ),
             (
                 Claude,
@@ -248,13 +292,13 @@ mod tests {
                 Claude,
                 "acceptEdits",
                 Some((Claude, "default")),
-                Some(("default", Some("acceptEdits"))),
+                Some(("default", replaced("acceptEdits"))),
             ),
             (
                 Claude,
                 "default",
                 Some((Codex, "read-only")),
-                Some(("plan", Some("default"))),
+                Some(("plan", replaced("default"))),
             ),
             (
                 Claude,
@@ -266,7 +310,7 @@ mod tests {
                 Claude,
                 "no-such-mode",
                 Some((Codex, "auto-review")),
-                Some(("auto", Some("no-such-mode"))),
+                Some(("auto", replaced("no-such-mode"))),
             ),
             (Claude, "plan", None, Some(("plan", None))),
             (Claude, "default", None, None),
@@ -274,24 +318,24 @@ mod tests {
                 Codex,
                 "auto",
                 Some((Claude, "plan")),
-                Some(("read-only", Some("auto"))),
+                Some(("read-only", replaced("auto"))),
             ),
             (
                 Pi,
                 "ask",
                 Some((Codex, "auto-review")),
-                Some(("bypass", Some("ask"))),
+                Some(("ask", Some(ModeNote::PiAsk))),
             ),
         ];
         for (child, requested, creator, expected) in cases {
             let creator = creator.as_ref().map(|(kind, mode)| (kind, *mode));
             let got = agent_child_mode(child, Some(requested), creator)
                 .ok()
-                .map(|chosen| (chosen.mode, chosen.replaced));
-            let expected =
-                expected.map(|(mode, replaced)| (mode.to_string(), replaced.map(str::to_string)));
+                .map(|chosen| (chosen.mode, chosen.note));
             assert_eq!(
-                got, expected,
+                got.as_ref()
+                    .map(|(mode, note)| (mode.as_str(), note.as_ref())),
+                expected.as_ref().map(|(mode, note)| (*mode, note.as_ref())),
                 "{child:?} asked for {requested} under {creator:?}"
             );
         }

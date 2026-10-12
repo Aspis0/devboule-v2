@@ -408,12 +408,10 @@ fn run_creation(
         .sessions
         .live_runtime(&creator_id, &registration.owner);
     // What the creator reads when the child did not start in the mode it asked for.
-    let note = profile.replaced_mode.as_deref().map(|requested| {
-        format!(
-            "Mode '{requested}' is not one an agent's child starts in; it starts in your posture, '{}'.",
-            profile.mode
-        )
-    });
+    let note = profile
+        .mode_note
+        .as_ref()
+        .map(|note| note.sentence(&profile.mode));
     let creation = crate::session::AgentCreation {
         creator_session_id: creator_id.clone(),
         creator_runtime,
