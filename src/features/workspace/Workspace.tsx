@@ -2037,6 +2037,7 @@ export function Workspace({
         id: project.id,
         name: project.name,
         hostId: project.hostId === LOCAL_HOST_ID ? THIS_PC : project.hostId,
+        worktreeSupport: project.worktreeSupport,
       })),
     [projects],
   );

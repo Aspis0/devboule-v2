@@ -1,14 +1,35 @@
 use serde::{Deserialize, Serialize};
 
-/// A folder registered by the user. Git metadata is intentionally kept out of
-/// this first wire shape; it is persisted by the daemon for later project
-/// metadata surfaces.
+/// Whether a project folder can host a worktree.
+///
+/// The daemon records what its own git probe said about the folder when it was
+/// registered (`ProjectRecord.git_state`), and this is that word read for the
+/// New workspace sheet. `Unknown` is every word that claims nothing — a missing
+/// git program, a timed-out probe, a daemon that predates the field — so a
+/// reader keeps the option rather than hiding a folder's way to a second
+/// checkout on a failed probe.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeSupport {
+    Supported,
+    Unsupported,
+    #[default]
+    Unknown,
+}
+
+/// A folder registered by the user: its identity, and what the daemon's probe
+/// found for it at registration time.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    /// A hint read off the recorded git state, not a live fact: the daemon
+    /// re-checks the folder before a worktree is added. An older daemon sends
+    /// no field at all, which reads as [`WorktreeSupport::Unknown`].
+    #[serde(default)]
+    pub worktree_support: WorktreeSupport,
 }
 
 /// The checkout used as the working directory of a session.

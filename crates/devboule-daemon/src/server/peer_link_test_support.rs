@@ -541,6 +541,7 @@ fn list_reply(request: &ClientMessage, id: u64) -> Option<DaemonMessage> {
                 id: "far-project".to_string(),
                 name: "far project".to_string(),
                 path: "C:/far".to_string(),
+                worktree_support: devboule_protocol::WorktreeSupport::Unknown,
             }],
         },
         ClientMessage::WorkspacesList { project_id, .. } => DaemonMessage::Workspaces {

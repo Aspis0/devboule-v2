@@ -4,7 +4,34 @@ use super::*;
 use super::{
     VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption, VocabularyFeatures,
 };
-use crate::{SessionState, SessionStateSnapshot, UnattendedState};
+use crate::{SessionState, SessionStateSnapshot, UnattendedState, WorktreeSupport};
+
+#[test]
+fn a_project_carries_its_worktree_support_and_an_older_payload_reads_as_unknown() {
+    let reply = DaemonMessage::Projects {
+        id: 7,
+        projects: vec![Project {
+            id: "p.one".to_string(),
+            name: "devboule-v2".to_string(),
+            path: "C:/devboule-v2".to_string(),
+            worktree_support: WorktreeSupport::Unsupported,
+        }],
+    };
+    let value = serde_json::to_value(&reply).expect("projects reply json");
+    assert_eq!(value["projects"][0]["worktreeSupport"], "unsupported");
+
+    // A daemon from before the field claims nothing, so the option stays.
+    let mut older = value.clone();
+    older["projects"][0]
+        .as_object_mut()
+        .expect("project object")
+        .remove("worktreeSupport");
+    let parsed: DaemonMessage = serde_json::from_value(older).expect("older payload parses");
+    let DaemonMessage::Projects { projects, .. } = parsed else {
+        panic!("expected a projects reply");
+    };
+    assert_eq!(projects[0].worktree_support, WorktreeSupport::Unknown);
+}
 
 #[test]
 fn the_pairing_code_is_never_debug_formatted() {
@@ -3667,7 +3694,7 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
 /// dialect that added it is the one this crate speaks.
 #[test]
 fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
-    assert_eq!(crate::PROTOCOL_VERSION, 42);
+    assert_eq!(crate::PROTOCOL_VERSION, 43);
     let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
     // The same payload, with the key the v30 dialect added, still decodes.
     let current = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null,"gitMissing":true}}"#;

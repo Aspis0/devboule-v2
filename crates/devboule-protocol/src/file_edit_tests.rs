@@ -127,8 +127,8 @@ fn the_editor_frames_carry_their_ids_and_names() {
 }
 
 #[test]
-fn protocol_version_is_42() {
-    assert_eq!(PROTOCOL_VERSION, 42);
+fn protocol_version_is_43() {
+    assert_eq!(PROTOCOL_VERSION, 43);
 }
 
 #[test]

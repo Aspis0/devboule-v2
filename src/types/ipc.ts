@@ -57,6 +57,13 @@ export interface Project {
   id: Id;
   name: string;
   path: string;
+  /**
+   * What the daemon's git probe found for the folder when the project was
+   * registered: `unsupported` is a folder git answered for and found outside a
+   * repository, and only that word hides the worktree option. Absent on a
+   * daemon from before the field, which claims nothing either way.
+   */
+  worktreeSupport?: "supported" | "unsupported" | "unknown";
 }
 
 export interface Workspace {

@@ -363,6 +363,7 @@ impl ProjectRecord {
             id: self.id.clone(),
             name: self.name.clone(),
             path: crate::verbatim_path::plain_path(&self.path),
+            worktree_support: crate::git::worktree_support_for_git_state(&self.git_state),
         }
     }
 }

@@ -3,6 +3,7 @@ import { getFocusableElements } from "../../lib/focusableElements";
 import { isImeComposition } from "../../lib/imeComposition";
 import { useModalOpen } from "../../lib/modalOpen";
 import type { ErrorSentence } from "../../lib/errorSentence";
+import type { Project } from "../../types/ipc";
 import { ChoiceGroup, type ChoiceOption } from "../../components/ChoiceGroup";
 import { ErrorText } from "../../components/ErrorText";
 import "./Workspace.css";
@@ -20,6 +21,8 @@ export interface SheetProject {
   name: string;
   /** THIS_PC's device id, or the paired host the project lives on. */
   hostId: string;
+  /** The daemon's word for whether the folder can host a worktree; absent claims nothing. */
+  worktreeSupport?: Project["worktreeSupport"];
 }
 
 export interface SheetHost {
@@ -69,12 +72,17 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
   const where = chosenWhere ?? presetHost;
   const hostProjects = projects.filter((project) => project.hostId === where);
   const [chosenProjectId, setProjectId] = useState<string | null>(null);
-  const projectId =
-    hostProjects.find((project) => project.id === chosenProjectId)?.id ??
-    hostProjects.find((project) => project.id === presetProjectId)?.id ??
-    hostProjects[0]?.id ??
+  const chosenProject =
+    hostProjects.find((project) => project.id === chosenProjectId) ??
+    hostProjects.find((project) => project.id === presetProjectId) ??
+    hostProjects[0] ??
     null;
+  const projectId = chosenProject?.id ?? null;
   const [isolation, setIsolation] = useState<NewWorkspaceChoice["isolation"]>("local");
+  // A folder git found outside a repository takes no worktree: the row is not
+  // drawn at all, since a one-option choice asks a question with one answer.
+  const worktreeOffered = chosenProject?.worktreeSupport !== "unsupported";
+  const effectiveIsolation = worktreeOffered ? isolation : "local";
   const [branch, setBranch] = useState("");
   const [error, setError] = useState<ErrorSentence | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -147,8 +155,8 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
     const refusal = await onCreate({
       projectId,
       where,
-      isolation,
-      branch: isolation === "worktree" && trimmed !== "" ? trimmed : null,
+      isolation: effectiveIsolation,
+      branch: effectiveIsolation === "worktree" && trimmed !== "" ? trimmed : null,
     });
     submittingRef.current = false;
     setSubmitting(false);
@@ -226,18 +234,22 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
               </>
             ) : null}
 
-            <span className="new-workspace-label" id="new-workspace-isolation-label">
-              Isolation
-            </span>
-            <ChoiceGroup
-              options={ISOLATION_OPTIONS}
-              value={isolation}
-              onChange={setIsolation}
-              disabled={submitting}
-              labelledBy="new-workspace-isolation-label"
-            />
+            {worktreeOffered ? (
+              <>
+                <span className="new-workspace-label" id="new-workspace-isolation-label">
+                  Isolation
+                </span>
+                <ChoiceGroup
+                  options={ISOLATION_OPTIONS}
+                  value={effectiveIsolation}
+                  onChange={setIsolation}
+                  disabled={submitting}
+                  labelledBy="new-workspace-isolation-label"
+                />
+              </>
+            ) : null}
 
-            {isolation === "worktree" ? (
+            {effectiveIsolation === "worktree" ? (
               <>
                 <label className="new-workspace-label" htmlFor="new-workspace-branch">
                   Branch

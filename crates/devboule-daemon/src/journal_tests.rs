@@ -240,6 +240,30 @@ fn project_wire_path_is_human_readable_but_storage_keeps_verbatim_path() {
 }
 
 #[test]
+fn a_project_row_carries_its_recorded_git_state_to_the_sheet() {
+    let project = ProjectRecord {
+        id: "p.wt".to_string(),
+        name: "Project".to_string(),
+        path: r"C:\Users\alice\Project".to_string(),
+        git_state: "not_repository".to_string(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    };
+    assert_eq!(
+        project.to_project().worktree_support,
+        devboule_protocol::WorktreeSupport::Unsupported
+    );
+    let repository = ProjectRecord {
+        git_state: "repository".to_string(),
+        ..project
+    };
+    assert_eq!(
+        repository.to_project().worktree_support,
+        devboule_protocol::WorktreeSupport::Supported
+    );
+}
+
+#[test]
 fn records_without_terminators_are_always_unverifiable() {
     for status in [PersistStatus::Interrupted, PersistStatus::Live] {
         let mut record = sample_session("s.unverifiable");

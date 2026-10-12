@@ -180,6 +180,22 @@ describe("the new-workspace sheet's groups", () => {
 
     expect(container.querySelector("#new-workspace-branch")).not.toBeNull();
   });
+
+  it("draws no isolation row for a folder git found outside a repository", async () => {
+    await render({
+      projects: [{ id: "p-1", name: "notes", hostId: THIS_PC, worktreeSupport: "unsupported" }],
+    });
+
+    expect(rowLabels()).toEqual(["Project"]);
+  });
+
+  it("keeps the isolation row when git's answer for the folder is unknown", async () => {
+    await render({
+      projects: [{ id: "p-1", name: "notes", hostId: THIS_PC, worktreeSupport: "unknown" }],
+    });
+
+    expect(rowLabels()).toEqual(["Project", "Isolation"]);
+  });
 });
 
 describe("what the sheet sends", () => {
@@ -215,6 +231,27 @@ describe("what the sheet sends", () => {
     await act(async () => setInputValue(branch, ""));
     await submit();
     expect(onCreate).toHaveBeenLastCalledWith(expect.objectContaining({ branch: null }));
+  });
+
+  it("sends local once the chosen project cannot take a worktree, whatever was picked before", async () => {
+    const { onCreate } = await render({
+      presetProjectId: "p-1",
+      projects: [
+        { id: "p-1", name: "devboule-v2", hostId: THIS_PC, worktreeSupport: "supported" },
+        { id: "p-2", name: "notes", hostId: THIS_PC, worktreeSupport: "unsupported" },
+      ],
+    });
+
+    await choose(choiceOf("Isolation", "worktree"));
+    await choose(choiceOf("Project", "p-2"));
+    await submit();
+
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: "p-2",
+      where: THIS_PC,
+      isolation: "local",
+      branch: null,
+    });
   });
 
   it("creates once when submitted twice in one tick", async () => {

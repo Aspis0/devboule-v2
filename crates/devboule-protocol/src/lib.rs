@@ -148,7 +148,7 @@ pub use messages::{
     PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
-pub use project::{Project, Workspace, WorkspaceIsolation};
+pub use project::{Project, Workspace, WorkspaceIsolation, WorktreeSupport};
 pub use remote_host::{
     RemoteHostGap, RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus,
     RemoteRelayMessage, RemoteRelayedEvent,
@@ -305,7 +305,13 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Protocol 42 adds the agent-edit reads, `WorkspaceAgentEdits` (the files a
 /// workspace's agents changed) and `WorkspaceAgentDiff` (one file's diff as they
 /// made it), gated like the git reads. Same new-variant rule.
-pub const PROTOCOL_VERSION: u32 = 42;
+///
+/// Protocol 43 adds `worktreeSupport` to `Project`: the daemon's own git probe
+/// for the folder, so the New workspace sheet stops offering a worktree where
+/// git found no repository. An older daemon sends no field, which reads as
+/// unknown — the option stays, and the daemon's live check at create time is
+/// still what refuses it.
+pub const PROTOCOL_VERSION: u32 = 43;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

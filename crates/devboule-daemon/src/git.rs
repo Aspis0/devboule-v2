@@ -7,6 +7,8 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use devboule_protocol::WorktreeSupport;
+
 // Local cold measurements of `git -C <path> rev-parse --show-toplevel` are
 // below 150 ms, but the Windows launcher, first-start antivirus scans, and
 // network-backed folders need a much larger operational margin. Ten seconds
@@ -41,6 +43,22 @@ impl GitRepositoryStatus {
             Self::TimedOut => "timed_out",
             Self::Unknown => "unknown",
         }
+    }
+}
+
+/// The recorded git state read for the app's New workspace sheet.
+///
+/// Only a folder git answered for and found outside a repository closes the
+/// door; a probe that failed (`not_installed`, `timed_out`, `unknown`) claims
+/// nothing, because the daemon refuses a worktree from the *live* state at
+/// create time (`session_workspaces::refuse_worktree_unless_live_git_allows`)
+/// and a stale "no" would hide the option for a folder that has since become a
+/// repository.
+pub(crate) fn worktree_support_for_git_state(state: &str) -> WorktreeSupport {
+    match state {
+        "repository" | "inside_repository" => WorktreeSupport::Supported,
+        "not_repository" => WorktreeSupport::Unsupported,
+        _ => WorktreeSupport::Unknown,
     }
 }
 
@@ -598,8 +616,10 @@ mod tests {
     use super::{
         append_git_stdout, apply_env, bounded_reap, classify_git_probe, detect_git_repository,
         detect_git_repository_with_program, new_captured_command, parse_git_root, run_program_args,
-        GitReapOutcome, GitReapPoll, GitRepositoryStatus, GitRunError, GIT_STDOUT_MAX_BYTES,
+        worktree_support_for_git_state, GitReapOutcome, GitReapPoll, GitRepositoryStatus,
+        GitRunError, GIT_STDOUT_MAX_BYTES,
     };
+    use devboule_protocol::WorktreeSupport;
     use std::time::Duration;
 
     #[test]
@@ -778,6 +798,27 @@ mod tests {
         assert_eq!(status, GitRepositoryStatus::NotInstalled);
         assert_eq!(status.as_str(), "not_installed");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_confirmed_non_repository_reads_as_unsupported() {
+        for state in ["repository", "inside_repository"] {
+            assert_eq!(
+                worktree_support_for_git_state(state),
+                WorktreeSupport::Supported
+            );
+        }
+        assert_eq!(
+            worktree_support_for_git_state("not_repository"),
+            WorktreeSupport::Unsupported
+        );
+        // A probe that failed says nothing about a worktree.
+        for state in ["not_installed", "timed_out", "unknown", ""] {
+            assert_eq!(
+                worktree_support_for_git_state(state),
+                WorktreeSupport::Unknown
+            );
+        }
     }
 
     #[cfg(windows)]
