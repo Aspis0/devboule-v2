@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::codex_model_catalog::{
     catalog_from_listing, configured_defaults, CodexModelCatalog, ConfiguredDefaults,
 };
-use crate::session::codex_catalog_probe::{read_catalog, CodexCatalogRead};
+use crate::session::codex_catalog_probe::{cli_version, read_catalog, CodexCatalogRead};
 
 const MODELS_CACHE_FILE: &str = "models_cache.json";
 /// A cache older than this is not offered: it may list models Codex has since retired.
@@ -21,13 +21,14 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// the models axis is absent; the modes are the daemon's table and always present.
 pub(crate) fn codex_axes() -> (VocabularyModels, VocabularyModes) {
     let home = crate::codex_command_catalog::resolve_home();
-    models_and_modes(read_catalog(), &home, SystemTime::now())
+    models_and_modes(read_catalog(), &home, SystemTime::now(), cli_version())
 }
 
 fn models_and_modes(
     probe: Option<CodexCatalogRead>,
     home: &Path,
     now: SystemTime,
+    version: Option<[u64; 3]>,
 ) -> (VocabularyModels, VocabularyModes) {
     let catalog = match probe {
         Some(read) => Some(catalog_from_listing(
@@ -49,10 +50,12 @@ fn models_and_modes(
     let modes = VocabularyModes::new(
         VocabularyState::Present,
         Some(VocabularyOrigin::Daemon),
-        crate::codex_view::available_mode_views(),
+        crate::codex_view::available_mode_views(version),
     )
     .expect("a present modes axis always carries its origin")
-    .with_default_id(Some(crate::codex_view::DEFAULT_MODE.to_string()));
+    .with_default_id(Some(
+        crate::codex_view::default_mode_id(version).to_string(),
+    ));
     (models, modes)
 }
 
@@ -181,7 +184,8 @@ mod tests {
             ],
             config: json!({"config": {"model": "gpt-b", "model_reasoning_effort": "xhigh"}}),
         };
-        let (models, modes) = models_and_modes(Some(probe), &empty_home("live"), SystemTime::now());
+        let (models, modes) =
+            models_and_modes(Some(probe), &empty_home("live"), SystemTime::now(), None);
 
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
@@ -192,7 +196,7 @@ mod tests {
     #[test]
     fn a_failed_probe_falls_back_to_a_fresh_cache_with_no_default() {
         let home = home_with_cache("fresh", CACHE);
-        let (models, _) = models_and_modes(None, &home, SystemTime::now());
+        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
 
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
@@ -213,14 +217,19 @@ mod tests {
             .expect("cache file");
         let month_old = SystemTime::now() - CACHE_MAX_AGE * 2;
         file.set_modified(month_old).expect("age the cache");
-        let (models, _) = models_and_modes(None, &home, SystemTime::now());
+        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
 
         assert_eq!(models.state, VocabularyState::Absent);
     }
 
     #[test]
     fn no_answer_and_no_cache_leave_models_absent_and_modes_present() {
-        let (models, modes) = models_and_modes(None, &empty_home("missing"), SystemTime::now());
+        let (models, modes) = models_and_modes(
+            None,
+            &empty_home("missing"),
+            SystemTime::now(),
+            Some([0, 162, 0]),
+        );
 
         assert_eq!(models.state, VocabularyState::Absent);
         assert_eq!(modes.state, VocabularyState::Present);
@@ -230,9 +239,31 @@ mod tests {
     }
 
     #[test]
+    fn auto_review_is_offered_and_defaulted_only_from_the_release_that_routes_it() {
+        let older = models_and_modes(
+            None,
+            &empty_home("old"),
+            SystemTime::now(),
+            Some([0, 114, 9]),
+        );
+        let ids: Vec<&str> = older.1.items.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["read-only", "auto", "full-access"]);
+        assert_eq!(older.1.default_id.as_deref(), Some("auto"));
+
+        let newer = models_and_modes(
+            None,
+            &empty_home("new"),
+            SystemTime::now(),
+            Some([0, 115, 0]),
+        );
+        assert!(newer.1.items.iter().any(|m| m.id == "auto-review"));
+        assert_eq!(newer.1.default_id.as_deref(), Some("auto-review"));
+    }
+
+    #[test]
     fn a_cache_that_is_not_the_expected_shape_leaves_models_absent() {
         let home = home_with_cache("shape", r#"{"models": "not a list"}"#);
-        let (models, _) = models_and_modes(None, &home, SystemTime::now());
+        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
 
         assert_eq!(models.state, VocabularyState::Absent);
     }
@@ -243,7 +274,8 @@ mod tests {
             rows: Vec::new(),
             config: Value::Null,
         };
-        let (models, _) = models_and_modes(Some(probe), Path::new("unused"), SystemTime::now());
+        let (models, _) =
+            models_and_modes(Some(probe), Path::new("unused"), SystemTime::now(), None);
 
         assert_eq!(models.state, VocabularyState::Absent);
     }

@@ -873,17 +873,37 @@ const CODEX_MODES: &[CodexMode] = &[
     },
 ];
 
-/// The permission modes the table offers, as the composer lists them before an
-/// agent runs: the same rows [`validate_mode`] admits ids from.
-pub(crate) fn available_mode_views() -> Vec<SessionModeView> {
+/// The first Codex release that routes approvals through its auto-reviewer. An
+/// older one ignores the reviewer, so the mode is not offered to it.
+pub(crate) const AUTO_REVIEW_MIN_VERSION: [u64; 3] = [0, 115, 0];
+
+fn auto_review_supported(version: Option<[u64; 3]>) -> bool {
+    version.is_some_and(|version| version >= AUTO_REVIEW_MIN_VERSION)
+}
+
+/// The permission modes a draft offers before an agent runs: the rows
+/// [`validate_mode`] admits ids from, minus those the Codex version cannot honour.
+pub(crate) fn available_mode_views(version: Option<[u64; 3]>) -> Vec<SessionModeView> {
+    let supported = auto_review_supported(version);
     CODEX_MODES
         .iter()
+        .filter(|mode| mode.approvals_reviewer.is_none() || supported)
         .map(|mode| SessionModeView {
             id: mode.id.to_string(),
             name: mode.name.to_string(),
             description: Some(mode.description.to_string()),
         })
         .collect()
+}
+
+/// The mode a draft starts in: Codex's auto-review where it is offered, else the
+/// daemon's default mode.
+pub(crate) fn default_mode_id(version: Option<[u64; 3]>) -> &'static str {
+    if auto_review_supported(version) {
+        "auto-review"
+    } else {
+        DEFAULT_MODE
+    }
 }
 
 pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {

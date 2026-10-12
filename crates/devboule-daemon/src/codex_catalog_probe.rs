@@ -4,6 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -131,5 +132,51 @@ impl Conversation {
     fn write(&mut self, frame: &Value) -> Option<()> {
         writeln!(self.stdin, "{frame}").ok()?;
         self.stdin.flush().ok()
+    }
+}
+
+/// The installed Codex's own version, read from `--version` once per daemon.
+pub(crate) fn cli_version() -> Option<[u64; 3]> {
+    static VERSION: OnceLock<Option<[u64; 3]>> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let installed = crate::provider_catalog::find_available("codex")?;
+        // The app-server flag is the last element of the argv; `--version` takes its place.
+        let mut argv = installed.app_server_command?;
+        argv.pop()?;
+        argv.push("--version".to_string());
+        let program = argv.remove(0);
+        let mut command = Command::new(program);
+        command
+            .args(argv)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command.output().ok()?;
+        parse_version(&String::from_utf8_lossy(&output.stdout))
+    })
+}
+
+/// The first `major.minor.patch` in a `--version` line, such as `codex-cli 0.162.0`.
+pub(crate) fn parse_version(text: &str) -> Option<[u64; 3]> {
+    text.split_whitespace().find_map(|token| {
+        let mut parts = token.split('.').map(|part| part.parse::<u64>().ok());
+        Some([parts.next()??, parts.next()??, parts.next()??])
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_version;
+
+    #[test]
+    fn the_version_is_read_from_the_version_line() {
+        assert_eq!(parse_version("codex-cli 0.162.0\n"), Some([0, 162, 0]));
+        assert_eq!(parse_version("0.115.0"), Some([0, 115, 0]));
+        assert_eq!(parse_version("codex-cli unknown"), None);
+        assert_eq!(parse_version(""), None);
     }
 }
