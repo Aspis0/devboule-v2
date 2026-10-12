@@ -184,6 +184,8 @@ pub fn run() {
             backend::workspace::workspace_restore,
             backend::workspace::workspace_git_status,
             backend::workspace::workspace_git_diff,
+            backend::workspace::workspace_agent_edits,
+            backend::workspace::workspace_agent_diff,
             backend::workspace::workspace_git_log,
             backend::workspace::workspace_git_stage,
             backend::workspace::workspace_git_unstage,

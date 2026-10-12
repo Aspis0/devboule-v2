@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    Project, Workspace, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileContent,
-    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFileVersion, WorkspaceFileWriteResult,
-    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
+    Project, Workspace, WorkspaceAgentEdits, WorkspaceAgentFileDiff, WorkspaceDirectory,
+    WorkspaceEditableFile, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
+    WorkspaceFileVersion, WorkspaceFileWriteResult, WorkspaceGitFileDiff, WorkspaceGitLog,
+    WorkspaceGitStatus, WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -180,6 +181,30 @@ pub async fn workspace_git_diff(
 ) -> Result<WorkspaceGitFileDiff, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_git_diff(&workspace_id, &path)).await
+}
+
+/// The files this workspace's agents changed: the Changes panel of a folder
+/// that is not a git repository. The daemon answers from the journal, so this
+/// road runs no git and reads no file.
+#[tauri::command]
+pub async fn workspace_agent_edits(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+) -> Result<WorkspaceAgentEdits, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_agent_edits(&workspace_id)).await
+}
+
+/// One file's diff as the agents made it. `path` is matched against the
+/// paths the agents recorded and is never opened on disk.
+#[tauri::command]
+pub async fn workspace_agent_diff(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceAgentFileDiff, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_agent_diff(&workspace_id, &path)).await
 }
 
 /// The commit history of one workspace — the Changes panel's Commits

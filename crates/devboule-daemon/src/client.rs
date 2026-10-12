@@ -19,9 +19,10 @@ use devboule_protocol::{
     RemoteHostStatus, RemoteRelayMessage, RemoteRelayedEvent, ResumeResult, RetentionPatch,
     Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionResumeInfo,
     SessionResumeOutcome, SessionStateSnapshot, SessionTask, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileContent,
-    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFileVersion, WorkspaceFileWriteResult,
-    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
+    WireError, Workspace, WorkspaceAgentEdits, WorkspaceAgentFileDiff, WorkspaceDirectory,
+    WorkspaceEditableFile, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
+    WorkspaceFileVersion, WorkspaceFileWriteResult, WorkspaceGitFileDiff, WorkspaceGitLog,
+    WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -1379,6 +1380,43 @@ impl DaemonClient {
             path: path.to_string(),
         })? {
             DaemonMessage::WorkspaceGitFile { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The files this workspace's agents changed. The id is the whole
+    /// argument: the daemon answers from the journal, so no git runs here.
+    pub fn workspace_agent_edits(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceAgentEdits, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceAgentEdits {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::WorkspaceAgentEdits { edits, .. } => Ok(edits),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// One file's diff as the agents made it, every recorded call that
+    /// changed it. `path` is matched against the recorded paths, never opened.
+    pub fn workspace_agent_diff(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceAgentFileDiff, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceAgentDiff {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            call: None,
+        })? {
+            DaemonMessage::WorkspaceAgentDiff { diff, .. } => Ok(diff),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }

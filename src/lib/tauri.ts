@@ -50,6 +50,8 @@ import type {
   WorkspaceFilePreview,
   WorkspaceFileStaged,
   PreviewMediaKind,
+  WorkspaceAgentEdits,
+  WorkspaceAgentFileDiff,
   WorkspaceGitFileDiff,
   WorkspaceGitLog,
   WorkspaceGitStatus,
@@ -138,6 +140,8 @@ export type CommandArgs = {
   project_remove: { projectId: Id };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
+  workspace_agent_edits: { workspaceId: Id };
+  workspace_agent_diff: { workspaceId: Id; path: string };
   workspace_git_log: { workspaceId: Id };
   workspace_git_stage: { workspaceId: Id; paths: string[] };
   workspace_git_unstage: { workspaceId: Id; paths: string[] };
@@ -486,6 +490,8 @@ type CommandResults = {
   project_remove: void;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
+  workspace_agent_edits: WorkspaceAgentEdits;
+  workspace_agent_diff: WorkspaceAgentFileDiff;
   /** The commit history of one workspace: the branch's own commits and
    * the base branch's recent history, split at the fork point — the
    * Changes panel's Commits section. `error` is `null` on an answer (an
@@ -729,6 +735,8 @@ export const COMMAND_ARG_KEYS = {
   project_remove: ["projectId"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
+  workspace_agent_edits: ["workspaceId"],
+  workspace_agent_diff: ["workspaceId", "path"],
   workspace_git_log: ["workspaceId"],
   workspace_git_stage: ["workspaceId", "paths"],
   workspace_git_unstage: ["workspaceId", "paths"],
@@ -1047,6 +1055,15 @@ export const workspaceGitStatus = (workspaceId: Id) =>
  */
 export const workspaceGitDiff = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_git_diff", { workspaceId, path });
+/**
+ * The files this workspace's agents changed, for the Changes panel of a folder
+ * that is not a git repository. The daemon answers from the journal.
+ */
+export const workspaceAgentEdits = (workspaceId: Id) =>
+  invokeTyped("workspace_agent_edits", { workspaceId });
+/** One file's diff as the agents made it; `path` is a path the reply above named. */
+export const workspaceAgentDiff = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_agent_diff", { workspaceId, path });
 /**
  * The commit history of one workspace — the Changes panel's Commits
  * section. `workspaceId` names the folder: the daemon resolves it from the
