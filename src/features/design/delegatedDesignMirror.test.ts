@@ -463,6 +463,29 @@ describe("delegated design mirror", () => {
     });
   });
 
+  it("remembers every mirrored child, so an earlier one is not read again after a later one", async () => {
+    const captured: CapturedRead[] = [];
+    const deps = { readStored: fakeRead(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-a", "First"), deps);
+    await flush();
+    captured[0].resolve(storedMarkdown("```html\n<main>A</main>\n```"));
+    await flush();
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-b", "Second"), deps);
+    await flush();
+    captured[1].resolve(storedMarkdown("```html\n<main>B</main>\n```"));
+    await flush();
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>B</main>",
+    });
+
+    // A replayed finish of A: the set holds it, so no read and no second card.
+    scheduleDelegatedDesignMirror(finishedWithMarkdown("child-a", "First"), deps);
+    await flush();
+    expect(captured).toHaveLength(2);
+    const cardIds = useAppStore.getState().designSession.messages.map((message) => message.id);
+    expect(cardIds).toEqual(["delegated-design-child-a", "delegated-design-child-b"]);
+  });
+
   it("creates the Design host on first delegation so the panel has something to mirror", async () => {
     useAppStore.setState({
       designSession: {

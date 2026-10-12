@@ -56,7 +56,9 @@ export interface DelegatedMirrorDeps {
 export const DELEGATED_DESIGN_MESSAGE_PREFIX = "delegated-design-";
 
 let mirrorSequence = 0;
-let mirroredChildId: string | null = null;
+// Every child whose card is on the canvas. Dedupe is by membership, not by the
+// last child: a replayed finish of an earlier child is skipped without a read.
+const mirroredChildIds = new Set<string>();
 let writtenSequence = 0;
 let humanPinnedChildId: string | null = null;
 
@@ -82,7 +84,7 @@ export function clearDelegatedMirrorPin(): void {
 /** Resets all mirror state. Tests only; production state lives for the run. */
 export function resetDelegatedMirrorForTests(): void {
   mirrorSequence = 0;
-  mirroredChildId = null;
+  mirroredChildIds.clear();
   writtenSequence = 0;
   humanPinnedChildId = null;
 }
@@ -151,7 +153,7 @@ async function writeDelegatedArtifact(
   // The human pinned an entry while the read was in flight, or a duplicate
   // arrival's read finished second: neither may write.
   if (humanPinnedChildId !== null) return false;
-  if (mirroredChildId === childSessionId) return false;
+  if (mirroredChildIds.has(childSessionId)) return false;
   let host = store.getState().designSession.host;
   if (host === null) {
     const fresh = await ensureHost();
@@ -246,11 +248,11 @@ export function scheduleDelegatedDesignMirror(
       // re-mirroring the same child after its card was cleared.
       if (store.getState().designSession.host === null) {
         humanPinnedChildId = null;
-        mirroredChildId = null;
+        mirroredChildIds.clear();
         writtenSequence = 0;
       }
       if (humanPinnedChildId !== null) return;
-      if (mirroredChildId === childSessionId) return;
+      if (mirroredChildIds.has(childSessionId)) return;
       const readStored =
         deps?.readStored ?? (await import("../../lib/tauri")).sessionAttachmentRead;
       const { extractFencedHtml } = await import("./agentHost");
@@ -264,7 +266,7 @@ export function scheduleDelegatedDesignMirror(
       if (sequence < writtenSequence) return;
       if (await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store)) {
         writtenSequence = sequence;
-        mirroredChildId = childSessionId;
+        mirroredChildIds.add(childSessionId);
       }
     } catch (error) {
       console.warn(`Could not mirror the finish of child session ${childSessionId}.`, error);
