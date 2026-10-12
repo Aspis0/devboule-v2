@@ -13,7 +13,7 @@ import "./panel/changes.css";
 /** Oldest local daemon dialect that takes the paired-host agent-edit requests.
  * Mirrors `REMOTE_AGENT_EDIT_READS_MIN_VERSION` in `devboule-protocol`: a rebase
  * that moves that number moves this one too. */
-export const REMOTE_AGENT_EDIT_READS_MIN_DIALECT = 43;
+export const REMOTE_AGENT_EDIT_READS_MIN_DIALECT = 44;
 
 /**
  * The Changes panel for a paired host's workspace: the host's own

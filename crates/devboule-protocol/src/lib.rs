@@ -329,7 +329,7 @@ pub const AGENT_EDIT_READS_MIN_VERSION: u32 = 42;
 /// `RemoteHostAgentEdits` and `RemoteHostAgentDiff`. A client checks its own
 /// daemon against it before sending one. The app mirrors this number as
 /// `REMOTE_AGENT_EDIT_READS_MIN_DIALECT` in `RemoteChangesSurface.tsx`.
-pub const REMOTE_AGENT_EDIT_READS_MIN_VERSION: u32 = 43;
+pub const REMOTE_AGENT_EDIT_READS_MIN_VERSION: u32 = 44;
 /// The first dialect that pairs without a `role` field: every earlier daemon
 /// needs one in `PairingStart` and `PairingComplete`. Later dialects only add
 /// optional fields, so this floor does not move with `PROTOCOL_VERSION`.
