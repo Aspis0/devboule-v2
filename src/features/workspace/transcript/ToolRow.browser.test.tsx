@@ -135,7 +135,7 @@ describe("ToolRow browser and capture", () => {
     const container = await renderRow(
       tool({ kind: "browser", title: "click e33", status: "failed", output: failure }),
     );
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("· failed");
     expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
     const details = container.querySelector("details");
     if (details === null) throw new Error("the failed call had nothing to open");

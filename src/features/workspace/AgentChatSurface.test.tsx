@@ -3987,7 +3987,7 @@ describe("AgentChatSurface", () => {
     const failedRow = body.querySelector(".workspace-chat-tool.is-failed");
     const singleFailure = failedRow?.querySelector(".workspace-chat-tool-failed");
     // The failure says so in a muted word, with no cross and no red box.
-    expect(singleFailure?.textContent).toBe("failed");
+    expect(singleFailure?.textContent).toBe("· failed");
     expect(container.textContent).not.toContain("✗");
     expect(body.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
     // The read row is the second one with a disclosure: the failed call's is first.
@@ -4208,7 +4208,7 @@ describe("AgentChatSurface", () => {
       "1 failed",
     );
     await openEveryGroup(container);
-    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("· failed");
   });
 
   it("keeps an expanded group open and updates its count as tools stream in", async () => {

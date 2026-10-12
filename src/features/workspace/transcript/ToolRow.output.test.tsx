@@ -137,7 +137,7 @@ describe("ToolRow output", () => {
         output: lines(5, "err"),
       }),
     );
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("· failed");
     expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
     await openLine(container);
     const excerpt = container.querySelector(".workspace-chat-tool-output.is-failure");

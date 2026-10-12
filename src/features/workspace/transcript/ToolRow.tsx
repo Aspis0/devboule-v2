@@ -191,12 +191,14 @@ export const ToolRow = memo(function ToolRow({
         <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
       ) : null}
       {failed && devboule === undefined ? (
-        <>
+        // The word sits at the row's end, so its dot goes with it: a dot alone
+        // after the reason would read as a stray separator.
+        <span className="workspace-chat-tool-failed">
           <span className="workspace-chat-tool-sep" aria-hidden="true">
             ·
-          </span>
-          <span className="workspace-chat-tool-failed">failed</span>
-        </>
+          </span>{" "}
+          failed
+        </span>
       ) : null}
       {running ? (
         <span className="workspace-chat-tool-running" role="img" aria-label="Running" />

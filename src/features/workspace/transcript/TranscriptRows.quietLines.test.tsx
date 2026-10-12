@@ -227,7 +227,7 @@ describe("quiet lines", () => {
       },
     ]);
 
-    expect(host.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(host.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("· failed");
     expect(host.querySelector(".workspace-chat-tool-summary svg")).not.toBeNull();
   });
 

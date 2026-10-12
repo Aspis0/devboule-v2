@@ -124,7 +124,7 @@ describe("ToolRow line", () => {
         output: lines(5, "err"),
       }),
     );
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("· failed");
     expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
     const details = container.querySelector("details");
     if (details === null) throw new Error("the failed call had nothing to open");

@@ -57,4 +57,18 @@ describe("the tool row's verb and target", () => {
     const view = await render(row({ title: "src/lib.rs", kind: "read" }));
     expect(view.querySelector(".workspace-chat-tool-sep")).toBeNull();
   });
+
+  it("draws a failed row's dot only together with the word it separates", async () => {
+    const view = await render(
+      row({
+        title: "Answer permission",
+        status: "failed",
+        output: "user rejected MCP tool call",
+      }),
+    );
+    const failedWord = view.querySelector(".workspace-chat-tool-failed");
+    expect(failedWord?.textContent).toBe("· failed");
+    expect(view.querySelectorAll(".workspace-chat-tool-sep")).toHaveLength(1);
+    expect(failedWord?.querySelector(".workspace-chat-tool-sep")).not.toBeNull();
+  });
 });

@@ -158,7 +158,7 @@ describe("a group that holds a failure", () => {
     );
     if (failedRow === null) throw new Error("the failed call did not render");
     const failedWord = failedRow.querySelector(".workspace-chat-tool-failed");
-    expect(failedWord?.textContent).toBe("failed");
+    expect(failedWord?.textContent).toBe("· failed");
     expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
 
     const details = failedRow.querySelector<HTMLDetailsElement>("details");
