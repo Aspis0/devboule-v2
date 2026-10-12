@@ -116,7 +116,9 @@ describe("side panel dead controls", () => {
       // a panel that renders nothing at all.
       expect(container.querySelector(".workspace-grounding-row")).not.toBeNull();
       expect(container.querySelector(".workspace-open-design")).not.toBeNull();
-      expect(container.textContent).toContain("Design has not been opened in this session yet");
+      expect(container.textContent).toContain(
+        "Nothing on the canvas yet. A Design agent's result appears here when it finishes.",
+      );
 
       expect(container.textContent).not.toContain("Mockup");
       // The invented generation card from the mockup must be gone for good.

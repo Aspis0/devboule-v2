@@ -132,7 +132,7 @@ export function DesignPreviewPanel() {
       </div>
       {host === null ? (
         <p className="workspace-design-note">
-          Design has not been opened in this session yet, so there is nothing to mirror here.
+          Nothing on the canvas yet. A Design agent's result appears here when it finishes.
         </p>
       ) : (
         <>

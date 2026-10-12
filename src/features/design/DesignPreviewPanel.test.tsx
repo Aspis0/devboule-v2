@@ -12,7 +12,8 @@ import { ARTIFACT_CSP_META } from "./artifactCsp";
 import { ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignPreviewPanel } from "./DesignPreviewPanel";
 
-const NOT_OPENED_MESSAGE = "Design has not been opened in this session yet";
+const EMPTY_CANVAS_MESSAGE =
+  "Nothing on the canvas yet. A Design agent's result appears here when it finishes.";
 const NOTHING_GENERATED_MESSAGE = "Design is open, but nothing has been generated yet.";
 const GENERATING_MESSAGE = "Generating a design…";
 const REJECTED_MESSAGE = "The last artifact was rejected.";
@@ -149,7 +150,7 @@ describe("DesignPreviewPanel", () => {
     });
   }
 
-  it("says Design was never opened when host is null, not that nothing was generated", async () => {
+  it("says the canvas is empty when host is null, not that nothing was generated", async () => {
     useAppStore.setState({
       designSession: {
         host: null,
@@ -163,7 +164,7 @@ describe("DesignPreviewPanel", () => {
 
     await renderPanel();
 
-    expect(container.textContent).toContain(NOT_OPENED_MESSAGE);
+    expect(container.textContent).toContain(EMPTY_CANVAS_MESSAGE);
     expect(container.textContent).not.toContain(NOTHING_GENERATED_MESSAGE);
   });
 
@@ -274,7 +275,7 @@ describe("DesignPreviewPanel", () => {
     await renderPanel();
 
     expect(container.textContent).toContain(NOTHING_GENERATED_MESSAGE);
-    expect(container.textContent).not.toContain(NOT_OPENED_MESSAGE);
+    expect(container.textContent).not.toContain(EMPTY_CANVAS_MESSAGE);
     expect(container.textContent).not.toContain(REJECTED_MESSAGE);
   });
 
