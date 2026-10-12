@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+// happy-dom 21 disables iframe page loading by default as SSRF hardening, which
+// leaves iframe.contentWindow null; this file needs only the child window.
+// @vitest-environment-options { "settings": { "enableIframePageLoading": true } }
 // happy-dom does not model sandbox origin semantics. These tests handcraft
 // MessageEvent origins, so passing here does not prove the real browser frame
 // has a non-opaque origin or can receive replies addressed to that origin.
