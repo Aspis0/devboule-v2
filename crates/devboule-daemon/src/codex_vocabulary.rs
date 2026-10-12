@@ -3,14 +3,14 @@
 //! and its permission modes from the daemon's own mode table.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use devboule_protocol::{VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularyState};
 use serde_json::{json, Value};
 
-use crate::codex_model_catalog::{
-    catalog_from_listing, configured_defaults, CodexModelCatalog, ConfiguredDefaults,
-};
+use crate::codex_catalog_source::CodexCatalogSource;
+use crate::codex_model_catalog::{catalog_from_listing, configured_defaults};
 use crate::session::codex_catalog_probe::{cli_version, read_catalog, CodexCatalogRead};
 
 const MODELS_CACHE_FILE: &str = "models_cache.json";
@@ -19,24 +19,18 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// Codex's models and modes. Without a live answer and without a fresh cache
 /// the models axis is absent; the modes are the daemon's table and always present.
-pub(crate) fn codex_axes() -> (VocabularyModels, VocabularyModes) {
+pub(crate) fn codex_axes(source: &CodexCatalogSource) -> (VocabularyModels, VocabularyModes) {
     let home = crate::codex_command_catalog::resolve_home();
-    models_and_modes(read_catalog(), &home, SystemTime::now(), cli_version())
+    let disk = disk_cache_read(&home, SystemTime::now());
+    models_and_modes(source.read(Arc::new(read_catalog), disk), cli_version())
 }
 
 fn models_and_modes(
-    probe: Option<CodexCatalogRead>,
-    home: &Path,
-    now: SystemTime,
+    read: Option<CodexCatalogRead>,
     version: Option<[u64; 3]>,
 ) -> (VocabularyModels, VocabularyModes) {
-    let catalog = match probe {
-        Some(read) => Some(catalog_from_listing(
-            &read.rows,
-            &configured_defaults(&read.config),
-        )),
-        None => cached_catalog(&home.join(MODELS_CACHE_FILE), now),
-    };
+    let catalog =
+        read.map(|read| catalog_from_listing(&read.rows, &configured_defaults(&read.config)));
     let models = match catalog {
         Some(catalog) if !catalog.models.is_empty() => VocabularyModels::new(
             VocabularyState::Present,
@@ -59,20 +53,23 @@ fn models_and_modes(
     (models, modes)
 }
 
-/// The catalog a cache file holds, when the file is recent and well-formed.
-/// The cache names no configured default, so the draft leaves the model unset.
-fn cached_catalog(path: &Path, now: SystemTime) -> Option<CodexModelCatalog> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+/// The rows of Codex's model cache, when the file is recent and well-formed. The
+/// cache names no configured default, so a draft answered from it leaves the model unset.
+pub(crate) fn disk_cache_read(home: &Path, now: SystemTime) -> Option<CodexCatalogRead> {
+    let path = home.join(MODELS_CACHE_FILE);
+    let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
     if !now
         .duration_since(modified)
         .is_ok_and(|age| age <= CACHE_MAX_AGE)
     {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = std::fs::read_to_string(&path).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
-    let rows = cache_rows(&value)?;
-    Some(catalog_from_listing(&rows, &ConfiguredDefaults::default()))
+    Some(CodexCatalogRead {
+        rows: cache_rows(&value)?,
+        config: Value::Null,
+    })
 }
 
 /// The cache's listed models as `model/list` rows, in its priority order.
@@ -122,11 +119,10 @@ fn listing_row(entry: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{models_and_modes, CACHE_MAX_AGE};
+    use super::{disk_cache_read, models_and_modes, CACHE_MAX_AGE};
     use crate::session::codex_catalog_probe::CodexCatalogRead;
     use devboule_protocol::{VocabularyOrigin, VocabularyState};
     use serde_json::{json, Value};
-    use std::path::Path;
     use std::time::SystemTime;
 
     fn home_with_cache(tag: &str, body: &str) -> std::path::PathBuf {
@@ -165,12 +161,6 @@ mod tests {
         ]
     }"#;
 
-    fn empty_home(tag: &str) -> std::path::PathBuf {
-        let home = crate::test_dirs::test_temp_dir(&format!("devboule-codex-vocabulary-{tag}"));
-        std::fs::create_dir_all(&home).expect("codex home");
-        home
-    }
-
     #[test]
     fn a_live_answer_lists_its_models_with_the_configured_default() {
         let probe = CodexCatalogRead {
@@ -184,8 +174,7 @@ mod tests {
             ],
             config: json!({"config": {"model": "gpt-b", "model_reasoning_effort": "xhigh"}}),
         };
-        let (models, modes) =
-            models_and_modes(Some(probe), &empty_home("live"), SystemTime::now(), None);
+        let (models, modes) = models_and_modes(Some(probe), None);
 
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
@@ -194,9 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_probe_falls_back_to_a_fresh_cache_with_no_default() {
+    fn a_fresh_cache_gives_the_models_with_no_default() {
         let home = home_with_cache("fresh", CACHE);
-        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
+        let (models, _) = models_and_modes(disk_cache_read(&home, SystemTime::now()), None);
 
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
@@ -209,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_cache_is_not_offered() {
+    fn a_stale_cache_is_not_read() {
         let home = home_with_cache("stale", CACHE);
         let file = std::fs::File::options()
             .write(true)
@@ -217,19 +206,13 @@ mod tests {
             .expect("cache file");
         let month_old = SystemTime::now() - CACHE_MAX_AGE * 2;
         file.set_modified(month_old).expect("age the cache");
-        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
 
-        assert_eq!(models.state, VocabularyState::Absent);
+        assert!(disk_cache_read(&home, SystemTime::now()).is_none());
     }
 
     #[test]
     fn no_answer_and_no_cache_leave_models_absent_and_modes_present() {
-        let (models, modes) = models_and_modes(
-            None,
-            &empty_home("missing"),
-            SystemTime::now(),
-            Some([0, 162, 0]),
-        );
+        let (models, modes) = models_and_modes(None, Some([0, 162, 0]));
 
         assert_eq!(models.state, VocabularyState::Absent);
         assert_eq!(modes.state, VocabularyState::Present);
@@ -240,22 +223,12 @@ mod tests {
 
     #[test]
     fn auto_review_is_offered_and_defaulted_only_from_the_release_that_routes_it() {
-        let older = models_and_modes(
-            None,
-            &empty_home("old"),
-            SystemTime::now(),
-            Some([0, 114, 9]),
-        );
+        let older = models_and_modes(None, Some([0, 114, 9]));
         let ids: Vec<&str> = older.1.items.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["read-only", "auto", "full-access"]);
         assert_eq!(older.1.default_id.as_deref(), Some("auto"));
 
-        let newer = models_and_modes(
-            None,
-            &empty_home("new"),
-            SystemTime::now(),
-            Some([0, 115, 0]),
-        );
+        let newer = models_and_modes(None, Some([0, 115, 0]));
         assert!(newer.1.items.iter().any(|m| m.id == "auto-review"));
         assert_eq!(newer.1.default_id.as_deref(), Some("auto-review"));
     }
@@ -263,7 +236,7 @@ mod tests {
     #[test]
     fn a_cache_that_is_not_the_expected_shape_leaves_models_absent() {
         let home = home_with_cache("shape", r#"{"models": "not a list"}"#);
-        let (models, _) = models_and_modes(None, &home, SystemTime::now(), None);
+        let (models, _) = models_and_modes(disk_cache_read(&home, SystemTime::now()), None);
 
         assert_eq!(models.state, VocabularyState::Absent);
     }
@@ -274,8 +247,7 @@ mod tests {
             rows: Vec::new(),
             config: Value::Null,
         };
-        let (models, _) =
-            models_and_modes(Some(probe), Path::new("unused"), SystemTime::now(), None);
+        let (models, _) = models_and_modes(Some(probe), None);
 
         assert_eq!(models.state, VocabularyState::Absent);
     }

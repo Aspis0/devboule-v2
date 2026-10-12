@@ -17,6 +17,7 @@ const MODEL_PAGE_LIMIT: u64 = 100;
 const MAX_MODEL_PAGES: usize = 20;
 
 /// The listing rows and the config a probe read.
+#[derive(Clone)]
 pub(crate) struct CodexCatalogRead {
     pub(crate) rows: Vec<Value>,
     pub(crate) config: Value,

@@ -1063,8 +1063,12 @@ impl Provider for CodexProvider {
         true
     }
 
-    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-        crate::codex_vocabulary::codex_axes()
+    fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        crate::codex_vocabulary::codex_axes(&state.codex_catalog)
+    }
+
+    fn vocabulary_transient(&self, state: &Arc<ServerState>) -> bool {
+        !state.codex_catalog.has_live_answer()
     }
 
     fn features(

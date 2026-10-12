@@ -63,6 +63,8 @@ mod claude_task_state;
 mod claude_view;
 mod client;
 #[cfg(feature = "server")]
+mod codex_catalog_source;
+#[cfg(feature = "server")]
 mod codex_command_catalog;
 #[cfg(feature = "server")]
 mod codex_commands;

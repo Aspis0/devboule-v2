@@ -171,6 +171,9 @@ pub struct ServerState {
     /// feeds the profile form only — the live `SessionManifest` never reads
     /// it, and per-session chips keep coming from the manifest as before.
     pub(crate) provider_vocabulary: crate::provider_vocabulary::VocabularyCache,
+    /// The Codex catalog a draft reads: one probe in flight at a time, shared by
+    /// the drafts that ask while it runs.
+    pub(crate) codex_catalog: crate::codex_catalog_source::CodexCatalogSource,
     /// The ACP feature reads: one per named provider per daemon run, each the
     /// answer of a throwaway `session/new`. Separate from the vocabulary cache
     /// above because it has no TTL and no model in its key — the read that
@@ -535,6 +538,7 @@ impl ServerState {
             #[cfg(test)]
             version_probe_entries: AtomicU64::new(0),
             provider_vocabulary: crate::provider_vocabulary::VocabularyCache::default(),
+            codex_catalog: crate::codex_catalog_source::CodexCatalogSource::default(),
             acp_features: std::sync::Arc::new(
                 crate::provider_feature_probe::AcpProbeCache::default(),
             ),
