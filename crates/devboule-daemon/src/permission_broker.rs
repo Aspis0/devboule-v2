@@ -939,7 +939,8 @@ impl PermissionBroker {
     }
 
     /// Whether the session's mode refuses writes and this card asks for a tool. A
-    /// question or a plan is the person's own answer, not a write, so it stays.
+    /// question, a plan, or a card the person must answer in every mode is not a
+    /// write the mode can refuse, so it stays.
     fn mode_refuses_card(&self, tool_call_id: &str, runtime: &Arc<SessionRuntime>) -> bool {
         let is_tool_card = self
             .pending
@@ -953,7 +954,11 @@ impl PermissionBroker {
                 {
                     Some(SessionEvent::PermissionRequest { kind, .. }) => Some(!matches!(
                         kind,
-                        Some(PermissionRequestKind::Question | PermissionRequestKind::Plan)
+                        Some(
+                            PermissionRequestKind::Question
+                                | PermissionRequestKind::Plan
+                                | PermissionRequestKind::Always
+                        )
                     )),
                     _ => None,
                 }
@@ -2303,6 +2308,72 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+
+    /// A switch into plan denies the write the session holds, and leaves an
+    /// always-card to the person: a card for the person is valid in every mode.
+    #[test]
+    fn a_plan_switch_denies_a_write_and_keeps_the_always_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Claude);
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "default".to_string(),
+                available_modes: Vec::new(),
+            }),
+            current_model_provider_id: None,
+        });
+        broker
+            .register(
+                1,
+                permission_with_kinds(
+                    "write-1",
+                    &[("allow", "allow_once"), ("deny", "reject_once")],
+                ),
+                &runtime,
+            )
+            .expect("register the write");
+        let mut always = permission_with_kinds(
+            "always-1",
+            &[("allow", "allow_once"), ("deny", "reject_once")],
+        );
+        if let SessionEvent::PermissionRequest { kind, .. } = &mut always {
+            *kind = Some(devboule_protocol::PermissionRequestKind::Always);
+        }
+        broker
+            .register(2, always, &runtime)
+            .expect("register the always-card");
+        runtime
+            .record_claude_mode_report("plan")
+            .expect("record the plan switch");
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "plan".to_string(),
+                available_modes: Vec::new(),
+            }),
+            current_model_provider_id: None,
+        });
+
+        broker.reconsider_session("", &runtime);
+
+        let answered: Vec<u64> = sent
+            .lock()
+            .expect("sent")
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(answered, vec![1], "only the write is denied");
+        assert!(
+            broker.has_pending("always-1"),
+            "the always-card waits for the person"
+        );
+    }
 
     #[test]
     fn permission_registration_bounds_plan_text() {
