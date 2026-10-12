@@ -180,29 +180,38 @@ describe("the changes file row's computed layout decisions", () => {
     expect(button.textContent).toBe("README.md");
     expect(getComputedStyle(actions).flexShrink).toBe("0");
     expect(getComputedStyle(stats).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(stats).flexShrink).toBe("0");
 
-    // Tones travel with the row's classes: new files in the add tone, a
-    // plain row in the quiet counts colour, deletions in the danger tone.
-    expect(getComputedStyle(stats).color).toBe(token("--tone-add"));
-    const plainStats = rowAt(1).querySelector(".workspace-file-change-stats");
-    const deletedStats = rowAt(2).querySelector(".workspace-file-change-stats");
-    if (plainStats === null || deletedStats === null) {
-      throw new Error("a row's counts did not render");
-    }
-    expect(getComputedStyle(plainStats).color).toBe(token("--muted"));
-    expect(getComputedStyle(deletedStats).color).toBe(token("--danger"));
+    // Status is the icon's tint alone: new files in the add tone, deletions
+    // in the danger tone, and the counts drop a zero side.
+    const addIcon = rowAt(0).querySelector(".workspace-changes-file-icon");
+    const deletedIcon = rowAt(2).querySelector(".workspace-changes-file-icon");
+    if (addIcon === null || deletedIcon === null) throw new Error("a row's icon did not render");
+    expect(getComputedStyle(addIcon).color).toBe(token("--tone-add"));
+    expect(getComputedStyle(deletedIcon).color).toBe(token("--tone-del"));
+    expect(stats.textContent).toBe("+5−2");
+    expect(rowAt(2).querySelector(".workspace-file-change-stats")?.textContent).toBe("−9");
   });
 
-  it("makes the name the yielding text: zero minimum, clip, ellipsis", async () => {
+  it("makes the name's head the yielding text and keeps its tail whole", async () => {
     await renderRowFamily();
 
     const name = rowAt(0).querySelector(".workspace-file-change-name");
-    if (name === null) throw new Error("file name did not render");
-    const nameStyle = getComputedStyle(name);
-    expect(Number.parseFloat(nameStyle.minWidth)).toBe(0);
-    expect(nameStyle.overflow).toBe("hidden");
-    expect(nameStyle.textOverflow).toBe("ellipsis");
-    expect(nameStyle.whiteSpace).toBe("nowrap");
+    const head = rowAt(0).querySelector(".workspace-file-change-head");
+    const tail = rowAt(0).querySelector(".workspace-file-change-tail");
+    if (name === null || head === null || tail === null) {
+      throw new Error("the name's parts did not render");
+    }
+    expect(getComputedStyle(name).display).toBe("flex");
+    expect(Number.parseFloat(getComputedStyle(name).minWidth)).toBe(0);
+    expect(head.textContent).toBe("REA");
+    expect(tail.textContent).toBe("DME.md");
+    const headStyle = getComputedStyle(head);
+    expect(Number.parseFloat(headStyle.minWidth)).toBe(0);
+    expect(headStyle.overflow).toBe("hidden");
+    expect(headStyle.textOverflow).toBe("ellipsis");
+    expect(headStyle.whiteSpace).toBe("pre");
+    expect(getComputedStyle(tail).flexShrink).toBe("0");
   });
 
   it("floors the select button above its own fixed chrome, at every depth", async () => {
@@ -286,12 +295,15 @@ describe("the changes file row's computed layout decisions", () => {
     );
     expect(aside.body).toContain("visibility: hidden");
 
-    // The last-resort yield: clipped and ellipsized, never spilling.
-    const yieldRule = ruleFor(gated, ".workspace-file-change-row .workspace-file-change-stats");
-    expect(yieldRule.body).toContain("flex: 0 1 auto");
-    expect(yieldRule.body).toContain("min-width: 0");
-    expect(yieldRule.body).toContain("overflow: hidden");
-    expect(yieldRule.body).toContain("text-overflow: ellipsis");
+    // The counts never clip: the name alone yields, so no rule in the gate
+    // clips the stats.
+    expect(
+      gated.some(
+        (rule) =>
+          rule.selector.includes(".workspace-file-change-stats") &&
+          rule.body.includes("text-overflow"),
+      ),
+    ).toBe(false);
   });
 
   it("masks the name's tail behind the revealed strip, in the row's own tokens", () => {

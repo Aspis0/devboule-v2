@@ -7,11 +7,21 @@
    Workspace.css also arrives early through NewProjectDialog at :15, so no
    rule here may depend on beating it by position; see below). */
 
-/* The panel root: a flex column so the commit row can pin to its bottom. */
+/* The panel root fills the side panel's body: a flex column whose list scrolls
+   inside it while the head and the commit footer stay put. */
 .workspace-changes {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+}
+
+/* The list and the open diff scroll together; the head above and the commit
+   footer below are outside this box, so no row can pass under the footer. */
+.workspace-changes-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-6) var(--space-8);
 }
 
 /* The root is a programmatic focus landing, never a tab stop: no ring on
@@ -71,42 +81,27 @@
 }
 
 .workspace-file-change-action {
+  display: grid;
+  place-items: center;
+  width: var(--control-dense);
   height: var(--control-dense);
-  padding: 0 var(--space-8);
-  color: var(--silence);
+  padding: 0;
+  color: var(--muted);
   background: transparent;
   border: 0;
   border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--type-small);
 }
 
 .workspace-file-change-action:hover,
 .workspace-file-change-action:focus-visible {
   color: var(--ink);
-  background: var(--surface-muted);
+  background: var(--fill-hover);
 }
 
 .workspace-file-change-action:disabled {
   cursor: default;
   opacity: 0.6;
-}
-
-.workspace-commit-message {
-  flex: 1;
-  min-width: 0;
-  height: var(--control-default);
-  padding: 0 var(--space-8);
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-6);
-  font-family: var(--font-mono);
-}
-
-.workspace-commit-message::placeholder {
-  color: var(--silence);
 }
 
 .workspace-file-change {
@@ -433,18 +428,41 @@ ul.workspace-changes-tree {
   background: var(--fill-tool);
 }
 
+/* The name is the row's only shrinking part: its head yields to an ellipsis
+   and its tail (the last six characters, see changesName.ts) stays whole. */
 .workspace-file-change-name {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workspace-file-change-head {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: pre;
 }
 
-.workspace-file-change-stats-is-add {
+.workspace-file-change-tail {
+  flex: none;
+  white-space: pre;
+}
+
+/* A new file's icon reads in the add tone, a deleted one's in the danger tone
+   with its name muted: the status word is gone, its tint is the only status. */
+.workspace-changes-file-add .workspace-changes-file-icon {
   color: var(--tone-add);
 }
 
-.workspace-file-change-stats-is-del {
-  color: var(--danger-deep);
+.workspace-changes-file-del .workspace-changes-file-icon {
+  color: var(--tone-del);
+}
+
+/* Folder totals are context, not status: they stay muted beside the chevron. */
+.workspace-changes-folder-stats .workspace-changes-counts-add,
+.workspace-changes-folder-stats .workspace-changes-counts-del {
+  color: var(--muted);
 }
 
 /* Fine pointers keep one line: the acts leave the flex line and hang over
@@ -508,16 +526,6 @@ ul.workspace-changes-tree {
   .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-stats {
     visibility: hidden;
   }
-
-  /* The line is pinned above, so once the name is at its floor the counts
-     yield: clipped and ellipsized, never spilling the row. */
-  .workspace-file-change-row .workspace-file-change-stats {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 
 /* The pencil after the row's acts: the slice-8 hand-off, quiet until hover. */
@@ -542,39 +550,41 @@ ul.workspace-changes-tree {
   background: var(--fill-hover);
 }
 
-/* The commit row closes the panel: sticky to the scrollport's bottom with
-   margin-top auto pushing it there on short trees, divided from the tree
+/* The commit footer closes the panel, outside the list's scroller and never
+   scrolled: the message field over a full-width Commit, divided from the list
    by the panel's hairline. */
-.workspace-commit-row {
-  display: flex;
+.workspace-commit-footer {
+  display: grid;
+  flex: none;
   gap: var(--space-6);
-  margin-top: auto;
-  padding: var(--space-10) var(--space-12);
+  padding: var(--space-8) var(--space-12) var(--space-10);
   background: var(--panel-side);
   border-top: 1px solid var(--line);
-  position: sticky;
-  bottom: 0;
 }
 
-.workspace-commit-row .workspace-commit-message {
+.workspace-commit-footer .workspace-commit-message {
+  width: 100%;
   height: var(--control-default);
+  padding: 0 var(--space-8);
   color: var(--ink);
   background: transparent;
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-6);
   font-family: var(--font-ui);
   font-size: var(--type-meta);
 }
 
-.workspace-commit-row .workspace-commit-message::placeholder {
+.workspace-commit-footer .workspace-commit-message::placeholder {
   color: var(--muted);
 }
 
 .workspace-commit-button {
-  display: inline-flex;
-  flex: none;
+  display: flex;
   align-items: center;
+  justify-content: center;
+  width: 100%;
   height: var(--control-default);
-  padding: 0 var(--space-12);
+  padding: 0;
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--line-strong);

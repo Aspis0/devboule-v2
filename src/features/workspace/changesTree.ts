@@ -102,5 +102,20 @@ export function buildChangesTree(rows: WorkspaceGitRow[], inexact = false): Chan
     return { additions, deletions, capped };
   };
   sum(top);
-  return top;
+  return compressChains(top);
+}
+
+/**
+ * A folder whose only child is a folder reads as one row (`src/features/workspace`):
+ * the parent holds no files of its own, so the chain's sums are the child's.
+ */
+function compressChains(nodes: ChangesTreeNode[]): ChangesTreeNode[] {
+  return nodes.map((node) => (node.kind === "file" ? node : compressFolder(node)));
+}
+
+function compressFolder(folder: ChangesTreeFolder): ChangesTreeFolder {
+  const children = compressChains(folder.children);
+  const only = children.length === 1 ? children[0] : undefined;
+  if (only === undefined || only.kind === "file") return { ...folder, children };
+  return { ...only, name: `${folder.name}/${only.name}` };
 }

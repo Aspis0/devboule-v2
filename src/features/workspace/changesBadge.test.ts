@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceGitStatus } from "../../types/ipc";
-import { changesBadgeLabel, changesBranchLabel, changesTotalsLabel } from "./changesBadge";
+import { changesBadgeLabel, changesBranchLabel, changesTotals } from "./changesBadge";
 
 function status(overrides: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
   return {
@@ -88,31 +88,29 @@ describe("changesBadgeLabel", () => {
   });
 });
 
-describe("changesTotalsLabel", () => {
+describe("changesTotals", () => {
   it("states the exact totals of an exact list", () => {
     expect(
-      changesTotalsLabel(
-        status({ dirty: true, totals: { additions: 96, deletions: 41 }, rows: [ROW] }),
-      ),
-    ).toBe("+96 −41");
+      changesTotals(status({ dirty: true, totals: { additions: 96, deletions: 41 }, rows: [ROW] })),
+    ).toEqual({ additions: 96, deletions: 41, approximate: false });
   });
 
-  it("keeps the inexact mark when any count is a floor", () => {
+  it("marks the totals approximate when any count is a floor", () => {
     expect(
-      changesTotalsLabel(
+      changesTotals(
         status({
           dirty: true,
           totals: { additions: 96, deletions: 41 },
           rows: [{ ...ROW, capped: true }],
         }),
       ),
-    ).toBe("≈+96 −41");
+    ).toEqual({ additions: 96, deletions: 41, approximate: true });
   });
 
   it("reads nothing without rows: clean, withheld or rowless caveat alike", () => {
-    expect(changesTotalsLabel(status())).toBeNull();
-    expect(changesTotalsLabel(status({ dirty: true }))).toBeNull();
-    expect(changesTotalsLabel(status({ error: "git status exited with code 128" }))).toBeNull();
+    expect(changesTotals(status())).toBeNull();
+    expect(changesTotals(status({ dirty: true }))).toBeNull();
+    expect(changesTotals(status({ error: "git status exited with code 128" }))).toBeNull();
   });
 });
 

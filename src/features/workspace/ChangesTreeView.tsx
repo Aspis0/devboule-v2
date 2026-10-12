@@ -3,6 +3,8 @@ import type { WorkspaceGitRow } from "../../types/ipc";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "./changesTree";
+import { ChangesCounts } from "./ChangesCounts";
+import { splitFileName } from "./changesName";
 
 /**
  * The Changes folder tree as a disclosure list: folders are buttons naming
@@ -51,12 +53,12 @@ function pathsOf(row: WorkspaceGitRow): string[] {
   return row.renamedFrom ? [row.path, row.renamedFrom] : [row.path];
 }
 
-/** `+n −m`, with the mark when the numbers are floors rather than counts. */
+/** The row's label for assistive tech: the exact counts, with the mark a floor carries. */
 function countsLabel(additions: number, deletions: number, capped: boolean): string {
   return `${capped ? "≈" : ""}+${additions} −${deletions}`;
 }
 
-/** A new or untracked file's stats read in the add tone (SPEC-regions). */
+/** A new or untracked file's icon reads in the add tone. */
 function isNewRow(row: WorkspaceGitRow): boolean {
   return row.status === "added" || row.status === "untracked";
 }
@@ -136,23 +138,29 @@ const FileNode = memo(function FileNode({
   workspaceKey: WorkspaceKey;
 }) {
   const selected = selection === path;
+  const { head, tail } = splitFileName(name);
+  const tone = isNewRow(row)
+    ? " workspace-changes-file-add"
+    : row.status === "deleted"
+      ? " workspace-changes-file-del"
+      : "";
   return (
     // The row is a wrapper, not a button: the select control keeps its
-    // own button (and its exact text and marks); status, counts and
-    // actions are siblings beside it — a button may not nest, and the
-    // row's wrap must see the two fixed halves at their full width.
+    // own button (and its exact text and marks); counts and actions are
+    // siblings beside it — a button may not nest, and the row's wrap must
+    // see the two fixed halves at their full width.
     <li className="workspace-file-change-row">
       <button
         type="button"
         className={`workspace-file-change workspace-changes-file${
           selected ? " workspace-file-change-selected" : ""
-        }${row.status === "deleted" ? " workspace-file-change-muted" : ""}`}
+        }${row.status === "deleted" ? " workspace-file-change-muted" : ""}${tone}`}
         // Selecting shows the diff below; pressing again changes nothing,
         // so this is current-item marking, never a toggle contract.
         aria-current={selected ? "true" : undefined}
         title={path}
-        // The status word is not drawn beside the name — it took the room
-        // the name needs — so the label is where AT hears it.
+        // The status is not drawn beside the name — its icon tint carries
+        // it — so the label is where AT hears it.
         aria-label={`${name} ${row.status} ${countsLabel(row.additions, row.deletions, row.capped)}`}
         // The floor the row's line-break measures (pad 12 + icon 12 +
         // gap 6 + a 16px name, with the depth pad): the line yields
@@ -161,36 +169,48 @@ const FileNode = memo(function FileNode({
         onClick={() => onSelect(path)}
       >
         {FileIcon}
-        <span className="workspace-file-change-name">{name}</span>
+        <span className="workspace-file-change-name">
+          {head === "" ? null : <span className="workspace-file-change-head">{head}</span>}
+          <span className="workspace-file-change-tail">{tail}</span>
+        </span>
       </button>
-      <span
-        className={`workspace-file-change-stats${
-          isNewRow(row) ? " workspace-file-change-stats-is-add" : ""
-        }${row.status === "deleted" ? " workspace-file-change-stats-is-del" : ""}`}
-        title={row.capped ? "counts are not exact" : undefined}
-      >
-        {countsLabel(row.additions, row.deletions, row.capped)}
-      </span>
+      <ChangesCounts
+        additions={row.additions}
+        deletions={row.deletions}
+        approximate={row.capped}
+        className="workspace-file-change-stats"
+      />
       <span className="workspace-file-change-actions">
         {readOnly ? null : (
           <>
             <button
               type="button"
               className="workspace-file-change-action"
+              aria-label={`Stage ${path}`}
               disabled={acting}
               title={`Stage ${path}`}
               onClick={() => onStage(pathsOf(row))}
             >
-              Stage
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M12 5v14M5 12h14"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
             </button>
             <button
               type="button"
               className="workspace-file-change-action"
+              aria-label={`Unstage ${path}`}
               disabled={acting}
               title={`Unstage ${path}`}
               onClick={() => onUnstage(pathsOf(row))}
             >
-              Unstage
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
             </button>
             <button
               type="button"
@@ -282,12 +302,12 @@ const FolderNode = memo(function FolderNode({
           {expanded ? "▾" : "▸"}
         </span>
         <span className="workspace-changes-folder-name">{folder.name}</span>
-        <span
+        <ChangesCounts
+          additions={folder.additions}
+          deletions={folder.deletions}
+          approximate={folder.capped}
           className="workspace-changes-folder-stats"
-          title={folder.capped ? "counts are not exact" : undefined}
-        >
-          {countsLabel(folder.additions, folder.deletions, folder.capped)}
-        </span>
+        />
       </button>
       {expanded ? (
         <ul id={groupId} className="workspace-changes-group">

@@ -162,7 +162,8 @@ describe("ChangesSurface R7b panel body", () => {
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(branchRow().textContent).toContain("feature/redesign");
-    expect(branchRow().textContent).toContain("+96 −41");
+    expect(branchRow().textContent).toContain("+96");
+    expect(branchRow().textContent).toContain("−41");
     expect(branchRow().textContent).not.toContain("≈");
     // The chevron is display-only: branch switching is out of scope, so it
     // is a span, never a control that looks like it switches.
@@ -214,7 +215,9 @@ describe("ChangesSurface R7b panel body", () => {
       }),
     );
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
-    expect(branchRow().textContent).toContain("≈+96 −41");
+    expect(
+      branchRow().querySelector(".workspace-changes-branch-totals")?.getAttribute("title"),
+    ).toBe("Counts are approximate (96 lines added, 41 removed)");
   });
 
   it("renders nothing countable when the reply withholds its rows", async () => {
@@ -250,7 +253,8 @@ describe("ChangesSurface R7b panel body", () => {
     // each, so the panel claims no single-tab-stop pattern it cannot keep.
     expect(container.querySelector('[role="tree"]')).toBeNull();
     expect(tree.textContent).toContain("src");
-    expect(tree.textContent).toContain("+11 −5");
+    expect(tree.textContent).toContain("+11");
+    expect(tree.textContent).toContain("−5");
     expect(tree.textContent).toContain("b.ts");
     // The file's full path rides the row's title: the basename is display,
     // the path is what acts key on.
@@ -272,7 +276,7 @@ describe("ChangesSurface R7b panel body", () => {
     expect(container.querySelector('.workspace-file-change[title="src/sub/b.ts"]')).toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(toggle.getAttribute("aria-controls")).toBeNull();
-    expect(toggle.parentElement?.textContent).toContain("+11 −5");
+    expect(toggle.parentElement?.textContent).toContain("+11");
     await act(async () => {
       toggle.click();
     });
@@ -372,9 +376,11 @@ describe("ChangesSurface R7b panel body", () => {
     );
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
-    const stats = container.querySelector(".workspace-file-change-stats-is-add");
-    if (stats === null) throw new Error("add-tone stats did not render");
-    expect(stats.textContent).toBe("+7 −0");
+    const stats = container
+      .querySelector(".workspace-changes-file-add")
+      ?.parentElement?.querySelector(".workspace-file-change-stats");
+    if (stats === null || stats === undefined) throw new Error("add-tone row did not render");
+    expect(stats.textContent).toBe("+7");
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
@@ -415,7 +421,7 @@ describe("ChangesSurface R7b panel body", () => {
     // The base branch's history is filtered out, not dimmed.
     expect(container.textContent).not.toContain("Base history");
     expect(container.querySelector(".workspace-file-change")).toBeNull();
-    expect(container.querySelector(".workspace-commit-row")).toBeNull();
+    expect(container.querySelector(".workspace-commit-footer")).toBeNull();
 
     const uncommitted = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Uncommitted",
@@ -481,7 +487,7 @@ describe("ChangesSurface R7b panel body", () => {
     expect(getComputedStyle(note).fontSize).toBe("12px");
   });
 
-  it("puts the commit row last with the message field, and refresh as a quiet icon button", async () => {
+  it("puts the commit footer last with the message field, and refresh as a quiet icon button", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
         dirty: true,
@@ -491,8 +497,8 @@ describe("ChangesSurface R7b panel body", () => {
     );
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
-    const commitRow = container.querySelector(".workspace-commit-row");
-    if (commitRow === null) throw new Error("commit row did not render");
+    const commitRow = container.querySelector(".workspace-commit-footer");
+    if (commitRow === null) throw new Error("commit footer did not render");
     expect(commitRow.querySelector('[aria-label="Commit message"]')).not.toBeNull();
     expect(commitRow.textContent).toContain("Commit");
     // After the tree in DOM order: the commit row closes the panel.
@@ -562,7 +568,7 @@ describe("ChangesSurface R7b panel body", () => {
   });
 
   it("marks folder sums estimated when the counts arrive with a caveat", async () => {
-    // The branch total reads ≈ on a caveat (changesTotalsLabel); the tree
+    // The branch total reads approximate on a caveat (changesTotals); the tree
     // must agree — a degraded round floors every number it produced.
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
@@ -574,10 +580,13 @@ describe("ChangesSurface R7b panel body", () => {
     );
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
-    expect(branchRow().textContent).toContain("≈+9 −0");
+    expect(
+      branchRow().querySelector(".workspace-changes-branch-totals")?.getAttribute("title"),
+    ).toContain("Counts are approximate");
     const folderStats = container.querySelector(".workspace-changes-folder-stats");
     if (folderStats === null) throw new Error("folder stats did not render");
-    expect(folderStats.textContent).toBe("≈+9 −0");
+    expect(folderStats.textContent).toBe("+9");
+    expect(folderStats.getAttribute("title")).toContain("Counts are approximate");
   });
 
   it("keeps draft, collapse and poll cadence while the commit field takes keystrokes", async () => {
@@ -676,9 +685,9 @@ describe("ChangesSurface R7b panel body", () => {
       ".workspace-changes-file",
       ".workspace-changes-folder",
       ".workspace-changes-folder-stats",
-      ".workspace-file-change-stats-is-add",
+      ".workspace-changes-file-add .workspace-changes-file-icon",
       ".workspace-changes-pencil",
-      ".workspace-commit-row",
+      ".workspace-commit-footer",
       ".workspace-commit-button",
       // The inline diff's head is named for the Changes panel alone; the
       // bare and the scoped target match the same element, so this is the
@@ -709,9 +718,11 @@ describe("ChangesSurface R7b panel body", () => {
     const fileRow = container.querySelector<HTMLElement>(".workspace-changes-file");
     if (fileRow === null) throw new Error("file row did not render");
     expect(getComputedStyle(fileRow).height).toBe("24px");
-    const addStats = container.querySelector<HTMLElement>(".workspace-file-change-stats-is-add");
-    if (addStats === null) throw new Error("add-tone stats did not render");
-    expect(getComputedStyle(addStats).color).toBe(token("--tone-add"));
+    const addIcon = container.querySelector<HTMLElement>(
+      ".workspace-changes-file-add .workspace-changes-file-icon",
+    );
+    if (addIcon === null) throw new Error("add-tone icon did not render");
+    expect(getComputedStyle(addIcon).color).toBe(token("--tone-add"));
 
     // The diff head reads sans in the real cascade, beside the mono rows.
     await act(async () => {
@@ -759,7 +770,7 @@ describe("ChangesSurface R7b panel body", () => {
       read("src/features/workspace/strip/strip.css"),
       read("src/features/workspace/panel/panel.css"),
     ]);
-    inject([".workspace-changes", ".workspace-commit-row"]);
+    inject([".workspace-changes", ".workspace-changes-scroll", ".workspace-commit-footer"]);
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
         dirty: true,
@@ -769,19 +780,23 @@ describe("ChangesSurface R7b panel body", () => {
     );
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
-    // The root is a flex column carrying the row to the bottom; the row
-    // itself sticks to the scrollport's bottom edge while the tree
-    // scrolls under it. Whether it truly never scrolls away is live-only
-    // (happy-dom does no layout), but the mechanism is pinned here.
+    // The root fills the panel body as a flex column. The list scrolls in its
+    // own box and the footer is a sibling after that box, so no row can pass
+    // under it. Live layout is checked in the app; happy-dom does none.
     const panel = container.querySelector<HTMLElement>(".workspace-changes");
     if (panel === null) throw new Error("changes root did not render");
     expect(getComputedStyle(panel).display).toBe("flex");
-    const commitRow = container.querySelector<HTMLElement>(".workspace-commit-row");
-    if (commitRow === null) throw new Error("commit row did not render");
-    expect(getComputedStyle(commitRow).position).toBe("sticky");
-    expect(getComputedStyle(commitRow).bottom).toBe("0px");
-    const tree = container.querySelector(".workspace-changes-tree");
-    if (tree === null) throw new Error("tree did not render");
-    expect(tree.compareDocumentPosition(commitRow)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(getComputedStyle(panel).height).toBe("100%");
+    const scroller = container.querySelector<HTMLElement>(".workspace-changes-scroll");
+    const footer = container.querySelector<HTMLElement>(".workspace-commit-footer");
+    if (scroller === null || footer === null) throw new Error("scroller or footer did not render");
+    expect(getComputedStyle(scroller).overflowY).toBe("auto");
+    expect(Number.parseFloat(getComputedStyle(scroller).minHeight)).toBe(0);
+    expect(getComputedStyle(footer).position).not.toBe("sticky");
+    expect(getComputedStyle(footer).flex).toBe("0 0 auto");
+    expect(scroller.parentElement).toBe(panel);
+    expect(footer.parentElement).toBe(panel);
+    expect(scroller.querySelector(".workspace-commit-footer")).toBeNull();
+    expect(scroller.compareDocumentPosition(footer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });

@@ -270,13 +270,15 @@ describe("ChangesSurface", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain("workspace_git_status.rs");
-    expect(container.textContent).toContain("≈+92 −41");
+    expect(
+      container.querySelector(".workspace-changes-branch-totals")?.getAttribute("title"),
+    ).toContain("Counts are approximate");
     expect(container.textContent).not.toContain("No uncommitted changes");
   });
 
   // Kills mutation (a) — hardcoded rows in place of the reply's — and
-  // mutation (e) — the `≈` mark dropped from a `capped` row's counts.
-  it("renders the reply's rows with counts, status words and the capped mark", async () => {
+  // mutation (e) — the approximate title dropped from a `capped` row's counts.
+  it("renders the reply's rows with counts, icon tints and the approximate title", async () => {
     const rows = [
       row({
         path: "crates/devboule-daemon/src/workspace_git_status.rs",
@@ -305,7 +307,8 @@ describe("ChangesSurface", () => {
     expect(container.querySelector('.workspace-file-change[title="src/writer.ts"]')).not.toBeNull();
     expect(container.textContent).toContain("workspace_git_status.rs");
     expect(container.textContent).toContain("todo.md");
-    expect(container.textContent).toContain("+92 −41");
+    expect(container.textContent).toContain("+92");
+    expect(container.textContent).toContain("−41");
     // The status word is not drawn; the select's label names it for AT.
     expect(container.querySelector(".workspace-file-change-status")).toBeNull();
     expect(
@@ -314,15 +317,18 @@ describe("ChangesSurface", () => {
     expect(
       container.querySelector('.workspace-file-change[aria-label^="writer.ts deleted"]'),
     ).not.toBeNull();
-    // `capped` says the counts are not exact: a mark, never an invented number.
-    // The row's own text, marks included — dropping `≈` changes this string.
+    // `capped` says the counts are not exact: a title, never an invented number.
+    // The row's own text, and its approximate title, are the contract.
     // The row shows the basename; the full path rides its `title`.
     const cappedRow = Array.from(container.querySelectorAll(".workspace-file-change")).find(
       (element) => element.getAttribute("title") === "notes/todo.md",
     );
     if (cappedRow === undefined) throw new Error("capped row did not render");
     expect(cappedRow.textContent).toBe("todo.md");
-    expect(cappedRow.parentElement?.textContent).toContain("todo.md≈+7 −0");
+    expect(cappedRow.parentElement?.textContent).toContain("todo.md+7");
+    expect(
+      cappedRow.parentElement?.querySelector(".workspace-file-change-stats")?.getAttribute("title"),
+    ).toContain("Counts are approximate");
     expect(
       container.querySelector('.workspace-file-change[title="src/writer.ts"]')?.className,
     ).toContain("workspace-file-change-muted");
@@ -416,11 +422,16 @@ describe("ChangesSurface", () => {
       container.querySelector('.workspace-file-change[title="src/real-change.ts"]'),
     ).not.toBeNull();
     expect(container.textContent).toContain("real-change.ts");
-    expect(container.textContent).toContain("+14 −3");
+    expect(container.textContent).toContain("+14");
+    expect(container.textContent).toContain("−3");
     const labels = controls();
     expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
-    expect(labels).toContain("Stage");
-    expect(labels).toContain("Unstage");
+    // Stage and Unstage are icon buttons: their names are the path they act on.
+    const titles = Array.from(container.querySelectorAll("button[title]")).map((control) =>
+      control.getAttribute("title"),
+    );
+    expect(titles.some((title) => title?.startsWith("Stage "))).toBe(true);
+    expect(titles.some((title) => title?.startsWith("Unstage "))).toBe(true);
     expect(labels).toContain("Commit");
     expect(labels).not.toContain("Stash");
     expect(container.textContent).not.toContain("142 passed");
@@ -776,7 +787,7 @@ describe("ChangesSurface", () => {
     expect(container.textContent).not.toContain("Base history");
     // The tree and the commit row stay on the Uncommitted side.
     expect(container.querySelector(".workspace-file-change")).toBeNull();
-    expect(container.querySelector(".workspace-commit-row")).toBeNull();
+    expect(container.querySelector(".workspace-commit-footer")).toBeNull();
   });
 
   // The wire's refusal arm: an empty list WITH a sentence. The daemon's

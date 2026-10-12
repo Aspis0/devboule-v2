@@ -103,13 +103,45 @@ describe("buildChangesTree", () => {
   it("shows each file under its basename with the full path kept for acts", () => {
     const nodes = buildChangesTree([row({ path: "src/checkout/registry.ts", additions: 4 })]);
 
-    const src = folderOf(nodes, "src");
-    const checkout = folderOf(src.children, "src/checkout");
+    const checkout = folderOf(nodes, "src/checkout");
     const file = checkout.children.find((node) => node.kind === "file");
     if (file === undefined || file.kind !== "file") throw new Error("file row did not build");
     expect(file.name).toBe("registry.ts");
     expect(file.path).toBe("src/checkout/registry.ts");
     expect(file.row.additions).toBe(4);
+  });
+
+  it("shows a chain of single-child folders as one row, named by its full path", () => {
+    const nodes = buildChangesTree([
+      row({ path: "src/features/workspace/a.ts", additions: 2 }),
+      row({ path: "src/features/workspace/b.ts", additions: 3, deletions: 1 }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const chain = folderOf(nodes, "src/features/workspace");
+    expect(chain.name).toBe("src/features/workspace");
+    expect(chain.additions).toBe(5);
+    expect(chain.deletions).toBe(1);
+    expect(chain.children.map((node) => node.path)).toEqual([
+      "src/features/workspace/a.ts",
+      "src/features/workspace/b.ts",
+    ]);
+  });
+
+  it("stops a chain at the first folder that holds a file or a second folder", () => {
+    const nodes = buildChangesTree([
+      row({ path: "src/features/a.ts" }),
+      row({ path: "src/features/workspace/b.ts" }),
+      row({ path: "src/features/tests/c.ts" }),
+    ]);
+
+    const features = folderOf(nodes, "src/features");
+    expect(features.name).toBe("src/features");
+    expect(features.children.map((node) => node.path)).toEqual([
+      "src/features/a.ts",
+      "src/features/workspace",
+      "src/features/tests",
+    ]);
   });
 
   it("returns no nodes for no rows", () => {

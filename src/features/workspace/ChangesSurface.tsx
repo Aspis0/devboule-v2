@@ -17,7 +17,8 @@ import { useRevealedPath, type RevealRequest } from "./useRevealedPath";
 import { AgentChanges } from "./agentChanges/AgentChanges";
 import { localAgentChangeReads } from "./agentChanges/agentChangeReads";
 import { CommittedEdit } from "./agentChanges/CommittedEdit";
-import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
+import { changesBranchLabel, changesTotals } from "./changesBadge";
+import { ChangesCounts } from "./ChangesCounts";
 import "./panel/changes.css";
 
 interface ChangesSurfaceProps {
@@ -66,7 +67,7 @@ function BranchRow({
   onRefresh,
 }: {
   branch: string | null;
-  totals: string | null;
+  totals: ReturnType<typeof changesTotals>;
   onRefresh: () => void;
 }) {
   return (
@@ -98,7 +99,14 @@ function BranchRow({
           />
         </svg>
       </span>
-      {totals !== null ? <span className="workspace-changes-branch-totals">{totals}</span> : null}
+      {totals === null ? null : (
+        <ChangesCounts
+          additions={totals.additions}
+          deletions={totals.deletions}
+          approximate={totals.approximate}
+          className="workspace-changes-branch-totals"
+        />
+      )}
       <RefreshButton onRefresh={onRefresh} />
     </div>
   );
@@ -142,11 +150,10 @@ function ChangesViewSwitch({
 }
 
 /**
- * The commit row closes the panel: the hand-written message field and the
- * outline Commit, the same acts the top toolbar used to hold. Enter commits
- * a non-blank message; an empty one never reaches the wire (the button is
- * disabled for it, and the daemon refuses it again — the frontend's check
- * is a courtesy, the daemon's is the rule).
+ * The commit footer closes the panel, outside the list's scroller: the message
+ * field above a full-width Commit. Enter commits a non-blank message; an empty
+ * one never reaches the wire (the button is disabled for it, and the daemon
+ * refuses it again — the frontend's check is a courtesy, the daemon's is the rule).
  */
 function CommitRow({
   message,
@@ -160,11 +167,11 @@ function CommitRow({
   acting: boolean;
 }) {
   return (
-    <div className="workspace-commit-row">
+    <div className="workspace-commit-footer">
       <input
         className="workspace-commit-message"
         aria-label="Commit message"
-        placeholder="Commit message…"
+        placeholder="Commit message"
         value={message}
         disabled={acting}
         onChange={(event) => onMessage(event.target.value)}
@@ -439,58 +446,60 @@ export const ChangesSurface = memo(function ChangesSurface({
         </>
       ) : !chrome ? null : (
         <>
-          <BranchRow
-            branch={reply.branch}
-            totals={changesTotalsLabel(reply)}
-            onRefresh={refreshAll}
-          />
+          <BranchRow branch={reply.branch} totals={changesTotals(reply)} onRefresh={refreshAll} />
           <ChangesViewSwitch
             view={showCommits ? "commits" : "uncommitted"}
             onChange={setView}
             commitsHidden={!supported}
           />
-          {showCommits ? (
-            <CommitsList log={log} failure={failure} />
-          ) : (
-            <>
-              {/* A caveat distrusts part of this reply, never all of it:
+          {/* The scroller holds the list and the open diff; the commit footer
+              sits outside it, so no row can ever pass under it. */}
+          <div className="workspace-changes-scroll workspace-scroll">
+            {showCommits ? (
+              <CommitsList log={log} failure={failure} />
+            ) : (
+              <>
+                {/* A caveat distrusts part of this reply, never all of it:
                   rows on screen stand beside the sentence above, a clean
                   tree says so, and anything rowless shows nothing below
                   the sentence — the branch name above is all that a
                   withheld list or a caveat could keep. */}
-              {reply.rows.length > 0 ? (
-                <ChangesTreeView
-                  workspaceKey={workspaceKey}
-                  rows={reply.rows}
-                  inexact={reply.error !== null}
-                  selection={selection}
-                  onSelect={select}
-                  onStage={runStage}
-                  onUnstage={runUnstage}
-                  onDiscard={runDiscard}
-                  menuPath={menuPath}
-                  onToggleMenu={toggleMenu}
-                  onCloseMenu={() => setMenuPath(null)}
-                  acting={acting}
-                  onOpenFile={onOpenFile}
-                />
-              ) : reply.error === null && !reply.dirty ? (
-                <div className="workspace-changes-state">
-                  No uncommitted changes in this workspace.
-                </div>
-              ) : null}
-              {selection === null ? null : committedSelection ? (
-                <CommittedEdit workspaceKey={workspaceKey} path={selection} />
-              ) : (
-                <DiffCard path={selection} diff={diff} />
-              )}
-              <CommitRow
-                message={message}
-                onMessage={setMessage}
-                onCommit={runCommit}
-                acting={acting}
-              />
-            </>
+                {reply.rows.length > 0 ? (
+                  <ChangesTreeView
+                    workspaceKey={workspaceKey}
+                    rows={reply.rows}
+                    inexact={reply.error !== null}
+                    selection={selection}
+                    onSelect={select}
+                    onStage={runStage}
+                    onUnstage={runUnstage}
+                    onDiscard={runDiscard}
+                    menuPath={menuPath}
+                    onToggleMenu={toggleMenu}
+                    onCloseMenu={() => setMenuPath(null)}
+                    acting={acting}
+                    onOpenFile={onOpenFile}
+                  />
+                ) : reply.error === null && !reply.dirty ? (
+                  <div className="workspace-changes-state">
+                    No uncommitted changes in this workspace.
+                  </div>
+                ) : null}
+                {selection === null ? null : committedSelection ? (
+                  <CommittedEdit workspaceKey={workspaceKey} path={selection} />
+                ) : (
+                  <DiffCard path={selection} diff={diff} />
+                )}
+              </>
+            )}
+          </div>
+          {showCommits ? null : (
+            <CommitRow
+              message={message}
+              onMessage={setMessage}
+              onCommit={runCommit}
+              acting={acting}
+            />
           )}
         </>
       )}

@@ -22,17 +22,21 @@ export function changesBadgeLabel(status: WorkspaceGitStatus): string {
 }
 
 /**
- * The branch row's total: the same `≈` rule as the badge, but only while
- * rows stand behind it. A clean tree reads nothing — the "no uncommitted
- * changes" sentence is the whole story, and `+0 −0` beside the branch is
- * noise. A withheld list or a rowless caveat reads nothing either: never
- * zeros, estimated or not, for a tree the reply did not describe.
+ * The branch row's total: the reply's sums, and whether they are floors. Only
+ * rows stand behind it — a clean tree reads nothing, since the "no uncommitted
+ * changes" sentence is the whole story. A withheld list or a rowless caveat
+ * reads nothing either: never zeros, estimated or not, for a tree the reply
+ * did not describe.
  */
-export function changesTotalsLabel(status: WorkspaceGitStatus): string | null {
+export function changesTotals(
+  status: WorkspaceGitStatus,
+): { additions: number; deletions: number; approximate: boolean } | null {
   if (status.rows.length === 0) return null;
-  const counts = `+${status.totals.additions} −${status.totals.deletions}`;
-  const exact = status.error === null && !status.rows.some((row) => row.capped);
-  return exact ? counts : `≈${counts}`;
+  return {
+    additions: status.totals.additions,
+    deletions: status.totals.deletions,
+    approximate: status.error !== null || status.rows.some((row) => row.capped),
+  };
 }
 
 /**
