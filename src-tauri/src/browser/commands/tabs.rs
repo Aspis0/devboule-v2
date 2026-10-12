@@ -18,6 +18,7 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 
 use super::super::cdp::{Bounded, Page, WebviewPage};
 use super::super::deadline::Deadline;
+use super::super::destination::Audience;
 use super::super::registry::{AgentDrive, BrowserRegistry, TabInfo};
 use super::super::scrub;
 use super::super::tab;
@@ -172,15 +173,18 @@ async fn new_tab(
     }))
 }
 
-/// The tab of this workspace already open at the address asked for, if there is
-/// one. The asked text is parsed the way opening it would parse it, so an
-/// address the app would refuse finds nothing.
+/// The agent's own tab of this workspace already open at the address asked for,
+/// if there is one. A tab the agent has not opened or acted on is the person's,
+/// and is never reloaded for an agent. The asked text is parsed the way opening
+/// it would parse it, so an address the app would refuse finds nothing.
 fn open_at(registry: &BrowserRegistry, workspace: &str, raw: &str) -> Option<TabInfo> {
     let target = accept(raw).ok()?.to_string();
-    registry
-        .tabs_of(workspace)
-        .into_iter()
-        .find(|tab| tab.url == target)
+    registry.tabs_of(workspace).into_iter().find(|tab| {
+        tab.url == target
+            && registry
+                .drive_of(&tab.browser_id)
+                .is_some_and(|drive| drive.audience() == Audience::Agent)
+    })
 }
 
 /// Reload a tab's page and wait for it to settle, so what is read next is the
