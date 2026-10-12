@@ -1,10 +1,10 @@
 // A completed turn ends on its last assistant row: that row carries the copy of
 // the whole turn and how long it ran. A running turn has no end yet.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { groupToolCalls } from "../../../lib/toolCallGroups";
-import { turnEnds } from "./turnEnds";
+import { turnEnds, type TurnEndCache } from "./turnEnds";
 
 function user(id: string, text: string): AgentChatItem {
   return { id, role: "user", text, messageId: null };
@@ -93,31 +93,28 @@ describe("turnEnds", () => {
   });
 
   it("hands an unchanged turn back as the same object, so its footer's memo holds", () => {
-    const entries = groupToolCalls([
-      user("u1", "first"),
-      assistant("a1", "first answer.", 4_000, "end_turn"),
-      user("u2", "second"),
-      assistant("a2", "still writing"),
-    ]);
-    const before = turnEnds(entries, true);
-    // A later chunk extends the running turn; the finished one is untouched.
-    const streamed = groupToolCalls([
-      user("u1", "first"),
-      assistant("a1", "first answer.", 4_000, "end_turn"),
-      user("u2", "second"),
-      assistant("a2", "still writing more"),
-    ]);
-    const after = turnEnds(streamed, true, before);
+    const finished = assistant("a1", "first answer.", 4_000, "end_turn");
+    const running = assistant("a2", "still writing");
+    const cache: TurnEndCache = new WeakMap();
+    const before = turnEnds(
+      [user("u1", "first"), finished, user("u2", "second"), running],
+      true,
+      cache,
+    );
+    // A later chunk extends the running turn: the finished row is the same object.
+    const extended = assistant("a2", "still writing more");
+    const after = turnEnds(
+      [user("u1", "first"), finished, user("u2", "second"), extended],
+      true,
+      cache,
+    );
     expect(after.get("a1")).toBe(before.get("a1"));
   });
 
   it("hands a changed turn a new object", () => {
-    const first = turnEnds(groupToolCalls([user("u1", "q"), assistant("a1", "one", 1_000)]), false);
-    const second = turnEnds(
-      groupToolCalls([user("u1", "q"), assistant("a1", "one", 2_000)]),
-      false,
-      first,
-    );
+    const cache: TurnEndCache = new WeakMap();
+    const first = turnEnds([user("u1", "q"), assistant("a1", "one", 1_000)], false, cache);
+    const second = turnEnds([user("u1", "q"), assistant("a1", "one", 2_000)], false, cache);
     expect(second.get("a1")).not.toBe(first.get("a1"));
     expect(second.get("a1")?.workedMs).toBe(2_000);
   });
@@ -141,5 +138,28 @@ describe("turnEnds with a steer", () => {
     );
     expect([...ends.keys()]).toEqual(["a2"]);
     expect(ends.get("a2")?.text).toBe("partial\n\nrest");
+  });
+});
+
+describe("turnEnds across a streamed update", () => {
+  it("joins no completed turn's text again when the open turn streams", () => {
+    const finished = [
+      user("u1", "one"),
+      assistant("a1", "first", 1_000, "end_turn"),
+      user("u2", "two"),
+      assistant("a2", "second", 2_000, "end_turn"),
+      user("u3", "three"),
+    ];
+    const cache: TurnEndCache = new WeakMap();
+    const first = turnEnds([...finished, assistant("a3", "streaming")], true, cache);
+
+    const joins = vi.spyOn(Array.prototype, "join");
+    const after = turnEnds([...finished, assistant("a3", "streaming more")], true, cache);
+    const turnJoins = joins.mock.calls.filter(([separator]) => separator === "\n\n");
+    joins.mockRestore();
+
+    expect(turnJoins).toHaveLength(0);
+    expect(after.get("a1")).toBe(first.get("a1"));
+    expect(after.get("a2")).toBe(first.get("a2"));
   });
 });

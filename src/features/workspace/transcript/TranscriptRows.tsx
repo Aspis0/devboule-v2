@@ -6,8 +6,11 @@ import type { A2aNameSource } from "../A2aMessageCard";
 import { TranscriptRow } from "./TranscriptRow";
 import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 import { useTranscriptEntries } from "./useTranscriptEntries";
-import { turnEnds, type TurnEnd } from "./turnEnds";
+import { turnEnds, type TurnEndCache } from "./turnEnds";
 import { liveCompactionIds } from "./compactionState";
+
+/** Closed turns shared by every pass over the transcript: keys are the rows themselves, so a session's cache dies with its rows. */
+const TURN_END_CACHE: TurnEndCache = new WeakMap();
 
 type RowContext = "none" | "fileLinks" | "a2aNames" | "transcriptEnded" | "streamingThought";
 
@@ -63,13 +66,10 @@ export function TranscriptRows({
   });
   const revealChange = useCallback((path: string) => revealChangeRef.current?.(path), []);
   const entries = useTranscriptEntries(items, recoveredAttach);
-  // The previous footers are handed back in, so an unchanged turn keeps its object.
-  const endsRef = useRef<Map<string, TurnEnd>>(new Map());
-  const ends = useMemo(() => {
-    const next = turnEnds(entries, turnRunning, endsRef.current);
-    endsRef.current = next;
-    return next;
-  }, [entries, turnRunning]);
+  const ends = useMemo(
+    () => turnEnds(entries, turnRunning, TURN_END_CACHE),
+    [entries, turnRunning],
+  );
   const liveNotices = useMemo(
     () => liveCompactionIds(entries, turnRunning && !transcriptEnded),
     [entries, turnRunning, transcriptEnded],
