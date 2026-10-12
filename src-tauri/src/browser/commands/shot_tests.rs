@@ -1,6 +1,7 @@
 //! `screenshot`: what the page looks like, and what it costs to send.
 
 use super::*;
+use crate::browser::cdp::CdpError;
 use crate::browser::commands::{on_tab, BrowserError, Deadline};
 use crate::browser::test_support::{ax_fixture, parked_tab, FakePage};
 use serde_json::{json, Value};
@@ -491,4 +492,40 @@ fn a_runtime_that_returns_no_picture_is_refused_rather_than_answered_blank() {
     let error = shoot(&page, json!({ "browserId": "tab-1" })).expect_err("no picture");
 
     assert!(error.message.contains("no picture"), "{}", error.message);
+}
+
+#[test]
+fn the_page_is_waited_for_a_drawn_frame_before_it_is_photographed() {
+    let page = page_answering(base64_of(1000));
+
+    shoot(&page, json!({ "browserId": "tab-1" })).expect("answered");
+
+    let order: Vec<String> = page.calls().into_iter().map(|(method, _)| method).collect();
+    let drawn = order
+        .iter()
+        .position(|method| method == "Runtime.evaluate")
+        .expect("the page is waited for");
+    let photographed = order
+        .iter()
+        .position(|method| method == "Page.captureScreenshot")
+        .expect("and photographed");
+    assert!(drawn < photographed, "{order:?}");
+}
+
+#[test]
+fn a_page_that_draws_no_frame_in_time_is_refused_and_never_photographed() {
+    let page = page_answering(base64_of(1000)).refusing("Runtime.evaluate", CdpError::OutOfTime);
+
+    let error = shoot(&page, json!({ "browserId": "tab-1" })).expect_err("no frame was drawn");
+
+    assert!(
+        error.message.contains("did not draw a frame"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        page.called("Page.captureScreenshot"),
+        0,
+        "a capture of a page that drew nothing is never answered blank"
+    );
 }

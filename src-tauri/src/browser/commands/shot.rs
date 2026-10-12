@@ -30,14 +30,16 @@
 //! page that will not fit at any size this tool sends is refused rather than
 //! sent.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use devboule_protocol::BrowserError;
 
-use super::super::cdp::Page;
+use super::super::cdp::{CdpError, Page};
 use super::super::registry::TabInfo;
-use super::{act, args_of, host_error};
+use super::{act, args_of, cdp_failure, host_error};
 
 /// The largest encoded answer this host sends: 820 KiB, under the 900 KiB the
 /// daemon and the wire cap a result at, so the JSON around the base64 always
@@ -210,17 +212,48 @@ fn encoded(answered: &Value) -> usize {
     serde_json::to_vec(answered).map_or(usize::MAX, |frame| frame.len())
 }
 
+/// How long a page has to draw a frame before there is no picture of it to send.
+/// The same bound Paseo's painted-pixel capture gives a frame
+/// (refs/paseo-src/packages/desktop/src/features/browser-automation/service.ts:70).
+const PAINT_WAIT: Duration = Duration::from_millis(5_000);
+
+/// Wait for the page to draw a frame: two animation frames, the second one
+/// running after the first has been drawn, so the capture reads a drawn surface.
+/// The expression is Paseo's own (service.ts:198-207). A page that draws nothing
+/// in time is refused, since a picture of it would read as a blank page.
+async fn wait_for_paint(page: &dyn Page) -> Result<(), BrowserError> {
+    let drawn = page
+        .call_within(
+            "Runtime.evaluate",
+            json!({
+                "expression": "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))",
+                "awaitPromise": true,
+                "returnByValue": true,
+            }),
+            PAINT_WAIT,
+        )
+        .await;
+    match drawn {
+        Ok(_) => Ok(()),
+        Err(CdpError::OutOfTime) => Err(host_error(
+            "The page did not draw a frame in time, so there is no picture of it; ask again once it is on screen.",
+        )),
+        Err(error) => Err(cdp_failure(error)),
+    }
+}
+
 /// One picture, as base64.
 ///
-/// No `data` at all is a refusal rather than a picture: answering with an empty
-/// image would read as "the page is blank", which is the one thing the caller
-/// would then believe.
+/// The page is waited for a drawn frame first. No `data` at all is a refusal
+/// rather than a picture: answering with an empty image would read as "the page
+/// is blank", which is the one thing the caller would then believe.
 async fn capture(
     page: &dyn Page,
     clip: &Clip,
     quality: u32,
     scale: f64,
 ) -> Result<String, BrowserError> {
+    wait_for_paint(page).await?;
     let params = json!({
         "format": "jpeg",
         "quality": quality,
