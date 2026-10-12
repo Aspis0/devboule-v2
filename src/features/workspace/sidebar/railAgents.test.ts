@@ -187,6 +187,26 @@ describe("the children that have ended", () => {
   });
 });
 
+describe("the turn clocks", () => {
+  it("carries a running turn's start into its row", () => {
+    const [row] = rail([agent({ id: "a", activity: "working", turnStartedAtMs: 5 })]).rows;
+    expect(row).toMatchObject({ state: "running", turnStartedAtMs: 5, turnEndedAtMs: null });
+  });
+
+  it("carries the end of the last turn into a finished child's row", () => {
+    const rows = rail([
+      agent({ id: "root" }),
+      agent({ id: "child", createdBy: "root", activity: "idle", turnEndedAtMs: 9 }),
+    ]).rows;
+    expect(rows[1]).toMatchObject({
+      id: "child",
+      state: "finished",
+      turnStartedAtMs: null,
+      turnEndedAtMs: 9,
+    });
+  });
+});
+
 describe("the cap", () => {
   it("shows at most the cap and counts what waits behind it", () => {
     const roots = Array.from({ length: RAIL_AGENT_CAP + 2 }, (_, index) =>

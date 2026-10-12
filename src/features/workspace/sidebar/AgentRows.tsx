@@ -1,8 +1,10 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { StripKindMark } from "../strip/StripKindMark";
 import type { ArchiveTarget } from "../subagentArchive";
+import { useTaskClock } from "../useTaskClock";
 import { AgentRowMenu } from "./AgentRowMenu";
 import { focusWorkspaceRowAbove, treeKeyTarget, workspaceRowAbove } from "./agentTreeKeys";
+import { railTail } from "./railAgentTail";
 import type { RailAgent, RailAgentState, RailAgents } from "./railAgents";
 import "./agentRows.css";
 
@@ -18,13 +20,6 @@ const STATE_WORD: Record<RailAgentState, string> = {
 /** The states that carry a badge on the mark; a settled agent is marked by its mark alone. */
 const BADGED: ReadonlySet<RailAgentState> = new Set(["running", "waiting", "failed"]);
 
-/** The states whose word shows in the tail, with the tail's colour. */
-const TAIL_TONE: Partial<Record<RailAgentState, string>> = {
-  waiting: "attention",
-  failed: "danger",
-  stopped: "muted",
-};
-
 export interface AgentRowsProps {
   agents: RailAgents;
   /** The agent whose tab is in front: its row takes the hover fill and nothing more. */
@@ -37,6 +32,8 @@ export interface AgentRowsProps {
 
 interface RowProps {
   agent: RailAgent;
+  /** The wall clock the tail counts from. */
+  now: number;
   active: boolean;
   tabStop: boolean;
   onFocusRow: () => void;
@@ -48,6 +45,7 @@ interface RowProps {
 
 function AgentRow({
   agent,
+  now,
   active,
   tabStop,
   onFocusRow,
@@ -74,7 +72,7 @@ function AgentRow({
   ]
     .filter(Boolean)
     .join(" ");
-  const tone = TAIL_TONE[agent.state];
+  const tail = railTail(agent, now);
   return (
     <div
       role="treeitem"
@@ -98,8 +96,8 @@ function AgentRow({
         ) : null}
       </span>
       <span className="agent-row-name">{agent.title}</span>
-      {tone === undefined ? null : (
-        <span className={`agent-row-tail agent-row-tail-${tone}`}>{word}</span>
+      {tail === null ? null : (
+        <span className={`agent-row-tail agent-row-tail-${tail.tone}`}>{tail.text}</span>
       )}
     </div>
   );
@@ -131,6 +129,7 @@ export function AgentRows({
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const rootRef = useRef<HTMLDivElement>(null);
   const rows = agents.rows;
+  const now = useTaskClock(rows.some((row) => row.state === "running"));
   if (rows.length === 0) return null;
   const tabStopId =
     focusedId !== null && rows.some((row) => row.id === focusedId)
@@ -171,6 +170,7 @@ export function AgentRows({
           <AgentRow
             key={agent.id}
             agent={agent}
+            now={now}
             active={agent.id === activeId}
             tabStop={agent.id === tabStopId}
             onFocusRow={() => setFocusedId(agent.id)}

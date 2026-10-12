@@ -41,6 +41,8 @@ const row = (over: Partial<RailAgent> = {}): RailAgent => ({
   hasChildren: false,
   generation: 1,
   archivable: false,
+  turnStartedAtMs: null,
+  turnEndedAtMs: null,
   ...over,
 });
 
@@ -202,5 +204,30 @@ describe("the agent rows under a workspace", () => {
       "failed",
       "stopped",
     ]);
+  });
+
+  it("shows a running agent's clock, and a finished agent's age", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    await render(
+      {},
+      {
+        rows: [
+          row({ id: "run", turnStartedAtMs: now - 161_000 }),
+          row({
+            id: "done",
+            state: "finished",
+            child: true,
+            parentId: "run",
+            turnEndedAtMs: now - 7 * 60_000,
+          }),
+        ],
+      },
+    );
+    expect(items().map((item) => item.querySelector(".agent-row-tail")?.textContent)).toEqual([
+      "02:41",
+      "7m",
+    ]);
+    vi.restoreAllMocks();
   });
 });

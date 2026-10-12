@@ -56,6 +56,8 @@ const agent = (over: Partial<RailAgent>): RailAgent => ({
   hasChildren: false,
   generation: 1,
   archivable: false,
+  turnStartedAtMs: null,
+  turnEndedAtMs: null,
   ...over,
 });
 

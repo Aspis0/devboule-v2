@@ -533,6 +533,8 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
     // omitting list lets the row's known values stand — a refresh must not
     // strip the turn, the pending ask or the goal a push landed.
     activity: listed.activity ?? previous?.activity,
+    turnStartedAtMs: listed.turnStartedAtMs ?? previous?.turnStartedAtMs,
+    turnEndedAtMs: listed.turnEndedAtMs ?? previous?.turnEndedAtMs,
     attention: listed.attention ?? previous?.attention,
     goal: listed.goal === undefined ? previous?.goal : listed.goal,
     delegation:
@@ -694,6 +696,8 @@ export function createWorkspaceSessionController(
         // stopped being `working` has to be seen stopping, and one the daemon
         // stopped describing has to be seen as unstated.
         activity: snapshot.activity,
+        turnStartedAtMs: snapshot.turnStartedAtMs,
+        turnEndedAtMs: snapshot.turnEndedAtMs,
         // A push replaces the goal outright: missing, null and undefined
         // all mean "no goal". A list refresh instead carries the row's goal forward.
         goal: snapshot.goal ?? null,

@@ -173,6 +173,20 @@ describe("the clocks", () => {
     expect(rowClock(clocks, child("b", "Website"), NOW)).toBeNull();
   });
 
+  it("reads a child's clock from the roster's turn start before the task list's", () => {
+    const row: SubagentRow = { ...child("a", "Kalsa"), turnStartedAtMs: NOW - 60_000 };
+    const clocks = taskClocks([agentTask("a", NOW - 161_000)]);
+    expect(rowClock(clocks, row, NOW)).toBe("01:00");
+    expect(lineOf({ rows: [row], tasks: [agentTask("a", NOW - 161_000)] })).toMatchObject({
+      segments: [{ tone: "live", clock: "01:00" }],
+    });
+  });
+
+  it("reads a child's clock from the roster when the task list does not name it", () => {
+    const row: SubagentRow = { ...child("b", "Website"), turnStartedAtMs: NOW - 5_000 };
+    expect(rowClock(taskClocks([]), row, NOW)).toBe("00:05");
+  });
+
   it("counts mm:ss, and h:mm:ss from an hour on", () => {
     expect(lineClock(0)).toBe("00:00");
     expect(lineClock(161_000)).toBe("02:41");

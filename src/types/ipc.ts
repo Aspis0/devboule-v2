@@ -1045,6 +1045,10 @@ export interface Session {
    * report a status for, which is **not** idle.
    */
   activity?: AgentActivityState;
+  /** When the running turn began, in Unix ms, from the roster. Absent while no turn runs. */
+  turnStartedAtMs?: number;
+  /** When the last turn finished, in Unix ms, from the roster. Absent while a turn runs or before the first finish. */
+  turnEndedAtMs?: number;
   /**
    * Where the session came from. Absent means the daemon did not say — a
    * record written before the field existed, or a roster push that omitted it

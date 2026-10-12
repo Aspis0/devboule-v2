@@ -30,6 +30,10 @@ export interface RailAgent {
   generation: number | null;
   /** A child the roster can close now, as the pane list offers it. */
   archivable: boolean;
+  /** When the running turn began, in Unix ms; null when the roster gives none. */
+  turnStartedAtMs: number | null;
+  /** When the last turn ended, in Unix ms; null when the roster gives none. */
+  turnEndedAtMs: number | null;
 }
 
 export interface RailAgents {
@@ -120,6 +124,8 @@ function treeOf(sessions: readonly Session[], key: WorkspaceKey): Tree {
       parentTitle: parent === undefined ? null : sessionTitle(parent),
       generation: childRow(session).generation,
       archivable: child && isArchivable(childRow(session)),
+      turnStartedAtMs: session.turnStartedAtMs ?? null,
+      turnEndedAtMs: session.turnEndedAtMs ?? null,
     });
     const children = [...(childrenOf.get(session.id) ?? [])].sort(
       (a, b) => CHILD_ORDER[stateOf(a, true)] - CHILD_ORDER[stateOf(b, true)],

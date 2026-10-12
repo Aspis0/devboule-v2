@@ -42,6 +42,8 @@ const child = (id: string): RailAgent => ({
   hasChildren: false,
   generation: 1,
   archivable: true,
+  turnStartedAtMs: null,
+  turnEndedAtMs: null,
 });
 
 let container: HTMLDivElement;

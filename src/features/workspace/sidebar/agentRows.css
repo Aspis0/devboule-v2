@@ -72,6 +72,7 @@
 
 .agent-row-tail {
   flex: none;
+  margin-left: var(--space-8);
   font-size: var(--type-meta);
   color: var(--muted);
   font-variant-numeric: tabular-nums;

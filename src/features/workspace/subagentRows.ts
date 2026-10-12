@@ -26,11 +26,13 @@ export interface SubagentRow {
   generation: number | null;
   /** The provider a child runs under, for its mark; a task has none. */
   provider?: SessionKind;
+  /** When a child's running turn began, from the roster. */
+  turnStartedAtMs?: number;
 }
 
 type RosterChild = Pick<
   Session,
-  "id" | "kind" | "title" | "displayName" | "createdBy" | "activity"
+  "id" | "kind" | "title" | "displayName" | "createdBy" | "activity" | "turnStartedAtMs"
 > & { state?: SessionState };
 
 // Paseo's finished set for the same action: completed | failed | canceled.
@@ -78,6 +80,7 @@ export function childRow(session: RosterChild, taskState?: SessionTask["state"])
     status: childStatus(session.state, session.activity, taskState),
     generation: session.state?.generation ?? null,
     provider: session.kind,
+    turnStartedAtMs: session.turnStartedAtMs,
   };
 }
 

@@ -69,9 +69,14 @@ export function taskClocks(tasks: readonly SessionTask[]): TaskClocks {
   return { agentStarts, commandStarts };
 }
 
-/** The clock a row shows: how long its running turn has gone on, when the task list knows its start. */
+/** When a row's running turn began: the roster's start, else the task list's. */
+function turnStartOf(row: SubagentRow, clocks: TaskClocks): number | undefined {
+  return row.turnStartedAtMs ?? clocks.agentStarts.get(row.id);
+}
+
+/** The clock a row shows: how long its running turn has gone on, when a start is known. */
 export function rowClock(clocks: TaskClocks, row: SubagentRow, now: number): string | null {
-  const start = clocks.agentStarts.get(row.id);
+  const start = turnStartOf(row, clocks);
   return start === undefined ? null : lineClock(now - start);
 }
 
@@ -110,7 +115,7 @@ export function whoIsWorking({
   }
   const commandCount = clocks.commandStarts.length;
   const runningStarts = running.flatMap((row) => {
-    const start = clocks.agentStarts.get(row.id);
+    const start = turnStartOf(row, clocks);
     return start === undefined ? [] : [start];
   });
 
