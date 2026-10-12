@@ -357,6 +357,35 @@ describe("ACP agent session", () => {
     expect(item.locations).toEqual([{ path: "src/lib.rs", line: 12 }]);
   });
 
+  it("carries a tool call's file changes onto its row, and a later update's in their place", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const edit = { path: "site.css", kind: "edit" as const, added: 12, removed: 30 };
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "site.css",
+      status: "running",
+      kind: "edit",
+      edits: [edit],
+    });
+    const first = harness.session.getState().items[0];
+    if (first.role !== "tool") throw new Error("expected a tool item");
+    expect(first.edits).toEqual([edit]);
+
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: null,
+      edits: [{ ...edit, added: 2 }],
+    });
+    const later = harness.session.getState().items[0];
+    if (later.role !== "tool") throw new Error("expected a tool item");
+    expect(later.edits).toEqual([{ ...edit, added: 2 }]);
+  });
+
   it("carries the command and the exit code onto the tool row", async () => {
     const harness = makeHarness();
     await harness.session.start();

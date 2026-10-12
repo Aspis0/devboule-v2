@@ -179,6 +179,8 @@ interface AgentChatSurfaceProps {
    * composer is disabled as before. */
   resumeStopped?: () => Promise<boolean>;
   onOpenSubagent?: (sessionId: string) => void;
+  /** Shows an edited file in the Changes panel, from an edit row in the transcript. */
+  onRevealChange?: (path: string) => void;
   /** Stops a running child from the who-is-working list; answers with the refusal, or null. */
   onStopSubagent?: (sessionId: string) => Promise<string | null>;
   /** Opens the side panel's Tasks tab, where a running command's details are. */
@@ -398,6 +400,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   headerTrailing,
   resumeStopped,
   onOpenSubagent,
+  onRevealChange,
   subagentAttention,
   onRefreshSubagents,
   onStopSubagent,
@@ -957,6 +960,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             streamingThoughtId={streamingThoughtId}
             turnRunning={turnRunning}
             onOpenChild={onOpenSubagent}
+            onRevealChange={onRevealChange}
           />
           {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
           {state.lastFinished !== null ? (

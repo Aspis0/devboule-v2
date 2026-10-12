@@ -1,5 +1,6 @@
 import { browserToolName, isBrowserToolRow } from "../../lib/browserToolName";
 import type { AgentChatItem } from "../../lib/agentSession";
+import type { AgentToolEdit } from "../../types/ipc";
 import { linkTarget } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
 import { browserVerb, terminalToolVerb } from "./daemonToolVerb";
@@ -238,4 +239,18 @@ export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolR
     ...(summary === undefined ? {} : { summary }),
     ...(linkUrl === undefined ? {} : { linkUrl }),
   };
+}
+
+/** The lines a call's edits added and removed, or null when the call carried no edit to count. */
+export function editCountsOf(
+  edits: readonly AgentToolEdit[] | undefined,
+): { additions: number; deletions: number } | null {
+  if (edits === undefined || edits.length === 0) return null;
+  return edits.reduce(
+    (sum, edit) => ({
+      additions: sum.additions + edit.added,
+      deletions: sum.deletions + edit.removed,
+    }),
+    { additions: 0, deletions: 0 },
+  );
 }

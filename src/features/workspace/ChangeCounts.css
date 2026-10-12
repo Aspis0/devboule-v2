@@ -1,0 +1,15 @@
+.workspace-changes-counts {
+  display: inline-flex;
+  flex: none;
+  gap: var(--space-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-changes-counts-add {
+  color: var(--diff-text-add);
+}
+
+.workspace-changes-counts-del {
+  color: var(--diff-text-del);
+}

@@ -39,11 +39,13 @@ describe("DiffCard", () => {
     await act(async () => {
       root.render(<DiffCard path="a.ts" diff={{ reply, failure: null }} />);
     });
-    const rows = [...container.querySelectorAll(".workspace-diff-line")];
+    const rows = [...container.querySelectorAll(".workspace-changes-diff-row")];
     expect(rows).toHaveLength(2);
     expect(rows[0]?.querySelector(".sr-only")?.textContent).toBe("removed");
     expect(rows[1]?.querySelector(".sr-only")?.textContent).toBe("added");
-    const markers = [...container.querySelectorAll(".workspace-diff-line > span:first-child")];
+    const markers = [
+      ...container.querySelectorAll(".workspace-changes-diff-row > .workspace-changes-diff-mark"),
+    ];
     expect(markers).toHaveLength(2);
     for (const marker of markers) expect(marker.getAttribute("aria-hidden")).toBe("true");
   });

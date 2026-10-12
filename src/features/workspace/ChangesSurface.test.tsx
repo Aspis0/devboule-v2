@@ -16,9 +16,16 @@ vi.mock("../../lib/tauri", () => ({
   workspaceGitStatus: vi.fn(),
   workspaceGitDiff: vi.fn(),
   workspaceGitLog: vi.fn(),
+  workspaceAgentEdits: vi.fn(),
+  workspaceAgentDiff: vi.fn(),
 }));
 
-import { workspaceGitDiff, workspaceGitLog, workspaceGitStatus } from "../../lib/tauri";
+import {
+  workspaceAgentEdits,
+  workspaceGitDiff,
+  workspaceGitLog,
+  workspaceGitStatus,
+} from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 
@@ -108,6 +115,12 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply());
     vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply());
     vi.mocked(workspaceGitLog).mockResolvedValue(logReply());
+    vi.mocked(workspaceAgentEdits).mockResolvedValue({
+      files: [],
+      totals: { additions: 0, deletions: 0 },
+      truncated: false,
+      error: null,
+    });
   });
 
   afterEach(async () => {
@@ -148,7 +161,8 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ isGit: false }));
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
-    expect(container.textContent).toContain("This workspace folder is not a git repository.");
+    expect(container.textContent).toContain("No changes by agents yet");
+    expect(container.textContent).toContain("Not a git folder — showing what agents edited here.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.textContent).not.toContain("No uncommitted changes");
   });
@@ -359,7 +373,7 @@ describe("ChangesSurface", () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
     expect(container.querySelector('[aria-current="true"]')).not.toBeNull();
-    expect(container.querySelector(".workspace-diff-lines")).not.toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-row")).not.toBeNull();
 
     // Switch to B, whose answer has not arrived yet.
     await act(async () => {
@@ -370,7 +384,7 @@ describe("ChangesSurface", () => {
     expect(container.textContent).toContain("Loading changes…");
     expect(container.textContent).not.toContain("a.ts");
     expect(container.querySelector('[aria-current="true"]')).toBeNull();
-    expect(container.querySelector(".workspace-diff-card")).toBeNull();
+    expect(container.querySelector(".workspace-changes-diff")).toBeNull();
 
     await act(async () => {
       pendingB.resolve(statusReply());
@@ -444,22 +458,21 @@ describe("ChangesSurface", () => {
 
     expect(vi.mocked(workspaceGitDiff).mock.calls[0]).toEqual([WORKSPACE, "src/writer.ts"]);
     expect(first.getAttribute("aria-current")).toBe("true");
-    expect(container.querySelector(".workspace-diff-header span:first-child")?.textContent).toBe(
-      "src/writer.ts",
-    );
-    expect(container.querySelector(".workspace-diff-header span:last-child")?.textContent).toBe(
-      "+3 −1",
-    );
-    expect(container.querySelector(".workspace-diff-hunk")?.textContent).toContain(
+    expect(container.querySelector(".workspace-changes-diff-name")?.textContent).toBe("writer.ts");
+    expect(container.querySelector(".workspace-changes-diff-dir")?.textContent).toBe("src");
+    expect(container.querySelector(".workspace-changes-counts")?.textContent).toBe("+3−1");
+    expect(container.querySelector(".workspace-changes-diff-hunk")?.textContent).toContain(
       "@@ -1,4 +1,6 @@",
     );
-    expect(container.querySelector(".workspace-diff-context")?.textContent).toContain(
+    expect(container.querySelector(".workspace-changes-diff-row-context")?.textContent).toContain(
       "export function run() {",
     );
-    expect(container.querySelector(".workspace-diff-removed")?.textContent).toBe(
+    expect(container.querySelector(".workspace-changes-diff-row-remove")?.textContent).toBe(
       "−removed  return 1;",
     );
-    expect(container.querySelector(".workspace-diff-added")?.textContent).toBe("+added  return 2;");
+    expect(container.querySelector(".workspace-changes-diff-row-add")?.textContent).toBe(
+      "+added  return 2;",
+    );
   });
 
   // Fix round R3: the diff effect owns the FIRST read of a selection — at
@@ -527,8 +540,10 @@ describe("ChangesSurface", () => {
       first.click();
     });
 
-    expect(container.querySelector(".workspace-diff-note")?.textContent).toBe("Loading diff…");
-    expect(container.querySelector(".workspace-diff-lines")).toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-note")?.textContent).toBe(
+      "Loading diff…",
+    );
+    expect(container.querySelector(".workspace-changes-diff-row")).toBeNull();
 
     await act(async () => {
       pending.resolve(diffReply());
@@ -550,10 +565,8 @@ describe("ChangesSurface", () => {
     });
 
     expect(container.textContent).toContain("This file is binary; there are no lines to show.");
-    expect(container.querySelector(".workspace-diff-header span:last-child")?.textContent).toBe(
-      "binary",
-    );
-    expect(container.querySelector(".workspace-diff-lines")).toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-state")?.textContent).toBe("binary");
+    expect(container.querySelector(".workspace-changes-diff-row")).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
@@ -572,10 +585,8 @@ describe("ChangesSurface", () => {
     });
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(cap);
-    expect(container.querySelector(".workspace-diff-header span:last-child")?.textContent).toBe(
-      "too large",
-    );
-    expect(container.querySelector(".workspace-diff-lines")).toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-state")?.textContent).toBe("too large");
+    expect(container.querySelector(".workspace-changes-diff-row")).toBeNull();
   });
 
   it("shows a refused diff as the wire's sentence, not as an empty diff", async () => {
@@ -593,10 +604,8 @@ describe("ChangesSurface", () => {
     });
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(refusal);
-    expect(container.querySelector(".workspace-diff-header span:last-child")?.textContent).toBe(
-      "error",
-    );
-    expect(container.querySelector(".workspace-diff-lines")).toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-state")?.textContent).toBe("error");
+    expect(container.querySelector(".workspace-changes-diff-row")).toBeNull();
   });
 
   it("re-reads every 5 seconds while the panel is open", async () => {
@@ -725,7 +734,8 @@ describe("ChangesSurface", () => {
   it("keeps a refresh control when the folder is not a repository", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ isGit: false }));
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
-    expect(container.textContent).toContain("This workspace folder is not a git repository.");
+    expect(container.textContent).toContain("No changes by agents yet");
+    expect(container.textContent).toContain("Not a git folder — showing what agents edited here.");
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
     if (refresh === null) throw new Error("refresh button did not render off-repo");

@@ -1,0 +1,98 @@
+/* The Changes panel of a folder that is not a git repository (mockup §3.1–3.6):
+   a one-line head, one flat list, the chosen file's inline diff, a footer note. */
+
+.workspace-agent-changes {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  color: var(--ink-soft);
+  font-size: var(--type-meta);
+}
+
+.workspace-agent-changes-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: 32px;
+  padding: var(--space-8) var(--space-6) var(--space-4);
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.workspace-agent-changes-total {
+  margin-left: auto;
+}
+
+.workspace-agent-changes-list {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-6) var(--space-8);
+  list-style: none;
+}
+
+.workspace-agent-changes-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-6);
+  color: var(--ink-soft);
+}
+
+.workspace-agent-changes-row:hover {
+  background: var(--fill-hover);
+}
+
+.workspace-agent-changes-row.is-selected {
+  background: var(--fill-tool);
+  color: var(--ink);
+}
+
+.workspace-agent-changes-select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-agent-changes-name {
+  flex: none;
+  white-space: nowrap;
+}
+
+.workspace-agent-changes-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-changes .workspace-changes-diff {
+  flex: 1 1 auto;
+}
+
+.workspace-agent-changes-note {
+  flex: none;
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 1.45;
+}

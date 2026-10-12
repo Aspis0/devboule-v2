@@ -73,6 +73,7 @@ import { readStripOrders, writeStripOrders } from "./strip/stripOrderStorage";
 import { readTabSlots } from "./strip/tabSlots";
 import { edgeScrollStep } from "./strip/stripEdgeScroll";
 import { ToolDiffPane } from "./ToolDiffPane";
+import type { RevealRequest } from "./useRevealedPath";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { BrowserTab } from "./BrowserTab";
 import { watchBrowserTabs } from "./browserTabEvents";
@@ -410,6 +411,9 @@ export function Workspace({
   } = useWorkspacePanelResize();
   usePanelChords({ leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed });
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
+  const [changeReveal, setChangeReveal] = useState<
+    (RevealRequest & { workspaceKey: WorkspaceKey }) | null
+  >(null);
   // The front pane's session controller, as its surface reported it. The Tasks
   // tab reads its task lane only while the pane still shows that session.
   const [paneAgent, setPaneAgent] = useState<{
@@ -2581,6 +2585,21 @@ export function Workspace({
     setActiveSidePanel("tasks");
     setRightCollapsed(false);
   }, [setRightCollapsed]);
+  // An edit row shows its file in the Changes panel: the panel comes up, expands
+  // if collapsed, and selects the file. A new nonce is a new ask.
+  const revealChange = useCallback(
+    (path: string) => {
+      if (selectedKey === null) return;
+      setActiveSidePanel("changes");
+      setRightCollapsed(false);
+      setChangeReveal((current) => ({
+        workspaceKey: selectedKey,
+        path,
+        nonce: (current?.nonce ?? 0) + 1,
+      }));
+    },
+    [selectedKey, setRightCollapsed],
+  );
   // The rail archives with the list's act. The roster is read from the controller
   // at each close, not from this render's array, so a prompt that outlives a new run
   // is refused. A closed child's tab goes with it; its transcript stays in History.
@@ -2695,6 +2714,7 @@ export function Workspace({
             daemonInstanceId={daemon.instanceId}
             sessionRoster={sessions}
             onOpenSubagent={handleOpenSubagent}
+            onRevealChange={revealChange}
             subagentAttention={subagentAttention}
             onRefreshSubagents={refreshSessions}
             onStopSubagent={stopAgent}
@@ -3204,6 +3224,10 @@ export function Workspace({
                   <ConfirmProvider>
                     {selectedSurface.render({
                       workspaceKey: selectedKey,
+                      revealPath:
+                        changeReveal !== null && changeReveal.workspaceKey === selectedKey
+                          ? { path: changeReveal.path, nonce: changeReveal.nonce }
+                          : null,
                       // The one fact the Changes panel gates on, computed from
                       // the daemon status this component already holds — a
                       // panel reads it here instead of polling for its own.

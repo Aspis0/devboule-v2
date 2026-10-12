@@ -32,6 +32,7 @@ interface TranscriptRowProps {
   /** The turn is live: a compaction start with no finish is still running. */
   compactionLive?: boolean;
   onOpenChild?: (sessionId: string) => void;
+  onRevealChange?: (path: string) => void;
 }
 
 const EMPTY_NAMES: A2aNameSource = { sessionById: new Map(), deviceNames: new Map() };
@@ -45,13 +46,21 @@ export const TranscriptRow = memo(function TranscriptRow({
   turnEnd,
   compactionLive = true,
   onOpenChild,
+  onRevealChange,
 }: TranscriptRowProps) {
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
   }
   const { className, style } = entryFrame(item);
   if (item.role === "tool") {
-    return <ToolRow item={item} transcriptEnded={transcriptEnded} onOpenChild={onOpenChild} />;
+    return (
+      <ToolRow
+        item={item}
+        transcriptEnded={transcriptEnded}
+        onOpenChild={onOpenChild}
+        onRevealChange={onRevealChange}
+      />
+    );
   }
   if (item.role === "thought") {
     return (

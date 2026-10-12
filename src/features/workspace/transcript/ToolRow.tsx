@@ -3,7 +3,8 @@ import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
+import { editCountsOf, toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
+import { ChangeCounts } from "../ChangeCounts";
 import {
   devbouleChildSession,
   devbouleFailureText,
@@ -39,11 +40,14 @@ export const ToolRow = memo(function ToolRow({
   transcriptEnded,
   expansion,
   onOpenChild,
+  onRevealChange,
 }: {
   item: ToolChatItem;
   transcriptEnded: boolean;
   expansion?: OutputExpansion;
   onOpenChild?: (sessionId: string) => void;
+  /** Shows the edited file in the Changes panel; an edit row's click calls it. */
+  onRevealChange?: (path: string) => void;
 }) {
   const { className, style } = entryFrame(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
@@ -99,6 +103,10 @@ export const ToolRow = memo(function ToolRow({
   const isEdit = item.kind === "edit" || item.kind === "delete";
   // A file row's summary is the path itself, so it prints with forward slashes.
   const isPathRow = isEdit || item.kind === "read";
+  // A running or failed call draws no counts yet; a call with no edit draws none at all.
+  const editCounts = isEdit && !running && !failed ? editCountsOf(item.edits) : null;
+  const revealPath =
+    editCounts === null || onRevealChange === undefined ? undefined : item.edits?.[0]?.path;
   const isDiff = useMemo(() => isEdit && diffStats(lines) !== null, [isEdit, lines]);
   // A failure opens to its excerpt, never to a box: the words wait behind the
   // line like every other output.
@@ -166,6 +174,11 @@ export const ToolRow = memo(function ToolRow({
               {isPathRow ? toolPathText(model.summary) : model.summary}
             </span>
           ) : null}
+          {editCounts === null ? null : (
+            <span className="workspace-chat-tool-counts">
+              <ChangeCounts additions={editCounts.additions} deletions={editCounts.deletions} />
+            </span>
+          )}
           {planDecision !== undefined ? (
             <span className="workspace-chat-tool-summary-text">{planDecision}</span>
           ) : null}
@@ -195,14 +208,18 @@ export const ToolRow = memo(function ToolRow({
       ) : null}
     </>
   );
-  if (childSession !== undefined && onOpenChild !== undefined) {
+  // A line about a child opens that child, and an edit row shows its file in the
+  // Changes panel; either click is the whole row, with no output behind it.
+  const activate =
+    childSession !== undefined && onOpenChild !== undefined
+      ? () => onOpenChild(childSession)
+      : revealPath !== undefined && onRevealChange !== undefined
+        ? () => onRevealChange(revealPath)
+        : undefined;
+  if (activate !== undefined) {
     return (
       <div className={toolClassName} style={style}>
-        <button
-          type="button"
-          className="workspace-chat-tool-summary"
-          onClick={() => onOpenChild(childSession)}
-        >
+        <button type="button" className="workspace-chat-tool-summary" onClick={activate}>
           {line}
         </button>
       </div>

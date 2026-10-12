@@ -12,6 +12,9 @@ import { ErrorText } from "../../components/ErrorText";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { CommitsList } from "./CommitsList";
 import { DiffCard } from "./DiffCard";
+import { RefreshButton } from "./RefreshButton";
+import { useRevealedPath, type RevealRequest } from "./useRevealedPath";
+import { AgentChanges } from "./agentChanges/AgentChanges";
 import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
 
@@ -34,6 +37,8 @@ interface ChangesSurfaceProps {
    * kind exists — the pencil that calls it renders only beside it.
    */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  /** A file a transcript row asked to show; the git list selects it when it is in this tree. */
+  revealPath?: RevealRequest | null;
 }
 
 type ChangesPanelView = "uncommitted" | "commits";
@@ -45,42 +50,6 @@ type ChangesPanelView = "uncommitted" | "commits";
  */
 function caveatOf(reply: WorkspaceGitStatus | null): string | null {
   return reply !== null && reply.error !== null ? reply.error : null;
-}
-
-/**
- * The quiet retry: one icon button with the label, shared by the branch
- * row and the state screens. Loading, a refused first read and a folder
- * that is not a repository all keep it — a refused read is exactly when a
- * manual retry matters, and the 5 s poll is no substitute when the reads
- * themselves are what fails. Only a panel with no workspace has no
- * refresh: with nothing to read, a control is a small lie (fix round R5).
- */
-function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
-  return (
-    <button
-      type="button"
-      className="workspace-changes-refresh"
-      aria-label="Refresh"
-      title="Refresh"
-      onClick={onRefresh}
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-          d="M21 12a9 9 0 1 1-2.64-6.36"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        />
-        <path
-          d="M21 3v6h-6"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </button>
-  );
 }
 
 /**
@@ -238,6 +207,7 @@ export const ChangesSurface = memo(function ChangesSurface({
   workspaceKey,
   canListCommits,
   onOpenFile,
+  revealPath,
 }: ChangesSurfaceProps) {
   // What every read and write below is addressed by. A paired host's
   // workspace reads over the held link instead (read-only): stripping
@@ -262,6 +232,9 @@ export const ChangesSurface = memo(function ChangesSurface({
   // zeros for an unknown tree, and a caveat with no rows claims nothing
   // below its sentence.
   const chrome = reply !== null && reply.isGit;
+  // The git list selects the file only while it is the list on screen; a folder
+  // that is not a repository reveals inside its own panel.
+  useRevealedPath(chrome ? revealPath : null, select);
   const {
     supported,
     log,
@@ -438,14 +411,14 @@ export const ChangesSurface = memo(function ChangesSurface({
             <div className="workspace-changes-state">
               git is not installed: install Git for Windows, or put git on PATH.
             </div>
-          ) : reply.error === null ? (
-            <div className="workspace-changes-state">
-              This workspace folder is not a git repository.
-            </div>
           ) : null}
-          <div className="workspace-changes-refresh-line">
-            <RefreshButton onRefresh={refresh} />
-          </div>
+          {reply.error === null ? (
+            <AgentChanges workspaceKey={workspaceKey} onRefresh={refresh} revealPath={revealPath} />
+          ) : (
+            <div className="workspace-changes-refresh-line">
+              <RefreshButton onRefresh={refresh} />
+            </div>
+          )}
         </>
       ) : !chrome ? null : (
         <>

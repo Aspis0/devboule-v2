@@ -1,5 +1,6 @@
 import type {
   ActiveTurnBehavior,
+  AgentToolEdit,
   ContextUsage,
   ErrorCode,
   PermissionRequest,
@@ -93,6 +94,8 @@ export type AgentChatItem =
       exitCode?: number;
       /** Images a tool result produced, shown under this row. */
       images?: AttachmentReference[];
+      /** The file changes the call carried; absent when the call carried none. */
+      edits?: AgentToolEdit[];
     }
   | {
       id: string;
@@ -1368,6 +1371,7 @@ export class AgentSession {
           locations: event.locations,
           command: event.command,
           exitCode: event.exitCode,
+          edits: event.edits,
         });
         return;
       case "agent_tool_update":
@@ -1387,6 +1391,7 @@ export class AgentSession {
           event.exitCode,
           event.replace,
           event.images,
+          event.edits,
         );
         return;
       case "exit":
@@ -1714,6 +1719,7 @@ export class AgentSession {
       command?: string;
       exitCode?: number;
       images?: readonly AttachmentReference[];
+      edits?: readonly AgentToolEdit[];
     } = {},
   ): void {
     const {
@@ -1726,6 +1732,7 @@ export class AgentSession {
       command,
       exitCode,
       images,
+      edits,
     } = fields;
     const shellRow = kind === "execute";
     const currentKey = `tool:${this.turn}:${toolCallId}`;
@@ -1755,6 +1762,7 @@ export class AgentSession {
             ...(shellRow && command !== undefined ? { command } : {}),
             ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
             ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
+            ...(edits === undefined || edits.length === 0 ? {} : { edits: [...edits] }),
           },
         ],
       });
@@ -1783,6 +1791,7 @@ export class AgentSession {
     exitCode?: number,
     replace?: boolean,
     images?: readonly AttachmentReference[],
+    edits?: readonly AgentToolEdit[],
   ): void {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
@@ -1805,6 +1814,7 @@ export class AgentSession {
           command,
           exitCode,
           images,
+          edits,
         },
       );
       return;
@@ -1831,6 +1841,7 @@ export class AgentSession {
       ...(shellRow && command !== undefined ? { command } : {}),
       ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
       ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
+      ...(edits === undefined || edits.length === 0 ? {} : { edits: [...edits] }),
     };
     this.update({ items });
   }

@@ -18,9 +18,16 @@ vi.mock("../../lib/tauri", () => ({
   workspaceGitStatus: vi.fn(),
   workspaceGitDiff: vi.fn(),
   workspaceGitLog: vi.fn(),
+  workspaceAgentEdits: vi.fn(),
+  workspaceAgentDiff: vi.fn(),
 }));
 
-import { workspaceGitDiff, workspaceGitLog, workspaceGitStatus } from "../../lib/tauri";
+import {
+  workspaceAgentEdits,
+  workspaceGitDiff,
+  workspaceGitLog,
+  workspaceGitStatus,
+} from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -100,6 +107,12 @@ describe("ChangesSurface R7b panel body", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply());
     vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply());
     vi.mocked(workspaceGitLog).mockResolvedValue(logReply());
+    vi.mocked(workspaceAgentEdits).mockResolvedValue({
+      files: [],
+      totals: { additions: 0, deletions: 0 },
+      truncated: false,
+      error: null,
+    });
   });
 
   afterEach(async () => {
@@ -366,7 +379,7 @@ describe("ChangesSurface R7b panel body", () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
     expect(vi.mocked(workspaceGitDiff)).toHaveBeenCalledWith(WORKSPACE, "notes/todo.md");
-    expect(container.querySelector(".workspace-diff-lines")).not.toBeNull();
+    expect(container.querySelector(".workspace-changes-diff-row")).not.toBeNull();
   });
 
   // R7d: the Commits view is wired to the history read — it holds the
@@ -667,11 +680,11 @@ describe("ChangesSurface R7b panel body", () => {
       ".workspace-changes-pencil",
       ".workspace-commit-row",
       ".workspace-commit-button",
-      // The bare header target pulls in BOTH the mono group rule and the
-      // moved display rule; the scoped target pulls the Changes answer.
-      // All three match one element, so this is the real cascade.
-      ".workspace-diff-header",
-      ".workspace-changes .workspace-diff-header",
+      // The inline diff's head is named for the Changes panel alone; the
+      // bare and the scoped target match the same element, so this is the
+      // real cascade.
+      ".workspace-changes-diff-head",
+      ".workspace-changes .workspace-changes-diff-head",
     ]);
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
@@ -700,12 +713,11 @@ describe("ChangesSurface R7b panel body", () => {
     if (addStats === null) throw new Error("add-tone stats did not render");
     expect(getComputedStyle(addStats).color).toBe(token("--tone-add"));
 
-    // The diff header sits under Workspace.css's mono group rule; the
-    // scoped Changes rule must hold it at sans in this order.
+    // The diff head reads sans in the real cascade, beside the mono rows.
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
-    const diffHeader = container.querySelector<HTMLElement>(".workspace-diff-header");
+    const diffHeader = container.querySelector<HTMLElement>(".workspace-changes-diff-head");
     if (diffHeader === null) throw new Error("diff header did not render");
     expect(getComputedStyle(diffHeader).fontFamily).not.toContain("JetBrains Mono");
   });

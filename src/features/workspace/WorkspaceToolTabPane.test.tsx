@@ -65,13 +65,14 @@ function filesWithEntry(path: string, name: string) {
     Diff tab (`.diff-tab`) and the File tab (`.workspace-file-tab`) are their own
     surfaces; the panel cards stay `.workspace-diff-card`. */
 function diffSurfaceErrorLinks(): Array<{ describedBy: string | null; detailId: string | null }> {
-  return [...document.querySelectorAll(".workspace-diff-card, .diff-tab, .workspace-file-tab")].map(
-    (card) => ({
-      describedBy:
-        card.querySelector("[aria-describedby]")?.getAttribute("aria-describedby") ?? null,
-      detailId: card.querySelector(".error-detail-sr-only")?.getAttribute("id") ?? null,
-    }),
-  );
+  return [
+    ...document.querySelectorAll(
+      ".workspace-diff-card, .workspace-changes-diff, .diff-tab, .workspace-file-tab",
+    ),
+  ].map((card) => ({
+    describedBy: card.querySelector("[aria-describedby]")?.getAttribute("aria-describedby") ?? null,
+    detailId: card.querySelector(".error-detail-sr-only")?.getAttribute("id") ?? null,
+  }));
 }
 
 function diffReply(text: string) {

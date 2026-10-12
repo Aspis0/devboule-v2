@@ -35,6 +35,8 @@ interface TranscriptRowsProps {
   turnRunning?: boolean;
   /** Opens a child agent's tab, from a line about that child. */
   onOpenChild?: (sessionId: string) => void;
+  /** Shows an edited file in the Changes panel, from an edit row. */
+  onRevealChange?: (path: string) => void;
 }
 
 export function TranscriptRows({
@@ -46,6 +48,7 @@ export function TranscriptRows({
   streamingThoughtId,
   turnRunning = false,
   onOpenChild,
+  onRevealChange,
 }: TranscriptRowsProps) {
   // The rows get one function that never changes, so a new callback from the
   // workspace does not re-render every row; it always calls the latest one.
@@ -54,6 +57,11 @@ export function TranscriptRows({
     openChildRef.current = onOpenChild;
   });
   const openChild = useCallback((sessionId: string) => openChildRef.current?.(sessionId), []);
+  const revealChangeRef = useRef(onRevealChange);
+  useLayoutEffect(() => {
+    revealChangeRef.current = onRevealChange;
+  });
+  const revealChange = useCallback((path: string) => revealChangeRef.current?.(path), []);
   const entries = useTranscriptEntries(items, recoveredAttach);
   // The previous footers are handed back in, so an unchanged turn keeps its object.
   const endsRef = useRef<Map<string, TurnEnd>>(new Map());
@@ -83,6 +91,7 @@ export function TranscriptRows({
             turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
             compactionLive={role === "system" ? liveNotices.has(entry.id) : undefined}
             onOpenChild={role === "system" || role === "tool" ? openChild : undefined}
+            onRevealChange={role === "tool" ? revealChange : undefined}
           />
         );
       })}

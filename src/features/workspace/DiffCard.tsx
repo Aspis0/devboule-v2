@@ -2,17 +2,11 @@
 // owns the selected path, instead of once per surface.
 
 import { useId } from "react";
-import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc";
+import type { WorkspaceGitFileDiff } from "../../types/ipc";
 import type { ChangesReply } from "./useWorkspaceChanges";
 import { ErrorText } from "../../components/ErrorText";
-import { DIFF_LINE_MARKER, DIFF_ROW_WORD } from "./diffMarker";
-
-const DIFF_LINE_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
-  add: "added",
-  remove: "removed",
-  context: "context",
-  header: "hunk",
-};
+import { ChangeCounts } from "./ChangeCounts";
+import { DiffNote, DiffRows, InlineDiff } from "./inlineDiff";
 
 export function DiffCard({
   path,
@@ -26,61 +20,44 @@ export function DiffCard({
   // descriptions at the first detail node.
   const errorId = useId();
   const reply = diff.reply;
-  const header =
-    reply === null
-      ? diff.failure !== null
-        ? "error"
-        : "…"
-      : reply.status === "ok"
-        ? `+${reply.additions} −${reply.deletions}`
-        : reply.status === "binary"
-          ? "binary"
-          : reply.status === "too_large"
-            ? "too large"
-            : "error";
+  const counts =
+    reply !== null && reply.status === "ok" ? (
+      <ChangeCounts additions={reply.additions} deletions={reply.deletions} />
+    ) : (
+      <span className="workspace-changes-diff-state">
+        {reply === null
+          ? diff.failure !== null
+            ? "error"
+            : "…"
+          : reply.status === "binary"
+            ? "binary"
+            : reply.status === "too_large"
+              ? "too large"
+              : "error"}
+      </span>
+    );
   return (
-    <div className="workspace-diff-card">
-      <div className="workspace-diff-header">
-        <span title={path}>{path}</span>
-        <span>{header}</span>
-      </div>
+    <InlineDiff path={path} counts={counts} meta={null}>
       {reply === null ? (
         diff.failure !== null ? (
-          <div className="workspace-diff-note workspace-diff-note-error" role="alert">
+          <DiffNote alert>
             <ErrorText sentence={diff.failure.sentence} detail={diff.failure.detail} id={errorId} />
-          </div>
+          </DiffNote>
         ) : (
-          <div className="workspace-diff-note" role="status">
-            Loading diff…
-          </div>
+          <DiffNote>Loading diff…</DiffNote>
         )
       ) : reply.status === "binary" ? (
-        <div className="workspace-diff-note">This file is binary; there are no lines to show.</div>
+        <DiffNote>This file is binary; there are no lines to show.</DiffNote>
       ) : reply.error !== null ? (
         // `too_large` and `error` are the only two statuses that carry a
         // sentence (`error` is null exactly when the status is ok or binary),
         // and both are shown as the refusal they are.
-        <div className="workspace-diff-note workspace-diff-note-error" role="alert">
-          {reply.error}
-        </div>
+        <DiffNote alert>{reply.error}</DiffNote>
       ) : reply.lines.length === 0 ? (
-        <div className="workspace-diff-note">This file has no uncommitted line changes.</div>
+        <DiffNote>This file has no uncommitted line changes.</DiffNote>
       ) : (
-        <div className="workspace-diff-lines">
-          {reply.lines.map((line, index) => (
-            <div
-              className={`workspace-diff-line workspace-diff-${DIFF_LINE_CLASS[line.kind]}`}
-              key={index}
-            >
-              <span aria-hidden="true">{DIFF_LINE_MARKER[line.kind]}</span>
-              {DIFF_ROW_WORD[line.kind] !== null ? (
-                <span className="sr-only">{DIFF_ROW_WORD[line.kind]}</span>
-              ) : null}
-              <span>{line.text}</span>
-            </div>
-          ))}
-        </div>
+        <DiffRows lines={reply.lines} />
       )}
-    </div>
+    </InlineDiff>
   );
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { humanizeToolName, toolPathText, toolRowDisplay, type ToolItem } from "./toolRowDisplay";
+import {
+  editCountsOf,
+  humanizeToolName,
+  toolPathText,
+  toolRowDisplay,
+  type ToolItem,
+} from "./toolRowDisplay";
 
 function tool(overrides: Partial<ToolItem> = {}): ToolItem {
   return {
@@ -351,5 +357,21 @@ describe("humanizeToolName", () => {
   it("prints a Windows path with forward slashes and leaves a POSIX path alone", () => {
     expect(toolPathText("docs\\handoff.md")).toBe("docs/handoff.md");
     expect(toolPathText("src/summary.ts")).toBe("src/summary.ts");
+  });
+});
+
+describe("editCountsOf", () => {
+  it("sums the lines each edit of the call added and removed", () => {
+    expect(
+      editCountsOf([
+        { path: "site.css", kind: "edit", added: 12, removed: 30 },
+        { path: "notes.txt", kind: "write", added: 3, removed: 0 },
+      ]),
+    ).toEqual({ additions: 15, deletions: 30 });
+  });
+
+  it("is null for a call that carried no edit, so no count is drawn", () => {
+    expect(editCountsOf(undefined)).toBeNull();
+    expect(editCountsOf([])).toBeNull();
   });
 });

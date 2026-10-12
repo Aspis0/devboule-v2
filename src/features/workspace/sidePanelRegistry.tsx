@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
+import type { RevealRequest } from "./useRevealedPath";
 import { FilesSurface } from "./FilesSurface";
 import { TasksPanel } from "./TasksPanel";
 import type { PanelIconName } from "./panel/PanelIcon";
@@ -47,6 +48,8 @@ export interface SidePanelContext {
    * its own kind, so the kind travels only this far.
    */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: FileToolTabKind) => void;
+  /** A file the transcript asked the Changes panel to show; a new nonce is a new ask. */
+  revealPath?: RevealRequest | null;
   /** The front pane's agent session and its tasks; null when the pane shows no agent. */
   agentTasks?: AgentTasksContext | null;
 }
@@ -85,10 +88,11 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     icon: "changes",
     // The counts live in R7b's branch row, read off the panel's own poll via
     // changesBadgeLabel — never on the tab (no room at 300 px).
-    render: ({ workspaceKey, canListCommits, onOpenFile }) => (
+    render: ({ workspaceKey, canListCommits, onOpenFile, revealPath }) => (
       <ChangesSurface
         workspaceKey={workspaceKey}
         canListCommits={canListCommits}
+        revealPath={revealPath}
         onOpenFile={
           onOpenFile === undefined
             ? undefined

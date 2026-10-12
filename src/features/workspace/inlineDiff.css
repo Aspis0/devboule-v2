@@ -1,0 +1,118 @@
+/* The inline diff under a Changes list (mockup §3.3): no card, a hairline above
+   a two-line head, then the Diff tab's rows. */
+
+.workspace-changes-diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workspace-changes-diff-head {
+  flex: none;
+  padding: var(--space-8) var(--space-12) var(--space-6);
+  border-top: 1px solid var(--line);
+}
+
+.workspace-changes-diff-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  font-size: var(--type-meta);
+  line-height: 20px;
+}
+
+.workspace-changes-diff-name {
+  flex: none;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.workspace-changes-diff-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-changes-diff-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 18px;
+}
+
+.workspace-changes-diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) 0 var(--space-12);
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-sm);
+  line-height: 1.6;
+}
+
+.workspace-changes-diff-row {
+  display: grid;
+  grid-template-columns: 34px 16px minmax(0, 1fr);
+}
+
+.workspace-changes-diff-num {
+  padding-right: var(--space-8);
+  color: var(--tone-idle-text);
+  text-align: right;
+  user-select: none;
+}
+
+.workspace-changes-diff-mark {
+  text-align: center;
+  user-select: none;
+}
+
+.workspace-changes-diff-text {
+  min-width: 0;
+  padding-right: var(--space-12);
+  /* Indentation is content: pre-wrap keeps it, and long lines wrap inside the column. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workspace-changes-diff-row-add {
+  color: var(--diff-text-add);
+  background: var(--diff-row-add);
+  box-shadow: inset 2px 0 0 var(--tone-add);
+}
+
+.workspace-changes-diff-row-remove {
+  color: var(--diff-text-del);
+  background: var(--diff-row-del);
+  box-shadow: inset 2px 0 0 var(--tone-del);
+}
+
+.workspace-changes-diff-row-context {
+  color: var(--muted);
+}
+
+.workspace-changes-diff-hunk {
+  padding: 2px var(--space-12) 2px var(--space-14);
+  color: var(--diff-text-hunk);
+  background: var(--diff-row-hunk);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  font-weight: 500;
+}
+
+.workspace-changes-diff-note {
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 18px;
+}
+
+.workspace-changes-diff-note-error {
+  color: var(--danger);
+}

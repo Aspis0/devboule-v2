@@ -76,7 +76,7 @@ function groupIdFor(path: string): string {
   return `changes-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, (glyph) => `-${glyph.charCodeAt(0).toString(16)}-`)}`;
 }
 
-const FileIcon = (
+export const FileIcon = (
   <svg
     className="workspace-changes-file-icon"
     width="12"
