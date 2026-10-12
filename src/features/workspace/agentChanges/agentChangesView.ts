@@ -13,8 +13,16 @@ export function splitPath(path: string): { name: string; dir: string } {
     : { name: path.slice(slash + 1), dir: path.slice(0, slash) };
 }
 
-export function filesText(count: number): string {
-  return count === 1 ? "1 file" : `${count} files`;
+/** The file count; a list the daemon cut short reads with a plus. */
+export function filesText(count: number, truncated = false): string {
+  const noun = count === 1 ? "file" : "files";
+  return truncated ? `${count}+ ${noun}` : `${count} ${noun}`;
+}
+
+/** An edit count; a call list the daemon cut short reads with a plus. */
+export function editsText(count: number, truncated = false): string {
+  const noun = count === 1 ? "edit" : "edits";
+  return truncated ? `${count}+ ${noun}` : `${count} ${noun}`;
 }
 
 /** How long ago an agent's edit landed, in minutes, hours or days. */

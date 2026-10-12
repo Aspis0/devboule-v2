@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceAgentEditFile } from "../../../types/ipc";
 import { countParts } from "../changeCountParts";
-import { editedAgo, filesText, sortedFiles, splitPath } from "./agentChangesView";
+import { editedAgo, editsText, filesText, sortedFiles, splitPath } from "./agentChangesView";
 
 const file = (
   path: string,
@@ -42,6 +42,17 @@ describe("the agent changes list", () => {
   it("counts the files in the head, singular for one", () => {
     expect(filesText(1)).toBe("1 file");
     expect(filesText(4)).toBe("4 files");
+  });
+
+  it("reads a truncated count with a plus", () => {
+    expect(filesText(4, true)).toBe("4+ files");
+    expect(filesText(1, true)).toBe("1+ file");
+  });
+
+  it("counts a file's edits with a plus when its call list was cut", () => {
+    expect(editsText(3, true)).toBe("3+ edits");
+    expect(editsText(1, true)).toBe("1+ edit");
+    expect(editsText(2, false)).toBe("2 edits");
   });
 });
 

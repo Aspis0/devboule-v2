@@ -9,7 +9,7 @@ import { RefreshButton } from "../RefreshButton";
 import { DiffNote, DiffRows, InlineDiff } from "../inlineDiff";
 import { useRevealedPath, type RevealRequest } from "../useRevealedPath";
 import { useTaskClock } from "../useTaskClock";
-import { editedAgo, filesText, splitPath } from "./agentChangesView";
+import { editedAgo, editsText, filesText, splitPath } from "./agentChangesView";
 import { useAgentChanges } from "./useAgentChanges";
 import "./agentChanges.css";
 
@@ -54,7 +54,11 @@ export function AgentChanges({ workspaceKey, onRefresh, revealPath }: AgentChang
   return (
     <div className="workspace-agent-changes">
       <div className="workspace-agent-changes-head">
-        <span>{files.length === 0 ? "No changes by agents yet" : filesText(files.length)}</span>
+        <span>
+          {files.length === 0
+            ? "No changes by agents yet"
+            : filesText(files.length, reply.truncated)}
+        </span>
         {files.length === 0 ? null : (
           <span className="workspace-agent-changes-total">
             <ChangeCounts additions={reply.totals.additions} deletions={reply.totals.deletions} />
@@ -136,7 +140,7 @@ export function AgentChanges({ workspaceKey, onRefresh, revealPath }: AgentChang
 
 /** `cia · 10 min ago · 1 edit`: the author, the newest edit's age, the edit count. */
 function editMeta(file: WorkspaceAgentEditFile, now: number): string {
-  const edits = file.calls.length === 1 ? "1 edit" : `${file.calls.length} edits`;
+  const edits = editsText(file.calls.length, file.truncated);
   return [file.lastAgent, editedAgo(file.lastAtMs, now), edits]
     .filter((part) => part !== null && part !== "")
     .join(" · ");

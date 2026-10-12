@@ -125,6 +125,21 @@ describe("the Changes panel of a folder that is not a repository", () => {
     );
   });
 
+  it("reads a truncated list and a cut call list with a plus", async () => {
+    vi.mocked(workspaceAgentEdits).mockResolvedValue(
+      edits([file("site.css", { truncated: true })], { truncated: true }),
+    );
+    await render();
+    await act(async () => {});
+
+    expect(container.querySelector(".workspace-agent-changes-head")?.textContent).toContain(
+      "1+ file",
+    );
+    expect(container.querySelector(".workspace-changes-diff-meta")?.textContent).toBe(
+      "cia · 10 min ago · 2+ edits",
+    );
+  });
+
   it("chooses a file by click and reads the diff of that file", async () => {
     vi.mocked(workspaceAgentEdits).mockResolvedValue(
       edits([file("a.css"), file("b.css", { additions: 3, deletions: 0 })]),
