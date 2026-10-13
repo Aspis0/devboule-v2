@@ -97,7 +97,7 @@ pub(in crate::mcp_broker) fn creation_card(
     let caps = ticket.caps().clone();
     let card_tools = card_tools_for_provider(&profile.provider);
     let mut description = if profile.model.is_empty() {
-        format!("{} · {}", request.title, profile.provider)
+        format!("{} · {} (default model)", request.title, profile.provider)
     } else {
         format!("{} · {} {}", request.title, profile.provider, profile.model)
     };

@@ -4642,6 +4642,59 @@ fn creation_card_is_one_line_with_the_title_provider_and_model() {
     );
 }
 
+/// A creation that names no model says so on the card, so the person can see
+/// that the provider picks its own default.
+#[test]
+fn creation_card_names_the_default_model_when_none_is_set() {
+    let state = ServerState::new("mcp-card-default".to_string());
+    let creator_owner = owner("mcp-card-default-user", "mcp-card-default-client");
+    let creator = "s.card-default".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0, true)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        choice: CreationChoice::Profile("runner".to_string()),
+        title: "Poster".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let mut resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "claude",
+                "bypassPermissions",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    resolved.model.clear();
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    assert_eq!(
+        description.as_deref(),
+        Some("Poster · claude (default model)")
+    );
+}
+
 /// No profile enabled at all: every creation is refused, and the refusal
 /// names **no** profile — an agent must not learn what exists but is
 /// forbidden.
