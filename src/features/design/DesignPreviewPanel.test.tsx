@@ -367,7 +367,7 @@ describe("DesignPreviewPanel", () => {
     expect(container.textContent).not.toContain(REJECTED_MESSAGE);
   });
 
-  it("renders no preview frame when the artifact carries an error", async () => {
+  it("states a rejected artifact beside its page rather than instead of it", async () => {
     useAppStore.setState(
       session({
         latestArtifact: { html: ARTIFACT_MARKUP, error: "Artifact exceeds the size cap." },
@@ -392,16 +392,19 @@ describe("DesignPreviewPanel", () => {
 
     await renderPanel();
 
-    // Both fields are set on purpose: the error branch wins, so a rejected artifact
-    // is never rendered as if it had passed.
-    expect(container.querySelectorAll("iframe")).toHaveLength(0);
-    // The stronger half of the original prohibition, kept where it still holds. The
-    // positive case had to give it up — the markup now lives in the frame's `srcdoc`
-    // attribute, so "nowhere in the DOM" stopped being expressible there. On this
-    // branch nothing renders the artifact at all, so the whole-DOM assertion is still
-    // the honest one: a rejected artifact must not reach the document by any route,
-    // including an attribute nobody looked at.
-    expect(container.innerHTML).not.toContain("ARTIFACT MARKUP PAYLOAD");
+    // Both fields are set on purpose, and neither half is dropped for the other: the
+    // page the run did produce is still this result, and the rejection still rides
+    // above it. The notice is `role="alert"` so it is announced rather than sitting
+    // there looking like another heading.
+    expect(container.querySelectorAll(".design-preview-card")).toHaveLength(1);
+    expect(container.querySelectorAll("iframe")).toHaveLength(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "The last artifact was rejected.",
+    );
+    expect(container.textContent).toContain("Artifact exceeds the size cap.");
+    // The markup lives in the frame's attribute and nowhere else: the panel's own
+    // document still renders none of it.
+    expect(container.textContent).not.toContain("ARTIFACT MARKUP PAYLOAD");
   });
 
   it("carries no hardcoded string from the old mockup panel", async () => {
@@ -457,24 +460,34 @@ describe("DesignPreviewPanel", () => {
     expect(container.textContent).not.toContain("src/tokens/source.ts");
   });
 
-  // Error wins over a renderable artifact: reversing the two branches would otherwise
-  // present a rejected artifact as if it had rendered.
-  it("renders the error branch, not the artifact card, when both html and error are set", async () => {
+  // A run that produced no page takes the end of the transcript and so becomes the
+  // store's latest artifact, but it does not take the finished results behind it with
+  // it: the rejection is a notice above the stack, and every result still has a block.
+  it("keeps earlier results when a later run's artifact is rejected", async () => {
     useAppStore.setState(
       session({
-        latestArtifact: { html: ARTIFACT_MARKUP, error: "Artifact exceeds the size cap." },
-        // Store-reachable state: the injected latestArtifact matches this message's own
-        // artifact fields, as the store's predicate would produce it.
+        latestArtifact: { error: "Artifact exceeds the size cap." },
+        // Store-reachable state: the injected latestArtifact matches the last message's
+        // own artifact fields, as the store's predicate would produce it.
         messages: [
           {
             id: "assistant-1",
             role: "assistant",
             status: "done",
-            title: "Reopened design",
-            desc: "The reopened artifact could not be displayed.",
+            title: "Landing page",
+            desc: "",
             sources: [],
             nodeIds: [],
             artifactHtml: ARTIFACT_MARKUP,
+          },
+          {
+            id: "assistant-2",
+            role: "assistant",
+            status: "done",
+            title: "Pricing table",
+            desc: "The artifact could not be displayed.",
+            sources: [],
+            nodeIds: [],
             artifactError: "Artifact exceeds the size cap.",
           },
         ],
@@ -485,9 +498,14 @@ describe("DesignPreviewPanel", () => {
 
     expect(container.textContent).toContain(REJECTED_MESSAGE);
     expect(container.textContent).toContain("Artifact exceeds the size cap.");
-    // Rejected means not previewed either: the error branch renders no frame.
-    expect(container.querySelectorAll("iframe")).toHaveLength(0);
-    expect(container.innerHTML).not.toContain("ARTIFACT MARKUP PAYLOAD");
+    // The finished result is still here, and still reachable: a failed run takes the
+    // end of the transcript, not the pages behind it.
+    expect(container.querySelectorAll(".design-preview-card")).toHaveLength(1);
+    expect(container.querySelectorAll(".design-preview-block-heading")).toHaveLength(1);
+    expect(container.textContent).toContain("Landing page");
+    // The failed run earns no block of its own: it has no page to show.
+    expect(container.textContent).not.toContain("Pricing table");
+    expect(container.textContent).not.toContain(NOTHING_GENERATED_MESSAGE);
   });
 
   it("renders a settled reply with no artifact as its own card", async () => {
@@ -759,11 +777,16 @@ describe("DesignPreviewPanel", () => {
       expect(block).toContain("background: var(--design-canvas)");
     });
 
-    it("gives the preview the column's height instead of one page", () => {
+    // The box a block claims is the page already scaled, and it is that height the block's
+    // own basis is built from. The page box lays out at the 1280px the page was authored
+    // at — the scale is a transform, which moves pixels and not the layout — so a box
+    // without a stated height would size to a whole unscaled canvas page and a stack
+    // would ask for one of those per result.
+    it("sizes the preview to the scaled page, not to a whole one", () => {
       const block = cssBlockFor(".design-artifact-preview {");
-      expect(block).toMatch(/flex:\s*1/);
-      // No height of its own: a `height:` here would be the fixed box this replaced.
-      expect(block).not.toMatch(/^\s+height:/m);
+      expect(block).toMatch(
+        /height:\s*calc\(\s*var\(--design-artifact-preview-page-height\)\s*\*\s*var\(--design-artifact-preview-scale\)/,
+      );
       expect(block).toContain("overflow: hidden");
     });
 
@@ -781,26 +804,46 @@ describe("DesignPreviewPanel", () => {
 
       const card = cssBlockFor(".design-preview-card {");
       expect(card).toContain("display: flex");
-      expect(card).toMatch(/flex:\s*1/);
-      expect(card).toContain("min-height: 0");
+      expect(card).toContain("flex: 1 0 auto");
+      expect(card).not.toContain("min-height");
+    });
+
+    // Every result stays reachable. A block that may shrink is handed a share too small
+    // to hold its page, and the clipped band is fixed: the block's Shift+wheel window is
+    // the canvas's window, not the block's, so a page that fits the canvas has no wheel
+    // to scroll it with. Not shrinking overflows the stack instead, and the stack is the
+    // scrollport — the panel above it and the sidebar around it stay where they are, so
+    // the header row does not scroll away and the space below the last block is not a
+    // scroll area of its own.
+    it("keeps every result whole by scrolling the stack rather than shrinking its blocks", () => {
+      const stack = cssBlockFor(".design-preview-stack {");
+      expect(stack).toContain("overflow-y: auto");
+      expect(stack).toMatch(/flex:\s*1/);
+      expect(stack).toContain("min-height: 0");
+      // The card's shrink factor is the load-bearing half: `flex: 1` alone would hand
+      // every block a share of a fixed column however small that share got.
+      expect(cssBlockFor(".design-preview-card {")).toContain("flex: 1 0 auto");
+      // The box inside the block must not shrink either, or the card's basis is a whole
+      // page again and the basis is what the stack overflows by.
+      expect(cssBlockFor(".design-artifact-preview {")).toContain("flex: 1 0 auto");
+      // …and neither box between the card and the page may carry a zero basis: the
+      // card's own basis is built from what its children would take, so a `flex: 1`
+      // on the opener would leave the card claiming no page and hand the stack
+      // nothing to scroll by.
+      expect(cssBlockFor(".design-artifact-preview-opener {")).toContain("flex: 1 0 auto");
     });
 
     // The reply card states text, and text does not shrink to fit. `.workspace-generation-card`
-    // carries `overflow: hidden` (Workspace.css) so that the preview card can be squeezed into
-    // the column, and that same property zeroes the automatic minimum size of a shrinkable flex
-    // item — so the reply card would compress and clip its source chips instead of pushing them
-    // out to the sidebar, which is the surface that owns this panel's scrolling. Nothing in
-    // happy-dom lays that out, so the rule that prevents it is pinned by reading it.
-    it("keeps the reply card at its content height without catching the preview card", () => {
+    // carries `overflow: hidden` (Workspace.css), and that same property zeroes the automatic
+    // minimum size of a shrinkable flex item — so the reply card would compress and clip its
+    // source chips instead of pushing them out to the sidebar, which is the surface that owns
+    // this panel's scrolling. Nothing in happy-dom lays that out, so the rule that prevents it
+    // is pinned by reading it.
+    it("keeps the reply card at its content height", () => {
       const replyCard = cssBlockFor(
         ".design-preview-panel > .workspace-generation-card:not(.design-preview-card) {",
       );
       expect(replyCard).toMatch(/flex:\s*none/);
-      // The `:not()` is the load-bearing half, not decoration: unscoped, this selector is two
-      // classes and a pseudo-class and would outrank `.design-preview-card`, so the preview card
-      // would be `flex: none` — one page tall in a column it has to fill — whichever order the
-      // two rules are written in.
-      expect(cssBlockFor(".design-preview-card {")).toMatch(/flex:\s*1/);
     });
   });
 });
@@ -1515,6 +1558,37 @@ describe("stacked preview blocks", () => {
     expect(pages).toHaveLength(2);
     expect(pages[0]).toContain(PAGE_A);
     expect(pages[1]).toContain(PAGE_B);
+  });
+
+  // Two runs answering to the same name — the mirror writes the child's display name
+  // verbatim, and the host answers a file-writing run with a plain "Wrote" — would
+  // otherwise leave two byte-identical headings, two buttons with the same accessible
+  // name and two sections labelled the same, tellable only by recognising the pixels
+  // below. Two runs that named nothing would collide the same way.
+  it("names every block, and never the same name twice", async () => {
+    useAppStore.setState(
+      session({
+        latestArtifact: { html: PAGE_B },
+        messages: [
+          mirroredCard(CHILD_A, "Landing page", PAGE_A),
+          mirroredCard("child-c", "Landing page", PAGE_A),
+          mirroredCard("child-d", "Wrote", PAGE_A),
+          mirroredCard("child-e", "", PAGE_A),
+          mirroredCard("child-f", "   ", PAGE_A),
+        ],
+      }),
+    );
+
+    await renderPanel();
+
+    const labels = headings().map((heading) => heading.textContent);
+    expect(labels).toEqual(["Landing page 1", "Landing page 2", "Wrote", "Result 1", "Result 2"]);
+    // A name that only one block answers to keeps its own spelling, unnumbered.
+    expect(labels).toContain("Wrote");
+    expect(labels.every((label) => label !== null && label.trim() !== "")).toBe(true);
+    expect(new Set(labels).size).toBe(labels.length);
+    // The card is named for the same block, so the region and its heading agree.
+    expect(blocks().map((block) => block.getAttribute("aria-label"))).toEqual(labels);
   });
 
   it("gives a message with no page behind it no block", async () => {

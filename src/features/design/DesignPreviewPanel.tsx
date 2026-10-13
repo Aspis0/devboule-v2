@@ -12,6 +12,36 @@ import "./artifactPreview.css";
 // per finished result, stacked in transcript order, so a column that mirrors two
 // Design agents shows both pages instead of whichever finished last.
 
+/** The name a result carries when the run reported none of its own. */
+const UNTITLED_RESULT_LABEL = "Result";
+
+/**
+ * One label per result, non-empty and never shared inside the column: a run that
+ * named nothing, and two runs that answered to the same name — the host's plain
+ * "Wrote" for a run with nothing to report — would otherwise leave a column of
+ * headings a reader cannot tell apart. The number is the result's place among those
+ * that answer to that name, so the same transcript reads the same way every time
+ * the labels are derived from it.
+ */
+function resultLabels(titles: readonly string[]): readonly string[] {
+  let untitled = 0;
+  const names = titles.map((title) => {
+    const name = title.trim();
+    if (name !== "") return name;
+    untitled += 1;
+    return `${UNTITLED_RESULT_LABEL} ${untitled}`;
+  });
+  const shared = new Map<string, number>();
+  for (const name of names) shared.set(name, (shared.get(name) ?? 0) + 1);
+  const used = new Map<string, number>();
+  return names.map((name) => {
+    if (shared.get(name) === 1) return name;
+    const ordinal = (used.get(name) ?? 0) + 1;
+    used.set(name, ordinal);
+    return `${name} ${ordinal}`;
+  });
+}
+
 // Absence meanings in this panel:
 // - host === null: Design was never opened in this app session. The document is not
 //   persisted and the surface unmounts when deselected, so there is nothing to mirror —
@@ -36,6 +66,7 @@ export function DesignPreviewPanel() {
   // Every result the transcript holds, in the order the transcript lists them, so the
   // column shows what the canvas would show rather than only its last card.
   const previews = useMemo(() => messages.filter(previewsArtifact), [messages]);
+  const labels = useMemo(() => resultLabels(previews.map((message) => message.title)), [previews]);
 
   // The last settled reply, and the only transcript this panel reads for anything but a
   // page: the branches that have an artifact render the preview alone, so no message
@@ -80,22 +111,30 @@ export function DesignPreviewPanel() {
               Generating a design…
             </div>
           ) : null}
+          {/*
+            A rejection is a notice about the run that failed, not a verdict on the
+            column: it rides above whatever earlier results are still here, because a
+            failed run takes the end of the transcript without taking the finished
+            pages behind it with it.
+          */}
           {latestArtifact?.error !== undefined ? (
             <div className="workspace-design-note" role="alert">
               <div>The last artifact was rejected.</div>
               <div>{latestArtifact.error}</div>
             </div>
-          ) : previews.length > 0 ? (
+          ) : null}
+          {previews.length > 0 ? (
             // A Design run writes no files — the artifact is HTML inside the reply, scraped
             // by extractFencedHtml — so the description and the source chips the reply card
             // carries are commentary about a run that never produced the paths they named.
             // The canvas is where the artifact's own context belongs; the column shows the
             // page, one block per result, each named by the agent that made it.
             <div className="design-preview-stack">
-              {previews.map((message) => (
+              {previews.map((message, index) => (
                 <DesignPreviewBlock
                   key={message.id}
                   message={message}
+                  heading={labels[index]}
                   canvasPageHeight={canvasPageHeight}
                 />
               ))}

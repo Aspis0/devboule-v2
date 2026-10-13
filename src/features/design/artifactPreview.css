@@ -49,9 +49,12 @@
 }
 
 /*
- * The results, stacked. One column and one share each, so a transcript that holds
- * several finished results fills the sidebar with pages instead of leaving the rest of
- * it dark. The gap is the only thing between them: each block's own dark remainder
+ * The results, stacked, and the column's scrollport. It takes the height the panel
+ * has left after its header row and notices, and scrolls once the results outgrow
+ * that — the sidebar's own scroll owner stays for the panel as a whole, so the
+ * header row above stays put and the space below the last block never becomes one.
+ *
+ * The gap is the only thing between the blocks: each one's own dark remainder
  * already reads as the edge of a page, so nothing is drawn here.
  */
 .design-preview-stack {
@@ -60,6 +63,7 @@
   min-height: 0;
   flex-direction: column;
   gap: var(--space-8);
+  overflow-y: auto;
 }
 
 /*
@@ -86,33 +90,29 @@
 /*
  * The shell owns this card's frame (`.workspace-generation-card` in
  * Workspace.css); this only turns it into a column so the preview can take what
- * the panel has left after the header row, the generation notice, the block's own
- * heading and the card's own frame. Scoped to the class the panel adds to that one
- * card: the reply card in the branch below is a `.workspace-generation-card` too, and
- * the rule below is what keeps that one at its content height.
+ * the panel has left after the block's own heading and the card's own frame.
+ *
+ * `flex: 1 0 auto` is what keeps every result reachable: one result grows into the
+ * column the way it always did, several grow into whatever the column has left, and
+ * a column too short for them all overflows and scrolls rather than handing each
+ * block a share too small to hold its page — a share whose clipped band nothing
+ * could scroll back into view, since the Shift+wheel window is the canvas's, not the
+ * block's.
  */
 .design-preview-card {
   display: flex;
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 auto;
   flex-direction: column;
 }
 
 /*
  * The reply card states text, and text does not shrink to fit: it is the sidebar's job
  * to scroll (`.workspace-side-scroll`, `overflow-y: auto`). The card's frame states
- * `overflow: hidden` in Workspace.css so that the preview card can be squeezed into the
- * column, and that same property zeroes this card's automatic minimum size (Flexbox
- * §4.5): without this rule the card compresses below its own content and clips its
- * source chips, instead of pushing the overflow out to the sidebar. `flex: none` is
- * `0 0 auto` — the card takes its content height and the column neither grows nor
- * shrinks it.
- *
- * `:not(.design-preview-card)` is load-bearing, not a specificity trick: the preview
- * card carries `.workspace-generation-card` as well, and this compound (0,3,0) outranks
- * the preview card's own `flex: 1` (0,1,0) when it matches. The exclusion keeps the two
- * selectors from meeting at all, so which rule is written first cannot decide the
- * outcome.
+ * `overflow: hidden` in Workspace.css, and that same property zeroes this card's
+ * automatic minimum size (Flexbox §4.5): without this rule the card compresses below
+ * its own content and clips its source chips, instead of pushing the overflow out to
+ * the sidebar. `flex: none` is `0 0 auto` — the card takes its content height and the
+ * column neither grows nor shrinks it.
  *
  * The `.workspace-design-note` branches and the generation banner above this card need
  * no equivalent: neither states an `overflow`, so their automatic minimum size is
@@ -132,6 +132,13 @@
  * The page height is the canvas viewport height from the store, never this box:
  * same page as the canvas, uniformly reduced, with the rest of the column dark.
  *
+ * The box's own height is that page height already scaled down, because the page
+ * box below lays out at the 1280px it was authored at and the scale is a transform,
+ * which moves the pixels without touching the layout. Without a stated height this
+ * box would size to a whole unscaled canvas page, and a stack of blocks would ask
+ * for one each; `flex: 1 0 auto` then lets a block grow into room the column has
+ * left over and stop growing rather than shrink below the page it is showing.
+ *
  * Overflow clips because the transform rounds: the scaled page can leave a
  * sub-pixel overhang, and the sidebar is not the surface that should grow a
  * scrollbar for it. The frame itself carries `scrolling="no"` (see the panel),
@@ -142,8 +149,8 @@
 .design-artifact-preview {
   --design-artifact-preview-scale: 0.25;
   --design-artifact-preview-page-height: 800px;
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 auto;
+  height: calc(var(--design-artifact-preview-page-height) * var(--design-artifact-preview-scale));
   width: 100%;
   overflow: hidden;
   background: var(--design-canvas);
@@ -166,6 +173,10 @@
  * still fills its sidebar by being a flex item, and a plain block wrapper would
  * leave that rule inert and let the page's own height set the box.
  *
+ * Its basis is the preview's own height, not zero: the card's basis is built from
+ * what its children would take, and a zero basis anywhere in that chain would leave
+ * the card claiming no page at all and let the stack shrink results again.
+ *
  * The alignment is stated rather than left to the button's own defaults, so the
  * one child is the whole button in every engine. Nothing else is drawn: the page
  * is the entire target, which is why the button is named for what pressing it
@@ -173,7 +184,7 @@
  */
 .design-artifact-preview-opener {
   display: flex;
-  flex: 1;
+  flex: 1 0 auto;
   min-height: 0;
   width: 100%;
   flex-direction: column;
