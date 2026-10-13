@@ -33,6 +33,7 @@ use devboule_protocol::{
 };
 
 use crate::checked_file::{open_checked, read_capped};
+use crate::raster_metadata::sniff_raster_mime;
 use crate::session::MAX_ATTACHMENT_READ_BYTES;
 use crate::workspace_files::{
     names_alternate_stream, names_git_metadata, DOES_NOT_EXIST, NOT_A_TREE_NAME,
@@ -332,6 +333,10 @@ fn window_of(target: &Path, from_line: u64, line_count: Option<u64>) -> std::io:
     })
 }
 
+/// The extension chose the road, but the bytes must still be a raster image
+/// this daemon shows: a file named `.png` that is text is refused.
+const NOT_A_PICTURE: &str = "the file's bytes are not a picture this daemon shows";
+
 /// An image's own road: the whole file as base64, under the cap the frame
 /// can carry — the withholding left standing, because a window of base64
 /// is not content anyone can decode. The bytes come from the handle the
@@ -351,6 +356,9 @@ fn image_of(root: &Path, target: &Path, walked: &std::fs::Metadata) -> Workspace
         Ok(None) => return withheld(MAX_ATTACHMENT_READ_BYTES as u64 + 1, stamped(&opened)),
         Err(_) => return refused(READ_FAILED),
     };
+    if sniff_raster_mime(&bytes).is_none() {
+        return refused(NOT_A_PICTURE);
+    }
     let size = bytes.len() as u64;
     let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     answered(WorkspaceFileContentKind::Image, base64, size, &opened)

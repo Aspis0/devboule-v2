@@ -54,7 +54,7 @@ fn a_text_file_comes_back_with_its_bytes_size_and_mtime() {
 #[test]
 fn the_cap_still_withholds_an_image_whole_and_carries_the_measure_not_the_content() {
     let repo = Repo::new("cap");
-    repo.write("at-cap.png", vec![b'a'; MAX_ATTACHMENT_READ_BYTES]);
+    repo.write("at-cap.png", picture_of_len(MAX_ATTACHMENT_READ_BYTES));
     let at_cap = content_of(&repo.root, "at-cap.png", None, None);
     assert_eq!(
         at_cap.status,
@@ -62,7 +62,7 @@ fn the_cap_still_withholds_an_image_whole_and_carries_the_measure_not_the_conten
         "the cap is inclusive: exactly at it, the content comes back"
     );
     let expected =
-        base64::engine::general_purpose::STANDARD.encode(vec![b'a'; MAX_ATTACHMENT_READ_BYTES]);
+        base64::engine::general_purpose::STANDARD.encode(picture_of_len(MAX_ATTACHMENT_READ_BYTES));
     assert_eq!(at_cap.content.as_deref(), Some(expected.as_str()));
     assert_eq!(
         at_cap.from_line, None,
@@ -313,7 +313,7 @@ fn a_binary_file_comes_back_with_its_stat_and_no_content() {
 #[test]
 fn an_image_is_recognized_by_its_extension_and_carries_base64() {
     let repo = Repo::new("image");
-    let bytes = [0x89u8, b'P', b'N', b'G', 0x00, 0xFF, 0x0D, 0x0A];
+    let bytes = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     repo.write("shot.png", bytes);
 
     let reply = content_of(&repo.root, "shot.png", None, None);
@@ -323,6 +323,14 @@ fn an_image_is_recognized_by_its_extension_and_carries_base64() {
     let expected = base64::engine::general_purpose::STANDARD.encode(bytes);
     assert_eq!(reply.content.as_deref(), Some(expected.as_str()));
     assert_eq!(reply.size, Some(8));
+}
+
+/// A PNG signature followed by filler: the bytes an image route serves must
+/// sniff as a picture, and the signature is all the sniff reads.
+fn picture_of_len(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    bytes.resize(len, b'a');
+    bytes
 }
 
 /// The two things a refusal sentence must never carry: this run's workspace
@@ -468,4 +476,22 @@ fn an_alternate_stream_spelling_is_refused_before_it_is_read_on_windows() {
         );
         assert_eq!(reply.content, None, "{spelling}");
     }
+}
+
+/// A file under a picture's name whose bytes are text is refused: the
+/// extension only chose the road, the bytes decide what it is.
+#[test]
+fn a_text_file_under_a_picture_name_is_refused_as_not_a_picture() {
+    let repo = Repo::new("fake-picture");
+    repo.write("fake.png", b"plain text, not a picture".to_vec());
+    let reply = content_of(&repo.root, "fake.png", None, None);
+    assert_ne!(reply.status, WorkspaceFileContentStatus::Ok, "{reply:?}");
+    assert_eq!(reply.content, None, "no text is handed back as a picture");
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("not a picture")),
+        "{reply:?}"
+    );
 }
