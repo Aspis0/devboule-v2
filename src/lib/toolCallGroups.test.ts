@@ -54,6 +54,19 @@ describe("groupToolCalls", () => {
     expect(grouped[0].items).toEqual([first, second, third]);
   });
 
+  it("summarizes a multi-file edit row inside its group", () => {
+    const first = tool({ title: "git status", kind: "execute" });
+    const batch = tool({
+      title: "fileChange",
+      kind: "edit",
+      locations: [{ path: "alpha.txt" }, { path: "beta.txt" }, { path: "notes.txt" }],
+    });
+    const grouped = groupToolCalls([first, batch]);
+    expect(isGroup(grouped[0])).toBe(true);
+    if (!isGroup(grouped[0])) throw new Error("expected a group");
+    expect(grouped[0].summary).toBe("Edited 3 files, ran 1 command");
+  });
+
   it("splits a run when text arrives between tools", () => {
     const first = tool({ title: "one" });
     const middle = text("hello");
@@ -154,6 +167,76 @@ describe("summarizeToolCallGroup", () => {
       tool({ title: path, kind: "edit", locations: [{ path }] });
     expect(summarizeToolCallGroup([edit("src/a.ts"), edit("src/a.ts")])).toBe("Edited 1 file");
     expect(summarizeToolCallGroup([edit("src/a.ts"), edit("src/b.ts")])).toBe("Edited 2 files");
+  });
+
+  it("counts every path a batch edit row names", () => {
+    const batch = tool({
+      title: "fileChange",
+      kind: "edit",
+      locations: [{ path: "alpha.txt" }, { path: "beta.txt" }, { path: "notes.txt" }],
+    });
+    expect(summarizeToolCallGroup([tool({ title: "ls", kind: "execute" }), batch])).toBe(
+      "Edited 3 files, ran 1 command",
+    );
+  });
+
+  it("dedupes a path repeated within one row and across rows", () => {
+    const row = (kind: "edit", paths: string[]): ToolItem =>
+      tool({ title: kind, kind, locations: paths.map((path) => ({ path })) });
+    expect(
+      summarizeToolCallGroup([row("edit", ["src/a.ts", "src/a.ts"]), row("edit", ["src/a.ts"])]),
+    ).toBe("Edited 1 file");
+    expect(
+      summarizeToolCallGroup([row("edit", ["src/a.ts", "src/b.ts"]), row("edit", ["src/b.ts"])]),
+    ).toBe("Edited 2 files");
+  });
+
+  it("counts multi-location reads, and a file read then edited in both buckets", () => {
+    const read = tool({
+      title: "src/a.ts",
+      kind: "read",
+      locations: [{ path: "src/a.ts" }, { path: "src/b.ts" }],
+    });
+    const edit = tool({ title: "src/a.ts", kind: "edit", locations: [{ path: "src/a.ts" }] });
+    expect(summarizeToolCallGroup([read, edit])).toBe("Edited 1 file, read 2 files");
+  });
+
+  it("counts every path a delete batch names", () => {
+    const remove = tool({
+      title: "delete",
+      kind: "delete",
+      locations: [{ path: "old/a.txt" }, { path: "old/b.txt" }],
+    });
+    expect(summarizeToolCallGroup([tool({ title: "ls", kind: "execute" }), remove])).toBe(
+      "Edited 2 files, ran 1 command",
+    );
+  });
+
+  it("keeps an empty location from hiding a later named path", () => {
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "batch", kind: "edit", locations: [{ path: "" }, { path: "beta.txt" }] }),
+        tool({ title: "beta", kind: "edit", locations: [{ path: "beta.txt" }] }),
+      ]),
+    ).toBe("Edited 1 file");
+  });
+
+  it("keeps a location-less edit one other tool beside a command", () => {
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "ls", kind: "execute" }),
+        tool({ title: "src/a.ts", kind: "edit" }),
+      ]),
+    ).toBe("Ran 1 command, used 1 tool");
+  });
+
+  it("counts execute and browser rows by calls even when they carry locations", () => {
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "sed -i src/a.ts", kind: "execute", locations: [{ path: "src/a.ts" }] }),
+        tool({ title: "click e33", kind: "browser", locations: [{ path: "docs/index.html" }] }),
+      ]),
+    ).toBe("Ran 1 command, used 1 browser tool");
   });
 
   it("counts location-less edits as other tools, never by title", () => {

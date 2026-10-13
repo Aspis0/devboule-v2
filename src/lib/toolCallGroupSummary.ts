@@ -11,9 +11,10 @@ export interface ToolCallGroupSummary {
 }
 
 /**
- * Count a run: edited and read files dedupe by path, everything else counts
- * calls. A `fetch` is not one of the counted kinds here, so it lands in
- * `otherToolCount`. A location-less edit/read cannot name a file, so it
+ * Count a run: edited and read files dedupe by path over every location a row
+ * names, so one batch row counts each file it touched once; everything else
+ * counts calls. A `fetch` is not one of the counted kinds here, so it lands in
+ * `otherToolCount`. A row that names no file cannot be counted by file, so it
  * counts as another tool instead of guessing by title. A browser call is one
  * kind of its own: the row shows as one, and a run that hides twenty browser
  * calls behind "other tools" says nothing about what the agent did.
@@ -27,11 +28,15 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
   let otherToolCount = 0;
   for (const item of items) {
     const kind = item.kind?.trim().toLowerCase() ?? "";
-    const filePath = item.locations?.[0]?.path;
-    if ((kind === "edit" || kind === "delete") && filePath !== undefined) {
-      editedFiles.add(filePath);
-    } else if (kind === "read" && filePath !== undefined) {
-      readFiles.add(filePath);
+    if (kind === "edit" || kind === "delete" || kind === "read") {
+      const files = kind === "read" ? readFiles : editedFiles;
+      let named = false;
+      for (const location of item.locations ?? []) {
+        if (!location.path) continue;
+        files.add(location.path);
+        named = true;
+      }
+      if (!named) otherToolCount += 1;
     } else if (kind === "execute") {
       commandCount += 1;
     } else if (kind === "search") {
