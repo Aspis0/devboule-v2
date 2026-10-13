@@ -3,7 +3,8 @@ import type { RefObject } from "react";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
 import type { Pan } from "../../lib/canvas/viewportMath";
 import type { NodeRect } from "../../types/geometry";
-import type { DesignLayer } from "./designHost";
+import { useAppStore } from "../../store/appStore";
+import type { DesignHost, DesignLayer } from "./designHost";
 import {
   ARTIFACT_PAGE_HEIGHT,
   artifactPageHeightForCanvas,
@@ -14,6 +15,7 @@ import { DESIGN_FIT_MARGIN, artifactNodeRect, layerRectsFor } from "./designCanv
 import type { DesignViewState } from "./designSurfaceTypes";
 
 interface UseDesignViewportInput {
+  host: DesignHost;
   initialViewState: DesignViewState;
   layers: readonly DesignLayer[];
   hiddenLayerIds: readonly string[];
@@ -118,6 +120,17 @@ export function useDesignViewport(input: UseDesignViewportInput): UseDesignViewp
     setViewport({ pan: fittedPan, zoom: fittedZoom });
   }, [input.surfaceRef, setViewport]);
 
+  // The canvas height feeds the side preview, which shows the same page
+  // reduced: the preview reads this instead of measuring its own box.
+  useEffect(() => {
+    useAppStore.getState().setCanvasPageHeight(input.host, artifactPageHeight);
+  }, [input.host, artifactPageHeight]);
+
+  const mirroredFitPending = useAppStore((state) =>
+    state.designSession.host === input.host ? state.designSession.mirroredFitPending : false,
+  );
+  const explicitFitDeferredRef = useRef(false);
+
   // The artifact frame follows the live canvas aspect (width stays 1280, height
   // adapts), but its height re-renders the iframe, so it must not chase every
   // pixel. The ratio gate in shouldAdaptArtifactHeight and the new-artifact
@@ -169,10 +182,58 @@ export function useDesignViewport(input: UseDesignViewportInput): UseDesignViewp
       }
     }
     const heightChanged = fittedHeightRef.current !== artifactPageHeight;
-    if (!isNewArtifact && !heightChanged) return;
+    if (!isNewArtifact && !heightChanged && !explicitFitDeferredRef.current) return;
     fittedHeightRef.current = artifactPageHeight;
+    if (explicitFitDeferredRef.current) {
+      explicitFitDeferredRef.current = false;
+      viewportTouchedRef.current = false;
+      fitCanvas();
+      useAppStore.getState().consumeMirroredFit(input.host);
+      return;
+    }
     if (!viewportTouchedRef.current) fitCanvas();
-  }, [input.artifactError, input.artifactHtml, artifactPageHeight, fitCanvas, input.surfaceRef]);
+  }, [
+    input.artifactError,
+    input.artifactHtml,
+    input.host,
+    artifactPageHeight,
+    fitCanvas,
+    input.surfaceRef,
+  ]);
+
+  // An explicit mirrored open fits even a preloaded page: the card arrived
+  // while Design was unmounted, so the mount seed above mistook it for a
+  // reopen. Ordinary selection carries no intent and keeps its camera.
+  useEffect(() => {
+    if (!mirroredFitPending || explicitFitDeferredRef.current) return;
+    const artifact = input.artifactHtml ?? input.artifactError;
+    if (artifact === undefined) {
+      useAppStore.getState().consumeMirroredFit(input.host);
+      return;
+    }
+    const canvas = input.surfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return;
+    lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
+    const desired = artifactPageHeightForCanvas(rect.width, rect.height);
+    if (desired !== artifactPageHeight) {
+      explicitFitDeferredRef.current = true;
+      setArtifactPageHeight(desired);
+      return;
+    }
+    viewportTouchedRef.current = false;
+    fitCanvas();
+    useAppStore.getState().consumeMirroredFit(input.host);
+  }, [
+    artifactPageHeight,
+    fitCanvas,
+    input.artifactError,
+    input.artifactHtml,
+    input.host,
+    input.surfaceRef,
+    mirroredFitPending,
+  ]);
 
   const setSelectedLayerId = useCallback((layerId: string) => {
     setViewState((current) =>

@@ -32,6 +32,8 @@ describe("side panel dead controls", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
   });
@@ -93,6 +95,8 @@ describe("side panel dead controls", () => {
           latestArtifact: { html: "<p>latest artifact</p>" },
           generation: null,
           sectionNotes: [],
+          lastCanvasPageHeight: null,
+          mirroredFitPending: false,
         },
       });
       await render(<DesignPanel />);

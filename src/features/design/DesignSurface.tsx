@@ -766,6 +766,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     zoomReset,
     fitCanvas,
   } = useDesignViewport({
+    host,
     initialViewState,
     layers,
     hiddenLayerIds: snapshot.hiddenLayerIds,

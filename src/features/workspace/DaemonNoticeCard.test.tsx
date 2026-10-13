@@ -136,6 +136,8 @@ describe("the Open in Design action on a finish line", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     useAppStore.getState().setDesignDocument(DESIGN_HOST, { ...DESIGN_DOCUMENT }, [
@@ -161,6 +163,8 @@ describe("the Open in Design action on a finish line", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
   });

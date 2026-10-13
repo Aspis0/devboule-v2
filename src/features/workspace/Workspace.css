@@ -471,6 +471,29 @@
   cursor: default;
 }
 
+/* The row opens the child, so the Design action sits beside the line: a button inside the row's button would be invalid. */
+.workspace-chat-task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.workspace-chat-task-row > button.workspace-chat-tool-summary {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workspace-chat-task-row > div.workspace-chat-tool-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workspace-chat-task-row > .workspace-chat-activity-action {
+  flex: none;
+  margin-left: 0;
+}
+
 /* The chevron that opens and folds a clipped summary: an icon, not a sentence. */
 .workspace-chat-activity-toggle {
   align-self: flex-start;

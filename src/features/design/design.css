@@ -712,17 +712,6 @@
   padding-left: var(--space-16);
 }
 
-.design-artifact-measurement-frame {
-  position: fixed;
-  top: 0;
-  left: -100000px;
-  /* The width and height come from ARTIFACT_PAGE_WIDTH/HEIGHT in the critic
-     component, so the check measures the same viewport the page is shown at. */
-  border: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
-
 /* The print frame is parked off-screen like the measurement frame and for the
    same reason (it must not be seen), but unlike it this one must stay
    PAINTABLE: the WebView's print pipeline renders the frame's document, and a

@@ -52,6 +52,10 @@ export interface DesignSessionState {
    * survive surface navigation even for hosts without document persistence.
    */
   sectionNotes: SectionNote[];
+  /** Last measured canvas page height, or null before the canvas measures. */
+  lastCanvasPageHeight: number | null;
+  /** An explicit mirrored open asked for a fit; the canvas clears it once run. */
+  mirroredFitPending: boolean;
 }
 
 function emptyDesignSession(host: DesignHost | null = null): DesignSessionState {
@@ -62,6 +66,8 @@ function emptyDesignSession(host: DesignHost | null = null): DesignSessionState 
     latestArtifact: null,
     generation: null,
     sectionNotes: [],
+    lastCanvasPageHeight: null,
+    mirroredFitPending: false,
   };
 }
 
@@ -137,6 +143,9 @@ interface AppState {
   setDesignMessages: (host: DesignHost, update: DesignMessagesUpdate) => void;
   setDesignGeneration: (host: DesignHost, generation: DesignGenerationState | null) => void;
   setSectionNotes: (host: DesignHost, update: SectionNotesUpdate) => void;
+  setCanvasPageHeight: (host: DesignHost, height: number) => void;
+  requestMirroredFit: (host: DesignHost) => void;
+  consumeMirroredFit: (host: DesignHost) => void;
   clearDesignSession: (host?: DesignHost) => void;
 
   /**
@@ -242,6 +251,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       ];
       return {
         designSession: { ...state.designSession, sectionNotes: nextNotes },
+      };
+    }),
+  setCanvasPageHeight: (host, height) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      if (state.designSession.lastCanvasPageHeight === height) return state;
+      return {
+        designSession: { ...state.designSession, lastCanvasPageHeight: height },
+      };
+    }),
+  requestMirroredFit: (host) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      if (state.designSession.mirroredFitPending) return state;
+      return {
+        designSession: { ...state.designSession, mirroredFitPending: true },
+      };
+    }),
+  consumeMirroredFit: (host) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      if (!state.designSession.mirroredFitPending) return state;
+      return {
+        designSession: { ...state.designSession, mirroredFitPending: false },
       };
     }),
   clearDesignSession: (host) =>

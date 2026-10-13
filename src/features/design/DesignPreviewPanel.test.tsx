@@ -9,7 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore, type DesignSessionState } from "../../store/appStore";
 import type { DesignHost } from "./designHost";
 import { ARTIFACT_CSP_META } from "./artifactCsp";
-import { ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
+import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH, maxArtifactScroll } from "./artifactViewport";
+import {
+  getCachedArtifactStructure,
+  setCachedArtifactStructure,
+  clearCachedArtifactSections,
+} from "./artifactStructure";
+import {
+  ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
+  ARTIFACT_RENDER_CRITIC_SOURCE,
+} from "./artifactRenderCritic";
 import { DesignPreviewPanel } from "./DesignPreviewPanel";
 
 const EMPTY_CANVAS_MESSAGE =
@@ -33,6 +42,11 @@ const HOST: DesignHost = {
 // designPills.test.ts reads design.css the same way.
 const PREVIEW_CSS = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "artifactPreview.css"),
+  "utf8",
+);
+
+const DESIGN_CSS = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "design.css"),
   "utf8",
 );
 
@@ -121,6 +135,8 @@ function session(overrides: Partial<DesignSessionState> = {}): {
       latestArtifact: null,
       generation: null,
       sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
       ...overrides,
     },
   };
@@ -159,6 +175,8 @@ describe("DesignPreviewPanel", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
 
@@ -449,8 +467,9 @@ describe("DesignPreviewPanel", () => {
 
     afterEach(() => restoreResizeObserver());
 
-    it("measures the page from the column the observer reports, not from a constant", async () => {
+    it("measures the scale from the column width and the page from the canvas store", async () => {
       useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.getState().setCanvasPageHeight(HOST, 922);
       await renderPanel();
 
       const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -474,12 +493,9 @@ describe("DesignPreviewPanel", () => {
       // constant 0.25 this replaced would read 320 at the default panel width and be wrong
       // at every other one the resize handle can reach.
       expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.265625");
-      // 600 / 0.265625 = 2258.8… document pixels, which the transform paints as 600. A
-      // page-height constant would be 800px here and 200px painted — the shape the
-      // committente saw as a third-full column.
-      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
-        "2259px",
-      );
+      // The canvas viewport, not the column: 922px from the store paints as 245px, with
+      // the rest of the column dark. The old column-height viewport read 2259px here.
+      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
 
       // The cleanup is what an unmount runs, not what a second artifact runs: the frame's
       // srcdoc changes and the box around it is the same node React already committed, so
@@ -515,8 +531,10 @@ describe("DesignPreviewPanel", () => {
         expect(observer.observed).toEqual([preview]);
 
         expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.265625");
+        // No canvas height was shared, so the canonical viewport stands in: the old
+        // column-height viewport read 2259px at this box.
         expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
-          "2259px",
+          `${ARTIFACT_PAGE_HEIGHT}px`,
         );
       } finally {
         restoreBox();
@@ -564,14 +582,17 @@ describe("DesignPreviewPanel", () => {
       });
 
       expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("");
-      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("");
+      // The scale needs a box, but the page height comes from the canvas store:
+      // an unmeasured box still paints the canonical viewport, never nothing.
+      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
+        `${ARTIFACT_PAGE_HEIGHT}px`,
+      );
     });
 
-    // The property the panel writes is the page box's height, and the page box is inside the
-    // element being measured: the CSS gives that element a definite height today, so the value
-    // cannot come back as a delivery — but nothing in the panel enforces that, so the write is
-    // guarded the way the canvas guards the same value. Two deliveries on one box, and the
-    // second must reach the style object with nothing to say.
+    // The height the panel writes belongs to the canvas, and the scale to the width:
+    // a delivery that changes only the measured height moves neither, so the write is
+    // guarded the way the canvas guards the same value. Two deliveries on one box, and
+    // the second must reach the style object with nothing to say.
     it("writes nothing on a delivery that measures the box it already wrote", async () => {
       useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
       await renderPanel();
@@ -596,29 +617,40 @@ describe("DesignPreviewPanel", () => {
       expect(writes).not.toHaveBeenCalled();
       writes.mockRestore();
 
-      // …and the skip is an equality test, not a latch on the first measurement: a box that
-      // did move is written. 620 / 0.265625 = 2334.1 document pixels.
+      // …and the skip is an equality test, not a latch on the first measurement: a taller
+      // box alone moves nothing now, because the page height belongs to the canvas store.
+      // A box that did move in width is written, and only its scale.
       Object.defineProperty(preview, "clientHeight", { value: 620, configurable: true });
       const afterResize = vi.spyOn(preview.style, "setProperty");
       await act(async () => {
         observer.fire();
       });
-      expect(afterResize).toHaveBeenCalledWith("--design-artifact-preview-page-height", "2334px");
+      expect(afterResize).not.toHaveBeenCalled();
       afterResize.mockRestore();
       expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
-        "2334px",
+        `${ARTIFACT_PAGE_HEIGHT}px`,
+      );
+
+      Object.defineProperty(preview, "clientWidth", { value: 360, configurable: true });
+      await act(async () => {
+        observer.fire();
+      });
+      expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe(
+        String(360 / 1280),
+      );
+      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
+        `${ARTIFACT_PAGE_HEIGHT}px`,
       );
     });
 
-    // The bound that keeps a broken chain to one wrong frame. The narrowest preview the
-    // sidebar can hand this panel is MIN_RIGHT_WIDTH (240) less the sidebar's 24px of gutters
-    // and the card's 2px of border = 214; the stub below is deliberately narrower — an input no
-    // legitimate layout produces must stay bounded all the same — and 3000 is taller than any
-    // window, so 3000 / 0.1203125 =
-    // 24935px of document is a page no legitimate layout asks for: the bound is what the page
-    // box gets, and the value stays one delivery away from itself instead of compounding.
-    it("bounds the page height it asks a document for", async () => {
+    // A narrow box still scales from its width, and the page height still comes from
+    // the store: the 18000px bound this replaced belonged to a viewport derived from
+    // the box, which no longer exists. The stub below is deliberately narrower than the
+    // narrowest preview the sidebar hands over (214px), and 3000 is taller than any
+    // window — neither moves the page height now.
+    it("scales a narrow box from its width while the page stays on the canvas height", async () => {
       useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.getState().setCanvasPageHeight(HOST, 922);
       await renderPanel();
 
       const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -632,9 +664,7 @@ describe("DesignPreviewPanel", () => {
       });
 
       expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.1203125");
-      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
-        "18000px",
-      );
+      expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
     });
   });
 
@@ -649,6 +679,14 @@ describe("DesignPreviewPanel", () => {
       // The stylesheet cannot import the constant, so this is what keeps the page box at
       // the width the scale in DesignPreviewPanel.tsx is measured against.
       expect(block).toContain(`width: ${ARTIFACT_PAGE_WIDTH}px`);
+      // The window over a longer page: the box clips to the viewport height.
+      expect(block).toContain("overflow: hidden");
+      expect(block).toContain("background: var(--white)");
+    });
+
+    it("leaves the rest of the column dark around the reduced page", () => {
+      const block = cssBlockFor(".design-artifact-preview {");
+      expect(block).toContain("background: var(--design-canvas)");
     });
 
     it("gives the preview the column's height instead of one page", () => {
@@ -694,5 +732,294 @@ describe("DesignPreviewPanel", () => {
       // two rules are written in.
       expect(cssBlockFor(".design-preview-card {")).toMatch(/flex:\s*1/);
     });
+  });
+});
+
+describe("preview shared viewport", () => {
+  let restoreResizeObserver: () => void = () => undefined;
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    restoreResizeObserver = installResizeObserverStub();
+    clearCachedArtifactSections();
+    useAppStore.setState({ activeSurface: "workspace" });
+    useAppStore.setState(session());
+  });
+
+  afterEach(async () => {
+    restoreResizeObserver();
+    clearCachedArtifactSections();
+    await act(async () => root.unmount());
+    container.remove();
+    useAppStore.setState(session());
+  });
+
+  async function renderPanel(): Promise<void> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<DesignPreviewPanel />);
+    });
+  }
+
+  async function renderWithBox(width: number, height: number): Promise<HTMLElement> {
+    const restoreBox = stubBoxMetrics(width, height);
+    try {
+      await renderPanel();
+      const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
+      if (preview === null) throw new Error("preview element missing");
+      return preview;
+    } finally {
+      restoreBox();
+    }
+  }
+
+  function setArtifactWithCanvasHeight(html: string, canvasHeight: number | null): void {
+    useAppStore.setState(session({ latestArtifact: { html } }));
+    if (canvasHeight !== null) {
+      useAppStore.getState().setCanvasPageHeight(HOST, canvasHeight);
+    }
+  }
+
+  it("uses the canvas viewport height at 340x600, not the panel height", async () => {
+    setArtifactWithCanvasHeight(ARTIFACT_MARKUP, 922);
+    const preview = await renderWithBox(340, 600);
+
+    expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.265625");
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
+  });
+
+  it("falls back to the canonical height before the canvas is measured", async () => {
+    setArtifactWithCanvasHeight(ARTIFACT_MARKUP, null);
+    const preview = await renderWithBox(340, 600);
+
+    expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.265625");
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe(
+      `${ARTIFACT_PAGE_HEIGHT}px`,
+    );
+  });
+
+  it("keeps the canvas height across narrow and wide resizes", async () => {
+    setArtifactWithCanvasHeight(ARTIFACT_MARKUP, 922);
+    useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+    useAppStore.getState().setCanvasPageHeight(HOST, 922);
+    await renderPanel();
+    const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
+    if (preview === null) throw new Error("preview element missing");
+    const observer = ResizeObserverStub.instances.at(-1);
+    if (observer === undefined) throw new Error("preview observer missing");
+
+    Object.defineProperty(preview, "clientWidth", { value: 214, configurable: true });
+    Object.defineProperty(preview, "clientHeight", { value: 600, configurable: true });
+    await act(async () => {
+      observer.fire();
+    });
+    expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe(
+      String(214 / 1280),
+    );
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
+
+    Object.defineProperty(preview, "clientWidth", { value: 400, configurable: true });
+    await act(async () => {
+      observer.fire();
+    });
+    expect(preview.style.getPropertyValue("--design-artifact-preview-scale")).toBe(
+      String(400 / 1280),
+    );
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
+  });
+
+  it("frames height-dependent content at the canvas height so its layout matches", async () => {
+    const heightDependent =
+      "<style>@media (max-height: 1000px) { p { color: red; } }</style><p>viewport shaped</p>";
+    setArtifactWithCanvasHeight(heightDependent, 922);
+    const preview = await renderWithBox(340, 600);
+
+    // 922 sits below the 1000px query the canvas sees; the old panel-height
+    // viewport (2259px at this box) sat above it and laid the page out differently.
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
+    expect(container.innerHTML).toContain("max-height: 1000px");
+  });
+
+  it("keeps a long page reachable in the shared window", async () => {
+    const longHtml = `<main>${"long ".repeat(500)}</main>`;
+    setCachedArtifactStructure(longHtml, { sections: [], contentHeight: 2641 });
+    setArtifactWithCanvasHeight(longHtml, 922);
+    const preview = await renderWithBox(340, 600);
+    const frame = container.querySelector<HTMLIFrameElement>("iframe.design-artifact-frame");
+    if (frame === null) throw new Error("preview frame missing");
+
+    expect(preview.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("922px");
+    expect(frame.style.height).toBe("2641px");
+    expect(frame.style.transform).toBe("translateY(0px)");
+    const max = maxArtifactScroll(2641, 922);
+    expect(max).toBe(1719);
+
+    const card = container.querySelector<HTMLElement>(".design-preview-card");
+    if (card === null) throw new Error("preview card missing");
+    const wheel = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+    Object.defineProperties(wheel, {
+      deltaY: { value: 500 },
+      deltaMode: { value: 0 },
+      shiftKey: { value: true },
+    });
+    await act(async () => {
+      card.dispatchEvent(wheel);
+    });
+    expect(frame.style.transform).toBe("translateY(-500px)");
+
+    const far = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+    Object.defineProperties(far, {
+      deltaY: { value: 100000 },
+      deltaMode: { value: 0 },
+      shiftKey: { value: true },
+    });
+    await act(async () => {
+      card.dispatchEvent(far);
+    });
+    expect(frame.style.transform).toBe(`translateY(${-max}px)`);
+  });
+
+  function criticResult(contentHeight: number): Record<string, unknown> {
+    return {
+      kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
+      source: ARTIFACT_RENDER_CRITIC_SOURCE,
+      version: 1,
+      findings: [],
+      structure: [],
+      contentHeight,
+    };
+  }
+
+  function shiftWheel(deltaY: number): WheelEvent {
+    const wheel = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+    Object.defineProperties(wheel, {
+      deltaY: { value: deltaY },
+      deltaMode: { value: 0 },
+      shiftKey: { value: true },
+    });
+    return wheel;
+  }
+
+  it("measures a cold-cache page so its tail is reachable without opening Design", async () => {
+    // Normal delegated flow: the child finished in Workspace, the canvas never
+    // mounted, so no store height and nothing in the critic cache.
+    const html = `<main>${"cold ".repeat(200)}</main>`;
+    useAppStore.setState(session({ latestArtifact: { html } }));
+    const restoreBox = stubBoxMetrics(340, 600);
+    try {
+      await renderPanel();
+    } finally {
+      restoreBox();
+    }
+    const frame = container.querySelector<HTMLIFrameElement>("iframe.design-artifact-frame");
+    if (frame === null) throw new Error("preview frame missing");
+    expect(container.querySelector(".design-artifact-preview-page")).not.toBeNull();
+    expect(container.querySelector(".design-canvas-artifact-render-warning")).toBeNull();
+
+    const measure = document.querySelector<HTMLIFrameElement>(".design-artifact-measurement-frame");
+    if (measure === null || measure.contentWindow === null) {
+      throw new Error("measurement frame did not mount on a cache miss");
+    }
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: criticResult(2641),
+          source: measure.contentWindow,
+        }),
+      );
+    });
+
+    expect(getCachedArtifactStructure(html)?.contentHeight).toBe(2641);
+    expect(frame.style.height).toBe("2641px");
+    expect(frame.style.transform).toBe("translateY(0px)");
+    // No verdict chrome rides along: the page and the dark remainder are the UI.
+    expect(container.querySelector(".design-canvas-artifact-render-warning")).toBeNull();
+    expect(container.textContent).not.toContain("Render checks");
+    expect(container.textContent).not.toContain("too slow to check");
+
+    const card = container.querySelector<HTMLElement>(".design-preview-card");
+    if (card === null) throw new Error("preview card missing");
+    const max = maxArtifactScroll(2641, ARTIFACT_PAGE_HEIGHT);
+    await act(async () => {
+      card.dispatchEvent(shiftWheel(100000));
+    });
+    expect(frame.style.transform).toBe(`translateY(${-max}px)`);
+  });
+
+  it("skips measurement on a cache hit", async () => {
+    const html = `<main>${"warm ".repeat(200)}</main>`;
+    setCachedArtifactStructure(html, { sections: [], contentHeight: 2641 });
+    useAppStore.setState(session({ latestArtifact: { html } }));
+    const restoreBox = stubBoxMetrics(340, 600);
+    try {
+      await renderPanel();
+    } finally {
+      restoreBox();
+    }
+
+    expect(document.querySelector(".design-artifact-measurement-frame")).toBeNull();
+    const frame = container.querySelector<HTMLIFrameElement>("iframe.design-artifact-frame");
+    expect(frame?.style.height).toBe("2641px");
+  });
+
+  it("ignores a late result for a replaced artifact", async () => {
+    const first = "<main>first page</main>";
+    const second = "<main>second page</main>";
+    useAppStore.setState(session({ latestArtifact: { html: first } }));
+    const restoreBox = stubBoxMetrics(340, 600);
+    try {
+      await renderPanel();
+    } finally {
+      restoreBox();
+    }
+    const firstMeasure = document.querySelector<HTMLIFrameElement>(
+      ".design-artifact-measurement-frame",
+    );
+    if (firstMeasure === null || firstMeasure.contentWindow === null) {
+      throw new Error("measurement frame did not mount for the first artifact");
+    }
+    const staleWindow = firstMeasure.contentWindow;
+
+    await act(async () => {
+      useAppStore.setState(session({ latestArtifact: { html: second } }));
+    });
+    const secondMeasure = document.querySelector<HTMLIFrameElement>(
+      ".design-artifact-measurement-frame",
+    );
+    if (secondMeasure === null || secondMeasure.contentWindow === null) {
+      throw new Error("measurement frame did not mount for the second artifact");
+    }
+    expect(firstMeasure.isConnected).toBe(false);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data: criticResult(3000), source: staleWindow }),
+      );
+    });
+    expect(getCachedArtifactStructure(first)).toBeUndefined();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: criticResult(2500),
+          source: secondMeasure.contentWindow,
+        }),
+      );
+    });
+    expect(getCachedArtifactStructure(second)?.contentHeight).toBe(2500);
+    const frame = container.querySelector<HTMLIFrameElement>("iframe.design-artifact-frame");
+    expect(frame?.style.height).toBe("2500px");
+  });
+
+  it("carries the measurement frame rules in the shared stylesheet, not the lazy one", () => {
+    expect(PREVIEW_CSS).toContain(".design-artifact-measurement-frame");
+    const block = cssBlockFor(".design-artifact-measurement-frame");
+    expect(block).toContain("position: fixed");
+    expect(block).toContain("left: -100000px");
+    expect(block).toContain("visibility: hidden");
+    expect(DESIGN_CSS).not.toContain(".design-artifact-measurement-frame");
   });
 });

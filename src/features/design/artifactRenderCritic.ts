@@ -1300,6 +1300,7 @@ function RenderCriticCard({ result }: { result: ArtifactRenderCriticResult }) {
 export function ArtifactRenderCritic({
   html,
   onResult,
+  measureOnly = false,
 }: {
   html: string;
   /**
@@ -1308,6 +1309,8 @@ export function ArtifactRenderCritic({
    * Not fired on timeout: without a result there is nothing to cache.
    */
   onResult?: (html: string, result: ArtifactRenderCriticResult) => void;
+  /** Measurement without a verdict: the height is needed, the findings are not. */
+  measureOnly?: boolean;
 }) {
   const [measurement, setMeasurement] = useState<
     { html: string; result: ArtifactRenderCriticResult } | { html: string; timedOut: true } | null
@@ -1367,7 +1370,7 @@ export function ArtifactRenderCritic({
   }, [html, onResult]);
 
   const currentMeasurement = measurement?.html === html ? measurement : null;
-  if (currentMeasurement === null) return null;
+  if (measureOnly || currentMeasurement === null) return null;
   if ("timedOut" in currentMeasurement) {
     return createElement(
       "div",

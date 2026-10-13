@@ -9,8 +9,9 @@
  * panel — which sits in the Workspace chunk loaded on every start — needs these
  * rules and nothing else from it.
  *
- * The two variables the preview carries are written by the panel from its own
- * measured box (DesignPreviewPanel.tsx). The values declared here are what the
+ * The two variables the preview carries are written by the panel: the scale from
+ * its own measured width, the page height from the canvas store
+ * (DesignPreviewPanel.tsx). The values declared here are what the
  * first frame paints before that measurement lands.
  */
 
@@ -19,6 +20,17 @@
   width: 100%;
   height: 100%;
   border: 0;
+  pointer-events: none;
+}
+
+.design-artifact-measurement-frame {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  /* The width and height come from ARTIFACT_PAGE_WIDTH/HEIGHT in the critic
+     component, so the check measures the same viewport the page is shown at. */
+  border: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 
@@ -82,32 +94,8 @@
  * 180 and 460px (workspaceResize.ts), and a constant scale either leaves a
  * margin or overflows at every width but one.
  *
- * The box does not pick a height either: it takes what the column gives it. The
- * page box inside is then asked for `container height / scale` of document
- * pixels, which the transform brings back down to the container's height. Both
- * numbers come from the panel's ResizeObserver, and neither of them is a height
- * of the document — that one is not measurable from outside a `sandbox=""`
- * frame, and nothing here tries to infer it.
- *
- * What that costs: a document shorter than the box leaves its remaining height
- * as the preview's own white. That is the less surprising of the two available
- * behaviours, because the other one — pinning the box to a constant — silently
- * drops everything below the first screen, which is the defect this replaces.
- * The panel cannot tell a short page from a tall one without measuring the
- * document, so it must not pretend to: a page that ends in whitespace and a page
- * that ends at the bottom of the box look the same, and both look like a page.
- *
- * One divergence from the canvas, deliberate and worth naming before anyone hunts it.
- * This box asks the document for `column height / scale` of viewport, which is the whole
- * column in document pixels: ~2500px for a 670px column at the default panel width, and
- * ~2.2x that at the sidebar's narrowest, where the same column divides by a smaller
- * scale. The canvas frames the same page at [ARTIFACT_PAGE_MIN_HEIGHT,
- * ARTIFACT_PAGE_MAX_HEIGHT] = [800, 2000] (artifactViewport.ts) and the render critic
- * measures it in a fixed 1280x800 frame (artifactRenderCritic.ts). A page that sizes on
- * its own viewport — `vh`, `position: fixed`, `@media (max-height)` — therefore lays out
- * differently in the two places: taller here, page-height-bound there. That is the trade,
- * not an oversight: matching the canvas would either crop the page in the panel or leave
- * the column empty, which are the two defects this panel exists to avoid.
+ * The page height is the canvas viewport height from the store, never this box:
+ * same page as the canvas, uniformly reduced, with the rest of the column dark.
  *
  * Overflow clips because the transform rounds: the scaled page can leave a
  * sub-pixel overhang, and the sidebar is not the surface that should grow a
@@ -123,13 +111,15 @@
   min-height: 0;
   width: 100%;
   overflow: hidden;
-  background: var(--white);
+  background: var(--design-canvas);
   pointer-events: none;
 }
 
 .design-artifact-preview-page {
   width: 1280px;
   height: var(--design-artifact-preview-page-height);
+  overflow: hidden;
+  background: var(--white);
   transform: scale(var(--design-artifact-preview-scale));
   transform-origin: top left;
   pointer-events: none;
