@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { MarkdownImage } from "./MarkdownImage";
+import { MarkdownImage, sharedImageReader } from "./MarkdownImage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,7 +21,8 @@ function linksOf(readImage?: ChatFileLinks["readImage"]): ChatFileLinks {
   return { root: ROOT, open: async () => "file", readImage };
 }
 
-async function render(text: string, links: ChatFileLinks, renderImage = true) {
+async function render(text: string, links: ChatFileLinks, withReader = true) {
+  const read = links.readImage === undefined ? undefined : sharedImageReader(links.readImage);
   root = createRoot(container);
   await act(async () => {
     root.render(
@@ -29,9 +30,9 @@ async function render(text: string, links: ChatFileLinks, renderImage = true) {
         text={text}
         fileLinks={links}
         renderImage={
-          renderImage
+          withReader && read !== undefined
             ? (target, alt, key) => (
-                <MarkdownImage key={key} target={target} alt={alt} links={links} />
+                <MarkdownImage key={key} target={target} alt={alt} links={links} read={read} />
               )
             : undefined
         }
@@ -41,6 +42,33 @@ async function render(text: string, links: ChatFileLinks, renderImage = true) {
   await act(async () => {});
 }
 
+/** Holds each observer's targets until a test says they came near the viewport. */
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    FakeIntersectionObserver.instances.push(this);
+  }
+  observe(target: Element) {
+    this.targets.add(target);
+  }
+  unobserve(target: Element) {
+    this.targets.delete(target);
+  }
+  disconnect() {
+    this.targets.clear();
+  }
+  static intersectAll() {
+    for (const observer of FakeIntersectionObserver.instances) {
+      const entries = [...observer.targets].map(
+        (target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry,
+      );
+      if (entries.length > 0)
+        observer.callback(entries, observer as unknown as IntersectionObserver);
+    }
+  }
+}
+
 function thumb(): HTMLButtonElement | null {
   return container.querySelector<HTMLButtonElement>(".workspace-chat-image-thumb");
 }
@@ -48,11 +76,14 @@ function thumb(): HTMLButtonElement | null {
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
+  vi.stubGlobal("IntersectionObserver", undefined);
 });
 
 afterEach(async () => {
   await act(async () => root?.unmount());
   container.remove();
+  FakeIntersectionObserver.instances = [];
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -120,5 +151,42 @@ describe("MarkdownImage", () => {
     await render("![](mockups/shot.png)", linksOf(undefined));
     expect(thumb()).toBeNull();
     expect(container.querySelector(".plan-markdown-image")?.textContent).toBe("image");
+  });
+});
+
+describe("MarkdownImage reads", () => {
+  const PICTURE = { mimeType: "image/png", data: "aGk=" };
+
+  it("waits for the picture to come near the viewport before reading it", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const readImage = vi.fn(async () => PICTURE);
+    await render("![](mockups/shot.png)", linksOf(readImage));
+    expect(readImage).not.toHaveBeenCalled();
+    await act(async () => FakeIntersectionObserver.intersectAll());
+    await act(async () => {});
+    expect(readImage).toHaveBeenCalledTimes(1);
+    expect(thumb()).not.toBeNull();
+  });
+
+  it("reads a picture a text repeats once", async () => {
+    const readImage = vi.fn(async () => PICTURE);
+    await render(
+      "![](mockups/shot.png) and ![](mockups/shot.png) and ![](mockups/shot.png)",
+      linksOf(readImage),
+    );
+    expect(readImage).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll(".workspace-chat-image-thumb")).toHaveLength(3);
+  });
+
+  it("draws at most eight pictures a text and leaves the rest as alt text", async () => {
+    const readImage = vi.fn(async () => PICTURE);
+    const text = Array.from(
+      { length: 10 },
+      (_, index) => `![p${index}](mockups/shot-${index}.png)`,
+    ).join(" ");
+    await render(text, linksOf(readImage));
+    expect(readImage).toHaveBeenCalledTimes(8);
+    expect(container.querySelectorAll(".workspace-chat-image-thumb")).toHaveLength(8);
+    expect(container.querySelectorAll(".plan-markdown-image")).toHaveLength(2);
   });
 });

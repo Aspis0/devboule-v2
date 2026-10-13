@@ -12,7 +12,7 @@ import { ThoughtRow } from "../ThoughtRow";
 import { entryFrame } from "./entryFrame";
 import { QuietLine } from "./QuietLine";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
-import { MarkdownImage } from "./MarkdownImage";
+import { MarkdownImage, sharedImageReader } from "./MarkdownImage";
 import { PermissionRequestRow } from "./PermissionRequestRow";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
 import { ToolRow } from "./ToolRow";
@@ -49,16 +49,27 @@ export const TranscriptRow = memo(function TranscriptRow({
   onOpenChild,
   onRevealChange,
 }: TranscriptRowProps) {
+  // One reader per row, so a picture the row repeats is read once.
+  const imageReader = useMemo(
+    () => (fileLinks?.readImage === undefined ? undefined : sharedImageReader(fileLinks.readImage)),
+    [fileLinks],
+  );
   // The renderer is a callback, so it must be stable: MarkdownText is
   // memoized and a fresh function would re-parse every answer on each render.
   const renderImage = useMemo(
     () =>
-      fileLinks === null || fileLinks.readImage === undefined
+      fileLinks === null || imageReader === undefined
         ? undefined
         : (target: string, alt: string, key: number) => (
-            <MarkdownImage key={key} target={target} alt={alt} links={fileLinks} />
+            <MarkdownImage
+              key={key}
+              target={target}
+              alt={alt}
+              links={fileLinks}
+              read={imageReader}
+            />
           ),
-    [fileLinks],
+    [fileLinks, imageReader],
   );
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;

@@ -1,25 +1,11 @@
 // The thumbnail row over a user bubble's text. Pressing one opens the viewer;
 // an expired reference is a quiet tile, never a hole in the row.
 // Thumbnail size and press-to-open behaviour translated from Paseo's app (sources in NOTICE).
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AttachmentReference } from "../../../lib/tauri";
 import { ImageLightbox } from "./ImageLightbox";
 import { useChatImageUrl } from "./useChatImageUrl";
-
-/** Whether `element` is within a screen of the viewport; true where no observer exists. */
-function useNearViewport(element: HTMLElement | null): boolean {
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
-  useEffect(() => {
-    if (element === null || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver(
-      (entries) => setNear(entries[entries.length - 1]?.isIntersecting ?? false),
-      { rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [element]);
-  return near;
-}
+import { useNearViewport } from "./useNearViewport";
 
 /** One thumbnail: read only near the viewport, or while its viewer is open. */
 function ChatImageThumbnail({

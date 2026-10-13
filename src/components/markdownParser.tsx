@@ -12,13 +12,27 @@ import {
 import { isCopyableFence } from "../lib/fence";
 import "./markdown.css";
 
+/** Pictures one text draws; the rest stay their alt text, so a hostile answer cannot start a read per link. */
+const MAX_PICTURES_PER_TEXT = 8;
+
+/** The renderer for one text: it draws the first pictures in reading order and declines the rest. */
+function pictureBudget(drawImage: MarkdownImageRenderer): MarkdownImageRenderer {
+  let left = MAX_PICTURES_PER_TEXT;
+  return (target, alt, key) => {
+    if (left === 0) return null;
+    left -= 1;
+    return drawImage(target, alt, key);
+  };
+}
+
 /** Table cells call `inline()` on their own and take no file-link context:
  * recognition covers paragraphs, lists and headings. */
 export function parseMarkdownText(
   text: string,
   fileLinks?: ChatFileLinks | null,
-  renderImage?: MarkdownImageRenderer,
+  drawImage?: MarkdownImageRenderer,
 ): ReactNode[] {
+  const renderImage = drawImage === undefined ? undefined : pictureBudget(drawImage);
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.split(/\r?\n/);
   const blocks: ReactNode[] = [];

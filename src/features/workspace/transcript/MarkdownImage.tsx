@@ -1,7 +1,27 @@
 import { useEffect, useState } from "react";
-import type { ChatFileLinks } from "../../../lib/chatFilePaths";
+import type { ChatFileLinks, ChatImageBytes } from "../../../lib/chatFilePaths";
 import { workspaceRelativePath } from "../../../lib/workspaceRelativePath";
 import { ImageLightbox } from "./ImageLightbox";
+import { useNearViewport } from "./useNearViewport";
+
+/** Reads one workspace-relative picture; a refusal is null. */
+export type ImageReader = (relative: string) => Promise<ChatImageBytes | null>;
+
+/**
+ * A reader that asks the workspace once per path and hands every later
+ * request the same answer, so a picture an answer repeats is read once.
+ */
+export function sharedImageReader(readImage: NonNullable<ChatFileLinks["readImage"]>): ImageReader {
+  const reads = new Map<string, Promise<ChatImageBytes | null>>();
+  return (relative) => {
+    let read = reads.get(relative);
+    if (read === undefined) {
+      read = readImage(relative);
+      reads.set(relative, read);
+    }
+    return read;
+  };
+}
 
 /** base64 as the blob URL an `<img>` shows; null when it does not decode. */
 function blobUrl(mimeType: string, data: string): string | null {
@@ -19,27 +39,31 @@ function blobUrl(mimeType: string, data: string): string | null {
  * the bytes come from the workspace's own file read, which re-confines the
  * relative path to the workspace and refuses links and junctions out of the
  * tree; a path outside it stays the alt text — never an arbitrary-path read.
- * Pressing the picture opens the transcript's viewer.
+ * The read waits until the picture is near the viewport. Pressing the picture
+ * opens the transcript's viewer.
  */
 export function MarkdownImage({
   target,
   alt,
   links,
+  read,
 }: {
   target: string;
   alt: string;
   links: ChatFileLinks;
+  read: ImageReader;
 }) {
-  const readImage = links.readImage;
-  const relative = readImage === undefined ? null : workspaceRelativePath(target, links.root);
+  const relative = workspaceRelativePath(target, links.root);
+  const [element, setElement] = useState<HTMLElement | null>(null);
+  const near = useNearViewport(element);
   const [url, setUrl] = useState<string | null | undefined>(undefined);
   const [opener, setOpener] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (relative === null || readImage === undefined) return;
+    if (relative === null || !near) return;
     let revoked = false;
     let objectUrl: string | null = null;
-    readImage(relative).then(
+    read(relative).then(
       (bytes) => {
         if (revoked) return;
         objectUrl = bytes === null ? null : blobUrl(bytes.mimeType, bytes.data);
@@ -53,13 +77,13 @@ export function MarkdownImage({
       revoked = true;
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [relative, readImage]);
+  }, [relative, read, near]);
 
   if (relative === null) {
     return <span className="plan-markdown-image">{alt === "" ? "image" : alt}</span>;
   }
   if (url === undefined) {
-    return <span className="workspace-chat-image-loading" aria-hidden="true" />;
+    return <span ref={setElement} className="workspace-chat-image-loading" aria-hidden="true" />;
   }
   if (url === null) {
     return (
