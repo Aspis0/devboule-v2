@@ -1273,7 +1273,7 @@ export default function (pi) {
 /// per-session. A single function so the S5 walking test drives the exact
 /// string `write_bridge_extension` persists.
 fn bridge_extension() -> String {
-    let card_wait_tools = serde_json::to_string(crate::provider_catalog::MCP_CARD_WAIT_TOOLS)
+    let card_wait_tools = serde_json::to_string(&crate::provider_catalog::mcp_card_wait_tools())
         .expect("Pi card-wait catalog is serializable");
     BRIDGE_EXTENSION_TEMPLATE
         .replace("__MCP_CARD_WAIT_TOOLS__", &card_wait_tools)

@@ -510,7 +510,7 @@ fn pi_bridge_template_serves_the_broker_tools() {
     let generated: Vec<String> = serde_json::from_str(&template[list_start..list_end])
         .expect("generated card-wait names are JSON");
     assert!(!generated.is_empty(), "card-wait set must not be empty");
-    let catalog: Vec<String> = crate::provider_catalog::MCP_CARD_WAIT_TOOLS
+    let catalog: Vec<String> = crate::provider_catalog::mcp_card_wait_tools()
         .iter()
         .map(|name| (*name).to_string())
         .collect();

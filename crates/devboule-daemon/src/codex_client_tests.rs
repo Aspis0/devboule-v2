@@ -1779,32 +1779,43 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
 }
 
 #[test]
-fn codex_mcp_launch_approves_every_served_tool_by_name() {
+fn codex_mcp_launch_approves_reads_and_self_gated_tools_only() {
     let carrier = super::mcp_launch(
         &crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:4321/mcp", "test"),
         Path::new("unused"),
     )
     .expect("carrier");
-    for (tool, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
-        let approval = format!(
-            "mcp_servers.{}.tools.{tool}.approval_mode=\"approve\"",
-            crate::mcp_broker::MCP_SERVER_NAME
-        );
-        assert!(
-            carrier.arg_additions.contains(&approval),
-            "{tool} runs without a second Codex card"
-        );
-    }
-    let approvals = carrier
+    let prefix = format!("mcp_servers.{}.tools.", crate::mcp_broker::MCP_SERVER_NAME);
+    let approved: Vec<&str> = carrier
         .arg_additions
         .iter()
-        .filter(|arg| arg.contains(".approval_mode="))
-        .count();
-    assert_eq!(
-        approvals,
-        crate::provider_catalog::MCP_BROKER_TOOLS.len(),
-        "exactly the served tools are approved"
-    );
+        .filter_map(|arg| {
+            arg.strip_prefix(&prefix)?
+                .strip_suffix(".approval_mode=\"approve\"")
+        })
+        .collect();
+    for tool in [
+        crate::provider_catalog::MCP_ROSTER_TOOL,
+        crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
+        crate::provider_catalog::MCP_CREATE_TERMINAL_TOOL,
+        crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL,
+        crate::provider_catalog::MCP_BROWSER_SNAPSHOT_TOOL,
+    ] {
+        assert!(approved.contains(&tool), "{tool} is approved by name");
+    }
+    for tool in [
+        crate::provider_catalog::MCP_BROWSER_CLICK_TOOL,
+        crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL,
+        crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
+        crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+        crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL,
+        crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
+    ] {
+        assert!(
+            !approved.contains(&tool),
+            "{tool} keeps the provider's own approval, so one consent is asked"
+        );
+    }
 }
 
 #[test]
@@ -2262,8 +2273,8 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
     );
     assert_eq!(
         argv.lines().filter(|line| *line == "-c").count(),
-        3 + crate::provider_catalog::MCP_BROKER_TOOLS.len(),
-        "the URL, bearer pointer, finite timeout and one approval per served tool are the only overrides: {argv}"
+        3 + crate::provider_catalog::provider_preapproved_tools().count(),
+        "the URL, bearer pointer, finite timeout and one approval per pre-approved tool are the only overrides: {argv}"
     );
     assert!(
         !argv.contains(&bearer),

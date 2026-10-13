@@ -375,10 +375,10 @@ pub(crate) fn mcp_launch(
             TOOL_TIMEOUT_SECONDS
         ),
     ];
-    // Codex asks before any MCP tool it was not told to approve, and every
-    // Devboule tool already has its own consent card, so Codex's question
-    // would be a second one for the same action.
-    for (tool, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+    // Codex asks before any MCP tool it was not told to approve. The reads and
+    // the tools that raise their own card are approved here; every other tool
+    // keeps Codex's question, so each action is asked once.
+    for tool in crate::provider_catalog::provider_preapproved_tools() {
         arg_additions.push("-c".to_string());
         arg_additions.push(format!(
             "mcp_servers.{}.tools.{tool}.approval_mode=\"approve\"",

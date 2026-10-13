@@ -2288,3 +2288,30 @@ fn the_claude_table_agrees_with_the_self_answer_predicate() {
         );
     }
 }
+
+/// Every served tool is classified, and the classification alone decides what
+/// the provider is told to approve and which calls may park on a card.
+#[test]
+fn every_served_tool_is_classified_and_the_classes_decide_approval_and_waiting() {
+    for (name, _) in super::MCP_BROKER_TOOLS {
+        let consent = super::tool_consent(name)
+            .unwrap_or_else(|| panic!("{name} is served but has no consent decision"));
+        assert_eq!(
+            super::provider_preapproved_tools().any(|tool| tool == *name),
+            matches!(
+                consent,
+                super::ToolConsent::ReadOnly | super::ToolConsent::GatesItself
+            ),
+            "{name}: only reads and self-gated tools are approved by name"
+        );
+        assert_eq!(
+            super::mcp_tool_waits_on_card(name),
+            matches!(
+                consent,
+                super::ToolConsent::GatesItself | super::ToolConsent::CardsSomeCalls
+            ),
+            "{name}: a call waits on a card exactly when the tool raises one"
+        );
+    }
+    assert!(super::tool_consent("devboule_not_a_tool").is_none());
+}

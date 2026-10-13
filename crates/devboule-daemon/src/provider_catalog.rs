@@ -445,30 +445,126 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Tools whose handlers can park on a host consent card.
+/// What asks the person before a served tool acts. Every served name has one
+/// arm in [`tool_consent`]: the provider's launch approval, the card-wait scope
+/// and the Pi card timer all read that arm, so no tool is approved by one list
+/// and carded by another.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
-    MCP_CREATE_AGENT_TOOL,
-    MCP_CREATE_WORKSPACE_TOOL,
-    MCP_ARCHIVE_WORKSPACE_TOOL,
-    MCP_CREATE_TERMINAL_TOOL,
-    MCP_SEND_TERMINAL_KEYS_TOOL,
-    MCP_KILL_TERMINAL_TOOL,
-    MCP_CLEANUP_PROCESSES_TOOL,
-    // The saved-login card is raised on every call and a person answers it in
-    // their own time, so the call is one no client may time out.
-    MCP_BROWSER_FILL_LOGIN_TOOL,
-    // A send to a paired device is carded on every call, in every mode.
-    MCP_SEND_MESSAGE_TOOL,
-    // A watch started with `retryInfra` waits on the card that approves the
-    // one retry; without it the call reads nothing state-changing and answers
-    // at once.
-    MCP_CI_WATCH_TOOL,
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolConsent {
+    /// Reads only. The provider approves it by name; nothing is asked.
+    ReadOnly,
+    /// Acts, and raises its own Devboule card on every call in a mode that
+    /// asks. The provider approves it by name, so the card is the one consent.
+    GatesItself,
+    /// Acts, and raises its own card on some calls only. The provider keeps its
+    /// question for every call, and the card is a second consent on those calls.
+    CardsSomeCalls,
+    /// Acts with no card of its own. The provider's question is the one consent.
+    ProviderAsks,
+}
+
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+impl ToolConsent {
+    fn approved_by_provider(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::GatesItself)
+    }
+
+    fn may_wait_on_card(self) -> bool {
+        matches!(self, Self::GatesItself | Self::CardsSomeCalls)
+    }
+}
+
+/// The consent of a served tool, or `None` for a name the broker does not
+/// serve. A served name without an arm fails the consent test, so a new tool
+/// cannot ship without a decision.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn tool_consent(name: &str) -> Option<ToolConsent> {
+    use ToolConsent::{CardsSomeCalls, GatesItself, ProviderAsks, ReadOnly};
+    Some(match name {
+        MCP_ROSTER_TOOL
+        | MCP_LIST_DEVICES_TOOL
+        | MCP_LIST_PEER_AGENTS_TOOL
+        | MCP_LIST_PROFILES_TOOL
+        | MCP_ACTIVITY_TOOL
+        | MCP_GET_AGENT_STATUS_TOOL
+        | MCP_LIST_PENDING_PERMISSIONS_TOOL
+        | MCP_NEIGHBORHOOD_TOOL
+        | MCP_IMPORTS_TOOL
+        | MCP_IMPORTERS_TOOL
+        | MCP_ORACLE_SEARCH_TOOL
+        | MCP_LIST_WORKSPACES_TOOL
+        | MCP_LIST_TERMINALS_TOOL
+        | MCP_CAPTURE_TERMINAL_TOOL
+        | MCP_FILE_COLLISIONS_TOOL
+        | MCP_PROCESS_OWNER_TOOL
+        | MCP_SESSION_PROCESSES_TOOL
+        | MCP_BROWSER_LIST_TABS_TOOL
+        | MCP_BROWSER_SNAPSHOT_TOOL
+        | MCP_BROWSER_FIND_TOOL
+        | MCP_BROWSER_SCREENSHOT_TOOL
+        | MCP_BROWSER_READ_TEXT_TOOL
+        | MCP_BROWSER_CONSOLE_LOGS_TOOL
+        | MCP_BROWSER_WAIT_FOR_TOOL => ReadOnly,
+        MCP_CREATE_AGENT_TOOL
+        | MCP_CREATE_WORKSPACE_TOOL
+        | MCP_ARCHIVE_WORKSPACE_TOOL
+        | MCP_CREATE_TERMINAL_TOOL
+        | MCP_SEND_TERMINAL_KEYS_TOOL
+        | MCP_KILL_TERMINAL_TOOL
+        | MCP_CLEANUP_PROCESSES_TOOL
+        | MCP_BROWSER_FILL_LOGIN_TOOL => GatesItself,
+        // A send to a paired device is carded on every call; a send to a local
+        // child is not. A watch started with `retryInfra` waits on its card;
+        // without it the call raises none.
+        MCP_SEND_MESSAGE_TOOL | MCP_CI_WATCH_TOOL => CardsSomeCalls,
+        MCP_SET_AGENT_PROFILE_TOOL
+        | MCP_ANSWER_PERMISSION_TOOL
+        | MCP_STOP_AGENT_TOOL
+        | MCP_CLOSE_AGENT_TOOL
+        | MCP_CANCEL_AGENT_TOOL
+        | MCP_BROWSER_NEW_TAB_TOOL
+        | MCP_BROWSER_CLOSE_TAB_TOOL
+        | MCP_BROWSER_NAVIGATE_TOOL
+        | MCP_BROWSER_CLICK_TOOL
+        | MCP_BROWSER_FILL_TOOL
+        | MCP_BROWSER_TYPE_TOOL
+        | MCP_BROWSER_PRESS_TOOL
+        | MCP_BROWSER_SELECT_TOOL
+        | MCP_BROWSER_CHECK_TOOL
+        | MCP_BROWSER_HOVER_TOOL
+        | MCP_BROWSER_SCROLL_TOOL
+        | MCP_BROWSER_ACT_TOOL
+        | MCP_BROWSER_CLICK_AT_TOOL
+        | MCP_BROWSER_RESIZE_TOOL => ProviderAsks,
+        _ => return None,
+    })
+}
+
+/// The served tools the provider approves by name at launch: the reads and the
+/// tools that gate themselves. Everything else keeps the provider's question.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn provider_preapproved_tools() -> impl Iterator<Item = &'static str> {
+    MCP_BROKER_TOOLS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| tool_consent(name).is_some_and(ToolConsent::approved_by_provider))
+}
+
+/// The served tools whose calls may park on a Devboule card, so no client may
+/// time them out. The Pi bridge reads this list at launch.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mcp_card_wait_tools() -> Vec<&'static str> {
+    MCP_BROKER_TOOLS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| mcp_tool_waits_on_card(name))
+        .collect()
+}
 
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn mcp_tool_waits_on_card(name: &str) -> bool {
-    MCP_CARD_WAIT_TOOLS.contains(&name)
+    tool_consent(name).is_some_and(ToolConsent::may_wait_on_card)
 }
 
 /// The read-only roster tool, and the one name a tool policy can never
