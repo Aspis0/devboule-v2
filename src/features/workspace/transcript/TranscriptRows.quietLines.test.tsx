@@ -6,6 +6,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
+import { useAppStore } from "../../../store/appStore";
+import type { DesignHost, DesignMessage } from "../../design/designHost";
+import { delegatedDesignCardId } from "../../design/delegatedDesignMirror";
 import { TranscriptRows } from "./TranscriptRows";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -264,5 +267,206 @@ describe("quiet lines", () => {
 
     expect(host.textContent).toContain("Archived workspace");
     expect(host.textContent).not.toContain("mcp__devboule__");
+  });
+});
+
+const ROW_TEST_DOCUMENT = {
+  name: "",
+  path: "",
+  contextPrefix: "Editing",
+  draftPlaceholder: "Describe the change…",
+  noContextPlaceholder: "Describe what to generate…",
+  initialState: { zoom: 1, saved: false, draft: "", hiddenLayerIds: [] },
+  selectedLayerId: "",
+  grounded: true,
+  layers: [],
+  messages: [],
+  workingMessage: { title: "Generating…", desc: "Asking the agent." },
+};
+
+const ROW_HOST: DesignHost = {
+  loadDocument: async () => ({ ...ROW_TEST_DOCUMENT }),
+};
+
+function rowMirroredCard(childSessionId: string, html: string): DesignMessage {
+  return {
+    id: delegatedDesignCardId(childSessionId),
+    role: "assistant",
+    status: "done",
+    title: childSessionId,
+    desc: "Finished by a Design agent.",
+    sources: [],
+    nodeIds: [],
+    artifactHtml: html,
+  } as DesignMessage;
+}
+
+function setRowCanvas(messages: DesignMessage[]): void {
+  useAppStore.setState({
+    activeSurface: "workspace",
+    designSession: {
+      host: ROW_HOST,
+      document: null,
+      messages: [],
+      latestArtifact: null,
+      generation: null,
+      sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
+    },
+  });
+  useAppStore.getState().setDesignDocument(ROW_HOST, { ...ROW_TEST_DOCUMENT }, messages);
+}
+
+function clearRowCanvas(): void {
+  useAppStore.setState({
+    activeSurface: "workspace",
+    designSession: {
+      host: null,
+      document: null,
+      messages: [],
+      latestArtifact: null,
+      generation: null,
+      sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
+    },
+  });
+}
+
+function finishedAgentRow(childSessionId: string): AgentChatItem {
+  return {
+    id: "sys-design-row",
+    role: "system",
+    severity: "info",
+    text: "Background agent finished · Mockup bar italiano · took 24m 58s",
+    task: {
+      kind: "agent",
+      state: "finished",
+      title: "Mockup bar italiano",
+      childSessionId,
+      durationMs: 1_498_000,
+    },
+  };
+}
+
+async function showRow(items: AgentChatItem[], onOpenChild?: (sessionId: string) => void) {
+  await act(async () =>
+    root?.render(
+      <TranscriptRows
+        items={items}
+        recoveredAttach={false}
+        a2aNames={names}
+        fileLinks={null}
+        transcriptEnded={false}
+        streamingThoughtId={null}
+        onOpenChild={onOpenChild}
+      />,
+    ),
+  );
+}
+
+describe("finished task row design action", () => {
+  beforeEach(() => {
+    clearRowCanvas();
+  });
+
+  afterEach(() => {
+    clearRowCanvas();
+  });
+
+  it("shows the open action beside the finished row when the mirrored card exists", async () => {
+    setRowCanvas([rowMirroredCard("child-a", "<main>A</main>")]);
+    await showRow([finishedAgentRow("child-a")], vi.fn());
+
+    const action = host.querySelector<HTMLButtonElement>(".workspace-chat-activity-action");
+    expect(action?.textContent).toBe("Open in Design");
+    expect(host.textContent).toContain("Mockup bar italiano finished");
+  });
+
+  it("shows no action without a card and shows it when the card lands after mount", async () => {
+    setRowCanvas([]);
+    await showRow([finishedAgentRow("child-c")], vi.fn());
+    expect(host.querySelector(".workspace-chat-activity-action")).toBeNull();
+
+    await act(async () => {
+      useAppStore
+        .getState()
+        .setDesignMessages(ROW_HOST, [rowMirroredCard("child-c", "<main>C</main>")]);
+    });
+
+    expect(
+      host.querySelector<HTMLButtonElement>(".workspace-chat-activity-action")?.textContent,
+    ).toBe("Open in Design");
+  });
+
+  it("keeps the action out of the row button", async () => {
+    setRowCanvas([rowMirroredCard("child-a", "<main>A</main>")]);
+    await showRow([finishedAgentRow("child-a")], vi.fn());
+
+    expect(host.querySelector("button button")).toBeNull();
+    const buttons = Array.from(host.querySelectorAll<HTMLButtonElement>("button"));
+    expect(buttons).toHaveLength(2);
+  });
+
+  it("opens the child from the row and the mirrored artifact from the action", async () => {
+    setRowCanvas([
+      rowMirroredCard("child-a", "<main>A</main>"),
+      rowMirroredCard("child-b", "<main>B</main>"),
+    ]);
+    const opened = vi.fn();
+    await showRow([finishedAgentRow("child-a")], opened);
+
+    const buttons = Array.from(host.querySelectorAll<HTMLButtonElement>("button"));
+    expect(buttons).toHaveLength(2);
+    await act(async () => {
+      buttons[0]?.click();
+    });
+    expect(opened).toHaveBeenCalledWith("child-a");
+    expect(useAppStore.getState().activeSurface).toBe("workspace");
+
+    await act(async () => {
+      buttons[1]?.click();
+    });
+    expect(useAppStore.getState().activeSurface).toBe("design");
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>A</main>",
+    });
+  });
+
+  it("shows no action for a failed row even when its card exists", async () => {
+    setRowCanvas([rowMirroredCard("child-a", "<main>A</main>")]);
+    await showRow([
+      {
+        id: "sys-failed",
+        role: "system",
+        severity: "info",
+        text: "Background agent failed · Mockup bar italiano · took 3m 0s",
+        task: {
+          kind: "agent",
+          state: "failed",
+          title: "Mockup bar italiano",
+          childSessionId: "child-a",
+          durationMs: 180_000,
+        },
+      },
+    ]);
+
+    expect(host.querySelector(".workspace-chat-activity-action")).toBeNull();
+  });
+
+  it("shows no action for a command row", async () => {
+    setRowCanvas([rowMirroredCard("child-a", "<main>A</main>")]);
+    await showRow([
+      {
+        id: "sys-command",
+        role: "system",
+        severity: "info",
+        text: "Background command finished · npm test · took 4s",
+        task: { kind: "command", state: "finished", title: "npm test", durationMs: 4_000 },
+      },
+    ]);
+
+    expect(host.querySelector(".workspace-chat-activity-action")).toBeNull();
   });
 });

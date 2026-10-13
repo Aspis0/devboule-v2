@@ -14,7 +14,8 @@ export function hasMirroredDesignCard(
 /**
  * Opens Design on one mirrored child. The canvas shows the last card that holds
  * an artifact, so the child's card moves to the end of the transcript; the other
- * child's card stays in the list.
+ * child's card stays in the list. The open also asks the canvas for one fit, so a
+ * card that arrived while Design was unmounted still lands fully in view.
  *
  * Refused while a generation runs: its result takes the end of the transcript
  * when it settles, so the artifact shown would not be the requested one.
@@ -31,5 +32,6 @@ export function openMirroredDesign(childSessionId: string): void {
       card,
     ]);
   }
+  store.requestMirroredFit(host);
   store.selectSurface("design");
 }

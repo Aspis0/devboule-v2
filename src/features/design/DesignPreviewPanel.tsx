@@ -1,40 +1,22 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../store/appStore";
 import { artifactSrcDoc } from "./artifactCsp";
-import { ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
+import {
+  ARTIFACT_PAGE_HEIGHT,
+  ARTIFACT_PAGE_WIDTH,
+  clampArtifactScroll,
+  maxArtifactScroll,
+  scrollArtifactBy,
+} from "./artifactViewport";
+import { getCachedArtifactStructure, setCachedArtifactStructure } from "./artifactStructure";
+import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 // The panel renders `design-artifact-frame` and the preview rules beside it, and those
 // live in their own stylesheet so importing them here cannot drag the 58 KB Design
-// stylesheet into the Workspace chunk, which loads on every start. Relying on
-// `DesignSurface` having been mounted instead would lean on an invariant that is true
-// today and will not stay true: the store is not persisted, so `latestArtifact` can only
-// come from a generation that went through the canvas — until a commissioned result
-// arrives from another session, at which point a panel styled by a stylesheet nobody
-// loaded would render a 1280px page into a 340px column. Vite serves one copy however
-// many modules ask for it.
+// stylesheet into the Workspace chunk, which loads on every start.
 import "./artifactPreview.css";
 
-// The tallest page the panel will ask a document for, in document pixels. The ask is
-// `columnHeight / scale`, the scale is `columnWidth / ARTIFACT_PAGE_WIDTH`, so the ask is
-// `columnHeight * ARTIFACT_PAGE_WIDTH / columnWidth` — and both factors are bounded by the
-// sidebar's own box (workspaceResize.ts), not by anything inside the page:
-//
-//   columnWidth  >= MIN_RIGHT_WIDTH (240) less the sidebar's 12px gutters
-//                   (.workspace-side-scroll) and the card's 1px border
-//                   (.workspace-generation-card) = 214
-//   columnHeight <= 2160, the content height of a 4K window at 100% scaling, the tallest
-//                   viewport this panel is plausibly run in — the column is never taller
-//                   than the window it scrolls in
-//
-// 2160 * 1280 / 154 = 17953.25, so 18000 sits above every layout the sidebar can produce
-// and cannot clamp one. It is there for the layout the sidebar cannot produce: the value is
-// derived from a measurement and written back as an inline property on the element that was
-// measured, and a child consumes it, so a CSS chain that stopped giving that element a
-// definite height would feed the value back in as a measurement and grow it on every
-// delivery instead of failing once. The canvas clamps the same class of problem to
-// [ARTIFACT_PAGE_MIN_HEIGHT, ARTIFACT_PAGE_MAX_HEIGHT] (artifactViewport.ts); that clamp is
-// wrong here, because this box is deliberately taller than the canvas's and 2000px would
-// crop every document longer than one canvas page — the defect this panel removed.
-const ARTIFACT_PREVIEW_MAX_PAGE_HEIGHT = 18000;
+// The preview shows the canvas page reduced: the same viewport height the canvas
+// measures, scaled to the column width, with the rest of the column dark.
 
 // Absence meanings in this panel:
 // - host === null: Design was never opened in this app session. The document is not
@@ -51,6 +33,9 @@ export function DesignPreviewPanel() {
   const generation = useAppStore((state) => state.designSession.generation);
   const latestArtifact = useAppStore((state) => state.designSession.latestArtifact);
   const messages = useAppStore((state) => state.designSession.messages);
+  const canvasPageHeight = useAppStore(
+    (state) => state.designSession.lastCanvasPageHeight ?? ARTIFACT_PAGE_HEIGHT,
+  );
   const selectSurface = useAppStore((state) => state.selectSurface);
 
   // The last settled reply, and the only transcript this panel still reads: the branch
@@ -75,48 +60,104 @@ export function DesignPreviewPanel() {
   // The preview is the one part of this panel that is a function of the sidebar's size:
   // the page is authored at ARTIFACT_PAGE_WIDTH and the transform has to bring it down
   // to whatever width the column actually has, so the scale cannot be a constant. One
-  // observer, two custom properties, no state — a resize must not re-render the panel or
-  // rescan the transcript.
+  // observer, one custom property for the scale, no state — a resize must not re-render
+  // the panel or rescan the transcript. The page height comes from the canvas store,
+  // never from this box, so measuring it here cannot feed back in.
   // A callback ref, not an effect keyed on the html: the observer's lifetime is the node's
   // lifetime. It attaches when the node mounts and detaches when it unmounts, whichever
   // branch rendered it, so no rendering choice in another branch can leave a mounted
   // preview without one. An effect keyed on a value only coincides with that lifetime for
   // as long as the value being set happens to imply the node being there.
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const attachPreview = useCallback((element: HTMLDivElement) => {
+    previewRef.current = element;
     const apply = () => {
       const width = element.clientWidth;
-      const height = element.clientHeight;
       // A collapsed or not-yet-laid-out panel has no box to scale into: the stylesheet's
       // defaults stay until it does, and the observer fires again once it has a size.
-      if (width <= 0 || height <= 0) return;
+      if (width <= 0) return;
       const scale = width / ARTIFACT_PAGE_WIDTH;
-      // The page box is measured in document pixels and the transform scales them back
-      // down, so the column's height becomes `height / scale` of document. The document's
-      // own height is not a factor and is never consulted — see artifactPreview.css.
-      // Bounded by ARTIFACT_PREVIEW_MAX_PAGE_HEIGHT, for the reason written there: this is
-      // an inline style on the element being measured, so an unbroken chain is the only
-      // thing keeping the value from re-entering as a measurement.
-      const pageHeight = Math.min(Math.round(height / scale), ARTIFACT_PREVIEW_MAX_PAGE_HEIGHT);
       // The read is of the inline style only, so a stylesheet default can never
       // suppress the first write.
-      // The canvas guards the same property with the same idiom
-      // (`setArtifactPageHeight((current) => (current === desired ? current : desired))` in
-      // useDesignViewport.ts).
-      const write = (property: string, value: string) => {
-        if (element.style.getPropertyValue(property) !== value) {
-          element.style.setProperty(property, value);
-        }
-      };
-      write("--design-artifact-preview-scale", String(scale));
-      write("--design-artifact-preview-page-height", `${pageHeight}px`);
+      if (element.style.getPropertyValue("--design-artifact-preview-scale") !== String(scale)) {
+        element.style.setProperty("--design-artifact-preview-scale", String(scale));
+      }
     };
     // Apply once before observing: the observer's first delivery is a frame away, and a
     // frame of the wrong scale is exactly what a new generation would show.
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      previewRef.current = null;
+      observer.disconnect();
+    };
   }, []);
+
+  useEffect(() => {
+    const element = previewRef.current;
+    if (!element) return;
+    const value = `${canvasPageHeight}px`;
+    if (element.style.getPropertyValue("--design-artifact-preview-page-height") !== value) {
+      element.style.setProperty("--design-artifact-preview-page-height", value);
+    }
+  }, [canvasPageHeight, latestArtifact?.html]);
+
+  const artifactHtml = latestArtifact?.html;
+  // A page the canvas never measured has no cache entry yet; the critic below
+  // primes it once, and this state applies its height the moment it lands.
+  const [measuredPreview, setMeasuredPreview] = useState<{
+    html: string;
+    contentHeight?: number;
+  } | null>(null);
+  const handlePreviewMeasured = useCallback((html: string, result: ArtifactRenderCriticResult) => {
+    setCachedArtifactStructure(html, {
+      sections: result.structure ?? [],
+      ...(result.contentHeight === undefined ? {} : { contentHeight: result.contentHeight }),
+    });
+    setMeasuredPreview({ html, contentHeight: result.contentHeight });
+  }, []);
+  const cacheHeight =
+    artifactHtml === undefined
+      ? undefined
+      : getCachedArtifactStructure(artifactHtml)?.contentHeight;
+  const contentHeight =
+    measuredPreview !== null && measuredPreview.html === artifactHtml
+      ? measuredPreview.contentHeight
+      : cacheHeight;
+  const needsMeasure = artifactHtml !== undefined && contentHeight === undefined;
+  const [previewScroll, setPreviewScroll] = useState(0);
+  const previewScrollRef = useRef(0);
+  useEffect(() => {
+    previewScrollRef.current = 0;
+    setPreviewScroll(0);
+  }, [artifactHtml]);
+  const scrollOffset =
+    contentHeight === undefined
+      ? 0
+      : clampArtifactScroll(previewScroll, contentHeight, canvasPageHeight);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || contentHeight === undefined) return;
+    if (maxArtifactScroll(contentHeight, canvasPageHeight) <= 0) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.shiftKey) return;
+      const next = scrollArtifactBy(
+        previewScrollRef.current,
+        { deltaY: event.deltaY, deltaMode: event.deltaMode },
+        contentHeight,
+        canvasPageHeight,
+      );
+      if (next === previewScrollRef.current) return;
+      event.preventDefault();
+      previewScrollRef.current = next;
+      setPreviewScroll(next);
+    };
+    card.addEventListener("wheel", handleWheel, { passive: false });
+    return () => card.removeEventListener("wheel", handleWheel);
+  }, [canvasPageHeight, contentHeight, artifactHtml]);
 
   return (
     <div className="design-preview-panel">
@@ -152,7 +193,7 @@ export function DesignPreviewPanel() {
             // description and the source chips this card used to carry were commentary
             // about a run that never produced the paths they named. The canvas is where the
             // artifact's own context belongs; the sidebar shows the page.
-            <div className="workspace-generation-card design-preview-card">
+            <div className="workspace-generation-card design-preview-card" ref={cardRef}>
               {/*
                 The panel renders the artifact itself, not a description of it: same
                 sandbox and the same `artifactSrcDoc`, so the preview cannot render
@@ -165,10 +206,10 @@ export function DesignPreviewPanel() {
                 contain links and fields, and without `inert` a Tab from the panel
                 walks into model-written markup that nothing here meant to be reachable.
 
-                `scrolling="no"` is the third: the page lays out in a box that is taller
-                or shorter than the document, and without it a document taller than the
-                box grows a scrollbar inside the thumbnail — a control the user cannot
-                use, drawn over ~15px of the layout width the page was authored at.
+                `scrolling="no"` is the third: the frame is a window over the page, and
+                without it a document taller than the window grows a scrollbar inside
+                the thumbnail — a control the user cannot use, drawn over ~15px of the
+                layout width the page was authored at.
               */}
               <div className="design-artifact-preview" inert ref={attachPreview}>
                 <div className="design-artifact-preview-page">
@@ -178,10 +219,25 @@ export function DesignPreviewPanel() {
                     title="Generated artifact preview"
                     className="design-artifact-frame"
                     scrolling="no"
-                    style={{ pointerEvents: "none" }}
+                    style={
+                      contentHeight === undefined
+                        ? { pointerEvents: "none" }
+                        : {
+                            pointerEvents: "none",
+                            height: `${Math.max(canvasPageHeight, contentHeight)}px`,
+                            transform: `translateY(${-scrollOffset}px)`,
+                          }
+                    }
                   />
                 </div>
               </div>
+              {needsMeasure && artifactHtml !== undefined ? (
+                <ArtifactRenderCritic
+                  html={artifactHtml}
+                  onResult={handlePreviewMeasured}
+                  measureOnly
+                />
+              ) : null}
             </div>
           ) : lastSettled !== undefined ? (
             <div className="workspace-generation-card">

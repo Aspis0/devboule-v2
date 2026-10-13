@@ -6,6 +6,7 @@ import { MarkdownText } from "../../../components/MarkdownText";
 import { A2aMessageCard, type A2aNameSource } from "../A2aMessageCard";
 import { A2aOutgoingMessageCard } from "../A2aOutgoingMessageCard";
 import { DaemonNoticeCard } from "../DaemonNoticeCard";
+import { DelegatedDesignOpenAction } from "../DelegatedDesignOpenAction";
 import { agentTaskLineText } from "../../../lib/backgroundTaskText";
 import { creationFailureReason } from "./creatorNotes";
 import { ThoughtRow } from "../ThoughtRow";
@@ -157,18 +158,25 @@ export const TranscriptRow = memo(function TranscriptRow({
     if (item.task !== undefined) {
       const { task } = item;
       const childSessionId = task.kind === "agent" ? task.childSessionId : undefined;
+      const showDesignAction =
+        task.kind === "agent" && task.state === "finished" && childSessionId !== undefined;
       return (
         <div className={className} style={style}>
-          <QuietLine
-            failed={task.state === "failed"}
-            onOpen={
-              childSessionId !== undefined && onOpenChild !== undefined
-                ? () => onOpenChild(childSessionId)
-                : undefined
-            }
-          >
-            {task.kind === "agent" ? agentTaskLineText(task) : item.text}
-          </QuietLine>
+          <div className="workspace-chat-task-row">
+            <QuietLine
+              failed={task.state === "failed"}
+              onOpen={
+                childSessionId !== undefined && onOpenChild !== undefined
+                  ? () => onOpenChild(childSessionId)
+                  : undefined
+              }
+            >
+              {task.kind === "agent" ? agentTaskLineText(task) : item.text}
+            </QuietLine>
+            {showDesignAction ? (
+              <DelegatedDesignOpenAction childSessionId={childSessionId} />
+            ) : null}
+          </div>
         </div>
       );
     }

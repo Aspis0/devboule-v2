@@ -1341,6 +1341,8 @@ describe("DesignSurface host capabilities", () => {
         latestArtifact: { html: "<main>Old</main>" },
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     const { container, root } = await renderDesign(host);

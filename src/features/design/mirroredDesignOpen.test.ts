@@ -45,6 +45,8 @@ function setSession(messages: DesignMessage[], generating = false): void {
       latestArtifact: null,
       generation: null,
       sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
     },
   });
   // Through the store's own writers, so latestArtifact is derived as it is in production.
@@ -118,5 +120,35 @@ describe("opening a mirrored Design child", () => {
     expect(hasMirroredDesignCard(useAppStore.getState().designSession.messages, "child-x")).toBe(
       false,
     );
+  });
+
+  it("requests a one-shot fit when opening a mirrored child", () => {
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+
+    openMirroredDesign("child-a");
+
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(true);
+    expect(useAppStore.getState().activeSurface).toBe("design");
+  });
+
+  it("requests a fit even when the child is already the latest", () => {
+    openMirroredDesign("child-b");
+
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(true);
+    expect(useAppStore.getState().activeSurface).toBe("design");
+  });
+
+  it("requests no fit while a generation runs or for an unknown child", () => {
+    setSession(
+      [mirroredCard("child-a", "<main>A</main>"), mirroredCard("child-b", "<main>B</main>")],
+      true,
+    );
+    openMirroredDesign("child-a");
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+
+    setSession([mirroredCard("child-a", "<main>A</main>")]);
+    openMirroredDesign("child-x");
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+    expect(useAppStore.getState().activeSurface).toBe("workspace");
   });
 });

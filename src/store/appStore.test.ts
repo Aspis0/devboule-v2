@@ -165,4 +165,41 @@ describe("appStore design session", () => {
     expect(useAppStore.getState().designSession.messages).toHaveLength(0);
     expect(useAppStore.getState().designSession.latestArtifact).toBeNull();
   });
+
+  it("starts with no canvas height and no fit intent", () => {
+    const host = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    useAppStore.getState().setDesignHost(host);
+
+    expect(useAppStore.getState().designSession.lastCanvasPageHeight).toBeNull();
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+  });
+
+  it("shares the canvas height and clears the fit intent once consumed", () => {
+    const host = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    const stale = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    useAppStore.getState().setDesignHost(host);
+
+    useAppStore.getState().setCanvasPageHeight(host, 922);
+    expect(useAppStore.getState().designSession.lastCanvasPageHeight).toBe(922);
+    useAppStore.getState().setCanvasPageHeight(stale, 1000);
+    expect(useAppStore.getState().designSession.lastCanvasPageHeight).toBe(922);
+
+    useAppStore.getState().requestMirroredFit(host);
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(true);
+    useAppStore.getState().consumeMirroredFit(stale);
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(true);
+    useAppStore.getState().consumeMirroredFit(host);
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+  });
+
+  it("drops the shared height and the fit intent with the session", () => {
+    const host = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    useAppStore.getState().setDesignHost(host);
+    useAppStore.getState().setCanvasPageHeight(host, 922);
+    useAppStore.getState().requestMirroredFit(host);
+
+    useAppStore.getState().clearDesignSession(host);
+    expect(useAppStore.getState().designSession.lastCanvasPageHeight).toBeNull();
+    expect(useAppStore.getState().designSession.mirroredFitPending).toBe(false);
+  });
 });

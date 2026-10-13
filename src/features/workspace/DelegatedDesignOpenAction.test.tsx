@@ -51,6 +51,8 @@ function setCanvas(messages: DesignMessage[]): void {
       latestArtifact: null,
       generation: null,
       sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
     },
   });
   useAppStore.getState().setDesignDocument(HOST, { ...TEST_DOCUMENT }, messages);

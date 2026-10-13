@@ -115,6 +115,8 @@ function resetStore(): void {
       latestArtifact: null,
       generation: null,
       sectionNotes: [],
+      lastCanvasPageHeight: null,
+      mirroredFitPending: false,
     },
   });
 }
@@ -435,6 +437,8 @@ describe("delegated design mirror", () => {
         latestArtifact: { html: "<main>Old</main>" },
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     vi.spyOn(Date, "now").mockReturnValue(2_000);
@@ -601,6 +605,8 @@ describe("delegated design mirror", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     const freshHost: DesignHost = {
@@ -640,6 +646,8 @@ describe("delegated design mirror", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     const liveDoc = { ...TEST_DOCUMENT, name: "live-session" };
@@ -694,6 +702,8 @@ describe("delegated design mirror", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     const captured: CapturedRead[] = [];
@@ -733,6 +743,8 @@ describe("delegated design mirror", () => {
         latestArtifact: null,
         generation: null,
         sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
       },
     });
     const captured: CapturedRead[] = [];
