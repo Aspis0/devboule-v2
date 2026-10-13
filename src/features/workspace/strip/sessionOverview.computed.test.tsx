@@ -90,8 +90,6 @@ function renderOpenStrip() {
         onMoveTab={() => undefined}
         peerNames={new Map<string, string>()}
         resolveCreator={() => null as string | null}
-        takeBackAvailable={false}
-        onTakeBack={vi.fn()}
         overviewSessions={roster}
         workspaceName="atelier"
         onOpenSession={vi.fn()}

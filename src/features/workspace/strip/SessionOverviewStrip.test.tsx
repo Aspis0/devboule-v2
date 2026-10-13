@@ -103,8 +103,6 @@ function renderStrip(tabs: StripTab[], overview: readonly Session[], activeTabId
         providerMenu={null}
         peerNames={new Map<string, string>()}
         resolveCreator={() => null as string | null}
-        takeBackAvailable={false}
-        onTakeBack={vi.fn()}
         overviewSessions={overview}
         workspaceName="atelier"
         onOpenSession={onOpenSession}

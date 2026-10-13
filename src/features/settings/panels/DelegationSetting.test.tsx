@@ -132,6 +132,18 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     return input;
   }
 
+  function theTurnOff() {
+    return container.querySelector<HTMLButtonElement>(
+      '[aria-label="Turn off agents answering their children\'s cards"]',
+    );
+  }
+
+  function theButtonLabelled(label: string) {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".settings-device-action"),
+    ).find((button) => button.textContent === label);
+  }
+
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -163,7 +175,12 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     // The switch is not drawn and the request is never sent - the section is
     // not broken, it is absent, and the absence has a name.
     expect(container.querySelector(".agent-delegation")).toBeNull();
+    // No write path either: there is no store to write to, so not even the
+    // action that needs no stored answer is offered.
+    expect(theTurnOff()).toBeNull();
+    expect(container.querySelector(".settings-device-action")).toBeNull();
     expect(delegationGet).not.toHaveBeenCalled();
+    expect(delegationSet).not.toHaveBeenCalled();
   });
 
   it("fetches on mount when the handshake advertised the capability", async () => {
@@ -319,8 +336,88 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
     expect(status).toContain("could not be read");
     expect(status).toContain("not an off");
-    // The way back stays on the panel beside the named state.
-    expect(container.querySelector(".settings-device-action")?.textContent).toBe("Retry");
+    // The way back stays on the panel beside the named state, and beside it
+    // the write that needs no answer at all.
+    expect(theButtonLabelled("Retry")).toBeDefined();
+    expect(theTurnOff()).not.toBeNull();
+  });
+
+  it("turns delegation off from the unknown, where the switch itself cannot be clicked", async () => {
+    // The switch is locked at unknown because a click would mean guessing. The
+    // write that needs no stored answer must stay reachable there: an unreadable
+    // answer is exactly when a human may need to stop agents answering.
+    vi.mocked(delegationGet).mockImplementation(() => new Promise(() => undefined));
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    const turnOff = theTurnOff();
+    expect(turnOff).not.toBeNull();
+    await act(async () => turnOff?.click());
+    await settle();
+
+    // One write, for false — not a reinterpretation of the unknown as on.
+    expect(delegationSet).toHaveBeenCalledTimes(1);
+    expect(delegationSet).toHaveBeenCalledWith(false);
+    // The store holds a real off now, so the switch reads definite and the
+    // control leaves with the belief it was there to correct.
+    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().indeterminate).toBe(false);
+    expect(theSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe("Off");
+    expect(theTurnOff()).toBeNull();
+  });
+
+  it("offers the same Turn off after a failed load, and the write lands", async () => {
+    vi.mocked(delegationGet).mockRejectedValue(new Error("the daemon is unreachable"));
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    const turnOff = theTurnOff();
+    expect(turnOff).not.toBeNull();
+    await act(async () => turnOff?.click());
+    await settle();
+
+    expect(delegationSet).toHaveBeenCalledTimes(1);
+    expect(delegationSet).toHaveBeenCalledWith(false);
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe("Off");
+    expect(theTurnOff()).toBeNull();
+  });
+
+  it("keeps a refused Turn off named and unknown, then settles on what the daemon holds", async () => {
+    // The re-read a refusal schedules is held back so the sentence's standing
+    // time is under the test's hand.
+    let releaseReread!: () => void;
+    const reread = new Promise<{ enabled: boolean; source: "file" | "default" | "quarantined" }>(
+      (resolve) => {
+        releaseReread = () => resolve({ enabled: false, source: "file" });
+      },
+    );
+    vi.mocked(delegationGet)
+      .mockRejectedValueOnce(new Error("the daemon is unreachable"))
+      .mockImplementationOnce(() => reread);
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+    vi.mocked(delegationSet).mockRejectedValueOnce(new Error("the store refused the write"));
+
+    await act(async () => theTurnOff()?.click());
+    await settle();
+
+    expect(delegationSet).toHaveBeenCalledWith(false);
+    // A refusal says the transport failed, not what the daemon holds: the
+    // switch stays unknown, the control stays to be tried again, and the
+    // refusal is named rather than swallowed.
+    expect(theSwitch().indeterminate).toBe(true);
+    expect(theTurnOff()).not.toBeNull();
+    expect(container.querySelector(".device-error")?.textContent).toBe(
+      "the store refused the write",
+    );
+
+    // The daemon answers the re-read: it took the write, so the panel settles
+    // on that answer and the refusal sentence goes.
+    releaseReread();
+    await settle();
+    expect(container.querySelector(".device-error")).toBeNull();
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe("Off");
   });
 
   it("reports a reply that contradicts itself instead of dressing it up (re-audit F11)", async () => {

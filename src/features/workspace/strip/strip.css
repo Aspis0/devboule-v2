@@ -469,12 +469,11 @@ button.workspace-rate:focus-visible:hover {
   color: var(--ink-soft);
 }
 
-/* One row per session tab: the tab button, the trailing close chip, and the
-   take-back. Rows share a shortfall proportionally down to the 96 px floor
-   and only then scroll: the floor is explicit, so a long nowrap label can
-   never raise it (its min-content would) and the chip's own 96 px minimum
-   always fills the row exactly. A row carrying the take-back keeps its whole
-   action instead: it never shrinks under its content. */
+/* One row per session tab: the tab button and the trailing close chip. Rows
+   share a shortfall proportionally down to the 96 px floor and only then
+   scroll: the floor is explicit, so a long nowrap label can never raise it
+   (its min-content would) and the chip's own 96 px minimum always fills the
+   row exactly. */
 .workspace-session-row {
   position: relative;
   display: flex;
@@ -482,10 +481,6 @@ button.workspace-rate:focus-visible:hover {
   align-items: center;
   min-width: 96px;
   border-radius: var(--radius-6);
-}
-
-.workspace-session-row:has(.workspace-tab-takeback) {
-  min-width: fit-content;
 }
 
 /* The trailing close chip: an overlay about 48 px wide on the row's
@@ -564,30 +559,6 @@ button.workspace-rate:focus-visible:hover {
 .workspace-session-chip-close:hover,
 .workspace-session-chip-close:focus-visible {
   background: var(--border-strong);
-}
-
-/* The take-back is a sibling of its tab, never a control inside it (a button
-   cannot answer inside another button). It sits tight to the row it belongs
-   to and disappears with it: qualifying rows only, while the one switch is
-   on. Its accessible name carries the global scope — this takes back the
-   power everywhere, not on this row. */
-.workspace-tab-takeback {
-  flex: none;
-  padding: var(--space-2) var(--space-8);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-full);
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-size: var(--type-small);
-  font-weight: var(--weight-label);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.workspace-tab-takeback:hover,
-.workspace-tab-takeback:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent-text);
 }
 
 @media (prefers-reduced-motion: reduce) {

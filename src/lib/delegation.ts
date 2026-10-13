@@ -66,20 +66,21 @@ export interface DelegationController {
   /** Asks the daemon for the stored answer. Capability gating is the caller's. */
   load: () => Promise<void>;
   /**
-   * The one write path. Both entry points — the Agents panel's switch and a
-   * roster row's take-back — call this and nothing else: the write machinery
-   * (optimistic swap, sequence guard, revert) exists here once. Resolves
-   * true when the daemon accepted the write — including one a newer write
-   * superseded, which the daemon still holds — and false when it refused it.
+   * The one write path: the Agents panel's switch, and the action it offers
+   * while the answer is unreadable, both call this and nothing else — the
+   * write machinery (optimistic swap, sequence guard, revert) exists here
+   * once. Resolves true when the daemon accepted the write — including one a
+   * newer write superseded, which the daemon still holds — and false when it
+   * refused it.
    */
   setEnabled: (next: boolean) => Promise<boolean>;
 }
 
 /**
- * The delegation switch's controller: an external store, because two surfaces
- * that never mount together (the Settings tab and the workspace tab strip)
- * must read and write the same setting — a take-back that flipped the switch
- * off while the panel still showed on would be two answers to one question.
+ * The delegation switch's controller: an external store, because the control
+ * survives the Settings tab unmounting and remounting on a different daemon,
+ * and a store of last resort is what keeps one setting from becoming two
+ * answers to one question.
  *
  * The write discipline is `ProviderToolSettings`' (the app audit's findings
  * 1/6/8, re-earned on exactly this shape of toggle), adapted to one boolean:
@@ -289,9 +290,9 @@ export function createDelegationController(
 }
 
 /**
- * The app's one controller instance: the switch in Settings → Agents and the
- * take-back on a roster row are two entry points to the same setting, and a
- * value one flipped must be what the other reads.
+ * The app's one controller instance: every surface that reads or writes the
+ * delegation switch goes through this one, so a value one of them flipped is
+ * what the others read.
  */
 export const delegationController = createDelegationController();
 
