@@ -176,7 +176,7 @@ impl AgentCreateRequest {
 fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, String> {
     let profile = optional_text("profile", object)?;
     let provider = optional_text("provider", object)?;
-    let model = optional_text("model", object)?;
+    let model = checked_model(optional_text("model", object)?)?;
     let mode = optional_text("mode", object)?;
     let effort = optional_text("effort", object)?;
     let preset = optional_text("preset", object)?;
@@ -219,6 +219,25 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
         );
     }
     Ok(CreationChoice::Profile(name))
+}
+
+/// A model the caller names is printed on the card as it arrived, so it gets
+/// the text rule a saved profile's model gets, and the same length cap.
+fn checked_model(model: Option<String>) -> Result<Option<String>, String> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    if let Some(category) = devboule_protocol::unsafe_character(&model) {
+        return Err(format!("model contains {category}"));
+    }
+    let cap = crate::agent_profiles::MAX_PROFILE_FIELD_BYTES;
+    if model.len() > cap {
+        return Err(format!(
+            "model is {} bytes, over the {cap}-byte cap",
+            model.len()
+        ));
+    }
+    Ok(Some(model))
 }
 
 /// One optional string parameter, with its type enforced (audit S5-09).

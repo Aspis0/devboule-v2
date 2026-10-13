@@ -4237,6 +4237,18 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             "model is required when no profile is named",
         ),
         (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "gpt\nlabel: forged"}),
+            "model contains a control character",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "gpt\u{202e}evil"}),
+            "model contains an invisible formatting character",
+        ),
+        (
+            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m".repeat(129)}),
+            "over the 128-byte cap",
+        ),
+        (
             json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "gardener"}),
             "unknown preset",
         ),

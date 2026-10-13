@@ -658,6 +658,11 @@ fn check_required_field(value: &mut String, label: &str, position: usize) -> Res
     if trimmed.is_empty() {
         return Err(format!("profile {position} names no {label}"));
     }
+    if let Some(category) = devboule_protocol::unsafe_character(trimmed) {
+        return Err(format!(
+            "the {label} of profile {position} contains {category}"
+        ));
+    }
     if trimmed.len() > MAX_PROFILE_FIELD_BYTES {
         return Err(format!(
             "the {label} of profile {position} is {} bytes, over the {MAX_PROFILE_FIELD_BYTES}-byte cap",
@@ -851,6 +856,26 @@ mod tests {
             refusal.contains("over the"),
             "the refusal names the cap: {refusal}"
         );
+    }
+
+    #[test]
+    fn the_model_cannot_carry_a_break_or_a_control_into_the_card() {
+        let registry = crate::session::ProviderRegistry::catalog_default();
+        let mut ids = std::collections::HashSet::new();
+        for (position, model, category) in [
+            (1, "gpt-5\nlabel: forged", "a control character"),
+            (2, "gpt-5\u{202e}evil", "an invisible formatting character"),
+            (3, "gpt-5\u{7}", "a control character"),
+        ] {
+            let mut row = profile(&format!("p-{position}"), "Row");
+            row.model = model.to_string();
+            let refusal = check_profile(&mut row, position, &mut ids, &registry, false)
+                .expect_err("an unsafe model is refused");
+            assert!(
+                refusal.contains(category),
+                "the refusal names the character: {refusal}"
+            );
+        }
     }
 
     fn document(profiles: Vec<AgentProfile>) -> AgentProfilesDocument {
