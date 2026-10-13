@@ -96,6 +96,16 @@ pub(crate) fn changed_counts(lines: &[WorkspaceGitDiffLine]) -> (u64, u64) {
         })
 }
 
+/// The `(added, removed)` counts [`replace_lines`] gives for a middle it takes as
+/// wholly changed, read without building the table or any row: the lines between
+/// the shared head and tail, all removed and all added.
+pub(crate) fn wholly_changed_counts(old: &str, new: &str) -> (u64, u64) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let (old_mid, new_mid) = middle(&old_lines, &new_lines);
+    (new_mid.len() as u64, old_mid.len() as u64)
+}
+
 fn row(kind: WorkspaceGitDiffLineKind, text: &str) -> WorkspaceGitDiffLine {
     WorkspaceGitDiffLine {
         kind,

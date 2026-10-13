@@ -133,6 +133,25 @@ fn a_write_result_without_its_new_text_carries_no_edit() {
 }
 
 #[test]
+fn a_large_overwrite_is_cut_and_counts_only_its_changed_lines() {
+    let original = "line\n".repeat(60_000);
+    let content = format!("{}changed\n", "line\n".repeat(59_999));
+    let edits = claude_write_result_edits(
+        &json!({
+            "type": "update",
+            "filePath": "big.txt",
+            "content": content,
+            "originalFile": original,
+        }),
+        None,
+    )
+    .expect("write result");
+    assert!(edits[0].truncated);
+    assert!(matches!(edits[0].text, Some(AgentEditText::Replace { .. })));
+    assert_eq!((edits[0].added, edits[0].removed), (1, 1));
+}
+
+#[test]
 fn claude_read_carries_no_edits() {
     assert!(
         claude_tool_edits("Read", &json!({"file_path": "src/lib.rs"}), None).is_none(),

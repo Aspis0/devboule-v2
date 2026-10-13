@@ -11,7 +11,7 @@ use std::path::Path;
 use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit};
 use serde_json::Value;
 
-use crate::line_diff::{changed_counts, replace_lines, unified_lines};
+use crate::line_diff::{changed_counts, replace_lines, unified_lines, wholly_changed_counts};
 use crate::tool_paths::relativize_tool_path;
 
 /// How much one tool call keeps across all of its edits, counted as the JSON
@@ -49,10 +49,13 @@ fn replace_or_none(
         old: old.unwrap_or_default().to_string(),
         new: new.unwrap_or_default().to_string(),
     });
-    let (added, removed) = changed_counts(&replace_lines(
-        old.unwrap_or_default(),
-        new.unwrap_or_default(),
-    ));
+    let (old, new) = (old.unwrap_or_default(), new.unwrap_or_default());
+    // Past the call budget the text is cut anyway, so no diff is built for it.
+    let (added, removed) = if old.len() + new.len() > MAX_EDIT_CALL_BYTES {
+        wholly_changed_counts(old, new)
+    } else {
+        changed_counts(&replace_lines(old, new))
+    };
     AgentToolEdit {
         path,
         kind,
