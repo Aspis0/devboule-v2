@@ -33,6 +33,7 @@ use devboule_protocol::{
 };
 
 use crate::checked_file::{open_checked, read_capped};
+use crate::session::MAX_ATTACHMENT_READ_BYTES;
 use crate::workspace_files::{
     names_alternate_stream, names_git_metadata, DOES_NOT_EXIST, NOT_A_TREE_NAME,
     NOT_PART_OF_THE_TREE,
@@ -49,12 +50,6 @@ use crate::ServerState;
 /// anything is decoded, so no reply outgrows the frame however big the
 /// file is.
 const FILE_READ_MAX_BYTES: u64 = 128 * 1024;
-
-/// The largest image this reply hands back, in raw bytes. Base64 maps three
-/// bytes to four, so 512 KiB is 699,052 bytes on the wire, under the frame
-/// ceiling with the envelope to spare. A screenshot is often past the text
-/// window's 128 KiB, and a withheld one reads as "Image unavailable".
-const IMAGE_READ_MAX_BYTES: u64 = 512 * 1024;
 
 /// Bytes read per step while locating a window's first line: each chunk is
 /// counted for newlines and dropped, so locating a late window holds this
@@ -346,14 +341,14 @@ fn image_of(root: &Path, target: &Path, walked: &std::fs::Metadata) -> Workspace
         Ok(verified) => verified,
         Err(refusal) => return refused(refusal.sentence()),
     };
-    if opened.len() > IMAGE_READ_MAX_BYTES {
+    if opened.len() > MAX_ATTACHMENT_READ_BYTES as u64 {
         return withheld(opened.len(), stamped(&opened));
     }
     // The file can grow after the open. A grown file is withheld with the
     // cap's next byte as its size: that is a floor, not its real length.
-    let bytes = match read_capped(&mut file, IMAGE_READ_MAX_BYTES) {
+    let bytes = match read_capped(&mut file, MAX_ATTACHMENT_READ_BYTES as u64) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return withheld(IMAGE_READ_MAX_BYTES + 1, stamped(&opened)),
+        Ok(None) => return withheld(MAX_ATTACHMENT_READ_BYTES as u64 + 1, stamped(&opened)),
         Err(_) => return refused(READ_FAILED),
     };
     let size = bytes.len() as u64;
@@ -445,7 +440,7 @@ fn withheld(size: u64, modified_at: Option<i64>) -> WorkspaceFileContent {
         size: Some(size),
         modified_at,
         error: Some(format!(
-            "the image is larger than the {IMAGE_READ_MAX_BYTES}-byte content cap; its content is \
+            "the image is larger than the {MAX_ATTACHMENT_READ_BYTES}-byte content cap; its content is \
              not handed back"
         )),
         from_line: None,

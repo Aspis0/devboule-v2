@@ -17,7 +17,8 @@ use devboule_protocol::{
 };
 
 use super::fixture::{mtime_ms, unique_directory, Repo};
-use super::{content_of, FILE_READ_MAX_BYTES, IMAGE_READ_MAX_BYTES};
+use super::{content_of, FILE_READ_MAX_BYTES};
+use crate::session::MAX_ATTACHMENT_READ_BYTES;
 
 #[test]
 fn a_text_file_comes_back_with_its_bytes_size_and_mtime() {
@@ -53,7 +54,7 @@ fn a_text_file_comes_back_with_its_bytes_size_and_mtime() {
 #[test]
 fn the_cap_still_withholds_an_image_whole_and_carries_the_measure_not_the_content() {
     let repo = Repo::new("cap");
-    repo.write("at-cap.png", vec![b'a'; IMAGE_READ_MAX_BYTES as usize]);
+    repo.write("at-cap.png", vec![b'a'; MAX_ATTACHMENT_READ_BYTES]);
     let at_cap = content_of(&repo.root, "at-cap.png", None, None);
     assert_eq!(
         at_cap.status,
@@ -61,14 +62,14 @@ fn the_cap_still_withholds_an_image_whole_and_carries_the_measure_not_the_conten
         "the cap is inclusive: exactly at it, the content comes back"
     );
     let expected =
-        base64::engine::general_purpose::STANDARD.encode(vec![b'a'; IMAGE_READ_MAX_BYTES as usize]);
+        base64::engine::general_purpose::STANDARD.encode(vec![b'a'; MAX_ATTACHMENT_READ_BYTES]);
     assert_eq!(at_cap.content.as_deref(), Some(expected.as_str()));
     assert_eq!(
         at_cap.from_line, None,
         "an image has no window: base64 is not lines"
     );
 
-    repo.write("over.png", vec![b'a'; IMAGE_READ_MAX_BYTES as usize + 1]);
+    repo.write("over.png", vec![b'a'; MAX_ATTACHMENT_READ_BYTES + 1]);
     let reply = content_of(&repo.root, "over.png", None, None);
     assert_eq!(reply.status, WorkspaceFileContentStatus::TooLarge);
     assert_eq!(reply.content, None, "a withheld file hands back no bytes");
@@ -76,14 +77,14 @@ fn the_cap_still_withholds_an_image_whole_and_carries_the_measure_not_the_conten
         reply.kind, None,
         "the bytes were never read, so their class is unknown"
     );
-    assert_eq!(reply.size, Some(IMAGE_READ_MAX_BYTES + 1));
+    assert_eq!(reply.size, Some(MAX_ATTACHMENT_READ_BYTES as u64 + 1));
     assert_eq!(
         reply.modified_at,
         Some(mtime_ms(&repo.root.join("over.png")))
     );
     let error = reply.error.as_deref().expect("the measure travels");
     assert!(
-        error.contains(&IMAGE_READ_MAX_BYTES.to_string()),
+        error.contains(&MAX_ATTACHMENT_READ_BYTES.to_string()),
         "the cap spelled out: {error}"
     );
 }

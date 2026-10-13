@@ -192,14 +192,14 @@ fn refusals_are_short_reasons() {
 
     // A payload over the ceiling, refused before it is decoded.
     let oversized =
-        base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_AGENT_IMAGE_BYTES + 1]);
+        base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_ATTACHMENT_READ_BYTES + 1]);
     let error = sink
         .store(&AgentImageSource::Base64 {
             mime_type: Some("image/png".to_string()),
             data: oversized,
         })
         .expect_err("an oversized payload is refused");
-    assert!(error.contains("5 MiB"), "{error}");
+    assert_eq!(error, "image too large");
 
     // The store's own refusals still stand: a session id it cannot name.
     let wrong = AgentImageSink::new(
@@ -303,7 +303,10 @@ fn a_refused_image_becomes_the_not_stored_line() {
     let mut content = json!([{"type": "image", "mimeType": "image/png", "data": "not base64!"}]);
     prepare_result_content(&mut content, &sink);
     assert_eq!(content[0]["type"], "text", "{content}");
-    assert_eq!(content[0]["text"], "[image not stored]", "{content}");
+    assert_eq!(
+        content[0]["text"], "[image not stored: the image's base64 could not be decoded]",
+        "{content}"
+    );
     assert!(marked_result_images(&content).is_empty(), "{content}");
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_dir_all(&images);
@@ -375,6 +378,72 @@ fn a_provider_path_whose_folder_is_swapped_for_a_link_after_the_check_is_refused
         "the outside picture is never stored: {stored:?}"
     );
     let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}
+
+/// A PNG container of exactly `total` bytes: the signature, a header, one
+/// image-data chunk that takes the rest, and the end marker. The store reads
+/// the container and nothing decodes it, so the padding is the picture.
+fn png_of_len(total: usize) -> Vec<u8> {
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    let header = [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0];
+    let idat = total - 8 - 25 - 12 - 12;
+    for (kind, data) in [
+        (&b"IHDR"[..], header.to_vec()),
+        (&b"IDAT"[..], vec![0u8; idat]),
+        (&b"IEND"[..], Vec::new()),
+    ] {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+    }
+    assert_eq!(out.len(), total);
+    out
+}
+
+/// The sink stores exactly what the reader can serve: a picture at the read
+/// cap is stored, and one byte more is refused as too large, with the reason.
+#[test]
+fn the_sink_stores_up_to_the_read_cap_and_refuses_one_byte_more() {
+    let (workspace, images) = roots("cap-edge");
+    let sink = sink("cap", &workspace, &images);
+    let at_cap = png_of_len(MAX_ATTACHMENT_READ_BYTES);
+    let stored = sink.store(&AgentImageSource::Base64 {
+        mime_type: Some("image/png".to_string()),
+        data: base64::engine::general_purpose::STANDARD.encode(&at_cap),
+    });
+    assert!(stored.is_ok(), "at the cap is stored: {stored:?}");
+
+    let over = png_of_len(MAX_ATTACHMENT_READ_BYTES + 1);
+    let refused = sink.store(&AgentImageSource::Base64 {
+        mime_type: Some("image/png".to_string()),
+        data: base64::engine::general_purpose::STANDARD.encode(&over),
+    });
+    assert_eq!(refused, Err("image too large".to_string()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}
+
+/// A refused picture in a tool result leaves its reason on the row: the frame
+/// carries no picture, and the line says the picture was too large.
+#[test]
+fn a_tool_result_picture_over_the_cap_says_why_it_is_not_shown() {
+    let (workspace, images) = roots("too-large-row");
+    let sink = sink("row", &workspace, &images);
+    let over = png_of_len(MAX_ATTACHMENT_READ_BYTES + 1);
+    let mut content = json!([{
+        "type": "image",
+        "mimeType": "image/png",
+        "data": base64::engine::general_purpose::STANDARD.encode(&over),
+    }]);
+    prepare_result_content(&mut content, &sink);
+    assert_eq!(
+        content[0]["text"], "[image not stored: image too large]",
+        "{content}"
+    );
+    assert!(marked_result_images(&content).is_empty(), "{content}");
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_dir_all(&images);
 }

@@ -16,12 +16,13 @@ use serde_json::{json, Value};
 use crate::attachment_store::{extension_for, AttachmentStore};
 use crate::checked_file::{open_checked, read_capped};
 use crate::raster_metadata::{sniff_raster_mime, RasterMime};
+use crate::session::MAX_ATTACHMENT_READ_BYTES;
 use crate::workspace_git_support::{confined, walk, Walked};
 
-/// One image's ceiling. Chosen against both budgets it sits under: fourteen
-/// of them fit the store's 72 MiB per-owner budget, and the base64 a frame
-/// would carry stays under the reader's 10 MiB line cap.
-pub(crate) const MAX_AGENT_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// The reason an image over the read cap is refused. The sink stores nothing
+/// the reader cannot serve, so an image the row shows is an image the row can
+/// fetch: both sides use [`MAX_ATTACHMENT_READ_BYTES`].
+const TOO_LARGE: &str = "image too large";
 
 /// Images taken out of one frame. The rest of the blocks are left alone and
 /// counted here so a hostile result cannot turn one frame into unbounded work.
@@ -176,9 +177,9 @@ impl AgentImageSink {
         };
         let (mut file, _) = open_checked(&root, &target, &walked)
             .map_err(|refusal| refusal.sentence().to_string())?;
-        read_capped(&mut file, MAX_AGENT_IMAGE_BYTES as u64)
+        read_capped(&mut file, MAX_ATTACHMENT_READ_BYTES as u64)
             .map_err(|_| "the named file could not be read".to_string())?
-            .ok_or_else(|| "the image is over the 5 MiB limit".to_string())
+            .ok_or_else(|| TOO_LARGE.to_string())
     }
 
     /// The root a provider-named path lies under and the path spelled from
@@ -205,14 +206,14 @@ impl AgentImageSink {
 fn decode_bounded(data: &str) -> Result<Vec<u8>, String> {
     // Four base64 characters per three bytes, so an oversized payload is
     // refused before any of it is decoded.
-    if data.len() > (MAX_AGENT_IMAGE_BYTES / 3 + 1) * 4 {
-        return Err("the image is over the 5 MiB limit".to_string());
+    if data.len() > (MAX_ATTACHMENT_READ_BYTES / 3 + 1) * 4 {
+        return Err(TOO_LARGE.to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|_| "the image's base64 could not be decoded".to_string())?;
-    if bytes.len() > MAX_AGENT_IMAGE_BYTES {
-        return Err("the image is over the 5 MiB limit".to_string());
+    if bytes.len() > MAX_ATTACHMENT_READ_BYTES {
+        return Err(TOO_LARGE.to_string());
     }
     Ok(bytes)
 }
@@ -229,13 +230,10 @@ fn non_empty<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 /// before this daemon writes its own.
 pub(crate) const MARKER: &str = "devboule_image";
 
-/// The line a refused image leaves behind, in the words the Codex road
-/// already uses: the row says it had a picture rather than showing one it
-/// does not carry.
-const NOT_STORED_TEXT: &str = "[image not stored]";
-
-fn not_stored() -> Value {
-    json!({"type": "text", "text": NOT_STORED_TEXT})
+/// The line a refused image leaves behind: the row says it had a picture
+/// and why it has none, rather than showing one it does not carry.
+fn not_stored(reason: &str) -> Value {
+    json!({"type": "text", "text": format!("[image not stored: {reason}]")})
 }
 
 /// One image marker: the stored reference, the reason it was refused, or
@@ -287,12 +285,12 @@ fn prepare_block(block: &mut Value, taken: usize, sink: &AgentImageSink) -> usiz
         return 0;
     };
     if taken >= MAX_IMAGES_PER_FRAME {
-        *target = not_stored();
+        *target = not_stored("more images than one frame stores");
         return 0;
     }
     *target = match sink.store(&source) {
         Ok(reference) => marker(StoredImage::Reference(reference)),
-        Err(_) => not_stored(),
+        Err(reason) => not_stored(&reason),
     };
     1
 }
