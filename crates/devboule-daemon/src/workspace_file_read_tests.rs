@@ -429,3 +429,42 @@ fn an_image_whose_folder_is_swapped_for_a_link_after_the_check_is_refused() {
     assert_eq!(reply.content, None, "no outside byte is handed back");
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+/// A colon inside a name is an alternate data stream on Windows, so the
+/// guard names it; a path whose only colon is its drive is not such a name.
+#[test]
+fn a_colon_inside_a_name_is_named_as_an_alternate_stream() {
+    assert!(crate::workspace_files::names_alternate_stream(
+        "x.png:stream"
+    ));
+    assert!(crate::workspace_files::names_alternate_stream(
+        "x.txt:p.png"
+    ));
+    assert!(crate::workspace_files::names_alternate_stream(
+        "dir:x/shot.png"
+    ));
+    assert!(!crate::workspace_files::names_alternate_stream("dir/x.png"));
+}
+
+/// A stream of a file in the tree is never read: the spelling is refused
+/// before the walk, so no byte of the stream is handed back.
+#[cfg(windows)]
+#[test]
+fn an_alternate_stream_spelling_is_refused_before_it_is_read_on_windows() {
+    let repo = Repo::new("alternate-stream");
+    repo.write("x.txt", b"plain text".to_vec());
+    std::fs::write(
+        repo.root.join("x.txt:p.png"),
+        vec![0x89u8, b'P', b'N', b'G'],
+    )
+    .expect("the stream is written");
+    for spelling in ["x.txt:p.png", "x.png:stream"] {
+        let reply = content_of(&repo.root, spelling, None, None);
+        assert_eq!(
+            reply.error.as_deref(),
+            Some(crate::workspace_files::NOT_A_TREE_NAME),
+            "{spelling}: {reply:?}"
+        );
+        assert_eq!(reply.content, None, "{spelling}");
+    }
+}

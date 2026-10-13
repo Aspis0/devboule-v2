@@ -88,7 +88,10 @@ use sha2::{Digest, Sha256};
 
 use crate::checked_file::{is_link, open_checked, Refusal, LOCATION_UNCONFIRMED};
 use crate::workspace_file_read::{stamped, IMAGE_EXTENSIONS};
-use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
+use crate::workspace_files::{
+    names_alternate_stream, names_git_metadata, DOES_NOT_EXIST, NOT_A_TREE_NAME,
+    NOT_PART_OF_THE_TREE,
+};
 use crate::workspace_git_diff::NOT_A_FILE;
 use crate::workspace_git_support::{confined, walk, Walked, LINK_FINAL, OUTSIDE_THE_WORKSPACE};
 use crate::ServerState;
@@ -237,6 +240,9 @@ fn copy_of(root: &Path, requested: &str, previews: &Path) -> WorkspaceFilePrevie
     // happens to end in a shown extension.
     if names_git_metadata(requested) {
         return refused(NOT_PART_OF_THE_TREE);
+    }
+    if cfg!(windows) && names_alternate_stream(requested) {
+        return refused(NOT_A_TREE_NAME);
     }
     // Then the walk: the confinement above trusts the spelling, this trusts
     // the filesystem — every component stat'ed without following, a link

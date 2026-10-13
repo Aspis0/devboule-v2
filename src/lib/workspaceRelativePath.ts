@@ -7,6 +7,8 @@
  *
  * A home path (`~`), a UNC path (`//server`), and an absolute path that the root
  * cannot contain are outside, since the frontend cannot tell where they resolve.
+ * A colon inside a name below the root is refused too: on Windows it is an
+ * alternate data stream, which the tree does not list.
  */
 
 // A `:line` or `:line:col` suffix names a location in the file, not part of its name.
@@ -62,6 +64,8 @@ export function workspaceRelativePath(path: string, workspaceRoot: string): stri
   if (spelled.absolute && spelled.drive !== workspace.drive) return null;
   const parts = spelled.absolute ? spelled.parts : [...workspace.parts, ...spelled.parts];
   if (parts.length <= workspace.parts.length) return null;
+  // A colon inside a name is an NTFS alternate stream (`x.txt:p.png`), not a file of the tree.
+  if (parts.slice(workspace.parts.length).some((part) => part.includes(":"))) return null;
   const foldCase = workspace.drive !== null;
   const sameRoot = workspace.parts.every((part, index) => {
     const other = parts[index]!;

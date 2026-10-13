@@ -33,7 +33,10 @@ use devboule_protocol::{
 };
 
 use crate::checked_file::{open_checked, read_capped};
-use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
+use crate::workspace_files::{
+    names_alternate_stream, names_git_metadata, DOES_NOT_EXIST, NOT_A_TREE_NAME,
+    NOT_PART_OF_THE_TREE,
+};
 use crate::workspace_git_diff::NOT_A_FILE;
 use crate::workspace_git_support::{confined, relativize, walk, Walked, OUTSIDE_THE_WORKSPACE};
 use crate::ServerState;
@@ -140,6 +143,9 @@ fn content_of(
     // metadata folder happens at all, in any spelling Win32 resolves.
     if names_git_metadata(requested) {
         return refused(NOT_PART_OF_THE_TREE);
+    }
+    if cfg!(windows) && names_alternate_stream(requested) {
+        return refused(NOT_A_TREE_NAME);
     }
     // Lines are numbered from 1, and a zero is the caller's mistake —
     // after the confinement guards on purpose, so every refusal the path

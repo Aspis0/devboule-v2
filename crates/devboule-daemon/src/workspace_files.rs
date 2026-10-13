@@ -34,6 +34,20 @@ pub(crate) const DOES_NOT_EXIST: &str = "the requested path does not exist";
 pub(crate) const NOT_PART_OF_THE_TREE: &str =
     "the repository's own metadata folder is not part of the tree";
 
+/// On Windows a colon in a name is an alternate data stream: `x.txt:p.png`
+/// is a stream of `x.txt` that the tree never lists, and reading it would
+/// hand back bytes no file in the tree carries. `pub(crate)`: the read and
+/// the preview copy refuse it with this sentence, on Windows only.
+pub(crate) const NOT_A_TREE_NAME: &str =
+    "the requested path names an alternate data stream, not a file in the tree";
+
+/// Whether a colon sits inside one of the path's names. The drive designator
+/// of an absolute path is not a name of the path, and the callers have
+/// already made it relative by the time they ask.
+pub(crate) fn names_alternate_stream(requested: &str) -> bool {
+    requested.split(['/', '\\']).any(|name| name.contains(':'))
+}
+
 /// Resolve `workspace_id` through the registry — never a request field.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str, path: &str) -> DaemonMessage {
     let directory = match state.sessions.workspace_cwd(workspace_id) {

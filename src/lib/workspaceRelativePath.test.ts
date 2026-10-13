@@ -89,3 +89,22 @@ describe("workspaceRelativePath: a POSIX root", () => {
     expect(workspaceRelativePath(path, POSIX_ROOT)).toBeNull();
   });
 });
+
+describe("workspaceRelativePath: a colon in a name", () => {
+  const WINDOWS_ROOT = "C:\\work\\shop";
+
+  it.each([
+    "C:\\work\\shop\\x.png:stream",
+    "C:\\work\\shop\\x.txt:p.png",
+    "x.txt:p.png",
+    "mockups:old/shot.png",
+  ])("refuses the stream spelling %s", (path) => {
+    expect(workspaceRelativePath(path, WINDOWS_ROOT)).toBeNull();
+  });
+
+  it("keeps the drive designator of an absolute path", () => {
+    expect(workspaceRelativePath("C:\\work\\shop\\mockups\\shot.png", WINDOWS_ROOT)).toBe(
+      "mockups/shot.png",
+    );
+  });
+});
