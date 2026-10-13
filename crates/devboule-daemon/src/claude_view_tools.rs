@@ -145,6 +145,12 @@ pub(super) fn tool_update_from_result(
     let text = block
         .get("content")
         .map(|content| capped(&blocks_text(content)));
+    // A subagent's pictures are the subagent's to show, never the parent chat's.
+    let images = if parent_tool_use_id.is_some() {
+        Vec::new()
+    } else {
+        crate::agent_image::marked_result_images(block.get("content").unwrap_or(&Value::Null))
+    };
     Some(SessionEvent::AgentToolUpdate {
         edits: None,
         tool_call_id,
@@ -159,9 +165,7 @@ pub(super) fn tool_update_from_result(
         exit_code: None,
         replace: false,
 
-        images: crate::agent_image::marked_result_images(
-            block.get("content").unwrap_or(&Value::Null),
-        ),
+        images,
     })
 }
 

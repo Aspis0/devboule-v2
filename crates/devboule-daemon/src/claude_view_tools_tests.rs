@@ -727,3 +727,45 @@ fn a_stored_tool_result_image_rides_its_row() {
         other => panic!("expected one tool update, got {other:?}"),
     }
 }
+
+/// A subagent's tool result is shown in the subagent's own view: its picture
+/// rides the row only when the result is the session's own, never when the
+/// envelope names a parent tool call.
+#[test]
+fn a_subagent_result_picture_stays_out_of_the_parent_chat() {
+    let mut mapper = view();
+    let reference = json!({
+        "sessionId": "s.claude.images.1",
+        "digest": "b".repeat(64),
+        "storedBytes": 68,
+        "name": "agent-image.png",
+    });
+    let events = mapper.ingest(&json!({
+        "type": "user",
+        "parent_tool_use_id": "task-1",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "shot-2",
+                "content": [{"devboule_image": {"reference": reference}}],
+            }],
+        },
+    }));
+    match events.as_slice() {
+        [SessionEvent::AgentToolUpdate {
+            tool_call_id,
+            images,
+            parent_tool_use_id,
+            ..
+        }] => {
+            assert_eq!(tool_call_id, "shot-2");
+            assert_eq!(parent_tool_use_id.as_deref(), Some("task-1"));
+            assert!(
+                images.is_empty(),
+                "no subagent picture in the parent: {events:?}"
+            );
+        }
+        other => panic!("expected one tool update, got {other:?}"),
+    }
+}

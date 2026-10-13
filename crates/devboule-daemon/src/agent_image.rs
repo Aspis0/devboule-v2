@@ -301,6 +301,15 @@ fn forget_incoming_marker(block: &mut Value) {
     }
 }
 
+/// Remove the image blocks of a tool result whose pictures are not this
+/// session's to keep: the frame then carries neither their bytes nor a store
+/// entry.
+pub(crate) fn drop_image_blocks(content: &mut Value) {
+    if let Some(blocks) = content.as_array_mut() {
+        blocks.retain(|block| block.get("type").and_then(Value::as_str) != Some("image"));
+    }
+}
+
 /// The stored references a prepared result content carries, in order. A
 /// block the store refused is a plain text line by then and is skipped, as
 /// are the blocks that never named an image.

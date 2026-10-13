@@ -3613,3 +3613,43 @@ fn a_tool_result_image_is_stored_before_the_envelope_is_journaled() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The journal side of the same rule: a subagent's tool result carries no
+/// picture into the frame, stored or not, so the parent session never holds
+/// the subagent's bytes.
+#[test]
+fn a_subagent_tool_result_picture_is_dropped_before_the_journal() {
+    const SUBAGENT_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = crate::test_dirs::test_temp_dir("devboule-claude-subagent-picture");
+    let sink = crate::agent_image::AgentImageSink::new(
+        crate::attachment_store::AttachmentStore::new(&dir),
+        "s.claude.subagent.1".to_string(),
+        dir.clone(),
+        None,
+    );
+    let mut value = serde_json::json!({
+        "type": "user",
+        "parent_tool_use_id": "task-1",
+        "message": {"role": "user", "content": [{
+            "type": "tool_result",
+            "tool_use_id": "shot-2",
+            "content": [
+                {"type": "text", "text": "shot taken"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": SUBAGENT_PNG}},
+            ],
+        }]},
+    });
+    super::prepare_tool_result_images(&mut value, Some(&sink));
+    let content = &value["message"]["content"][0]["content"];
+    assert_eq!(content.as_array().map(Vec::len), Some(1), "{value}");
+    assert_eq!(content[0]["text"], "shot taken", "{value}");
+    assert!(
+        !value.to_string().contains(SUBAGENT_PNG),
+        "no base64 in the frame: {value}"
+    );
+    assert!(
+        std::fs::read_dir(&dir).map_or(true, |mut entries| entries.next().is_none()),
+        "nothing was stored under the parent session"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -2674,17 +2674,20 @@ fn observe_mcp_status(value: &Value, runtime: &SessionRuntime) {
 
 /// Store the images of one `user` envelope's tool results and replace them
 /// with markers before the frame is journaled, so a replay shows the same
-/// pictures from the journal alone.
+/// pictures from the journal alone. A subagent's result is the subagent's own:
+/// its pictures are dropped instead, so neither the store nor the journal
+/// holds them under this session.
 fn prepare_tool_result_images(
     value: &mut Value,
     images: Option<&crate::agent_image::AgentImageSink>,
 ) {
-    let Some(sink) = images else {
-        return;
-    };
     if value.get("type").and_then(Value::as_str) != Some("user") {
         return;
     }
+    let subagent = value
+        .get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty());
     let Some(blocks) = value
         .pointer_mut("/message/content")
         .and_then(Value::as_array_mut)
@@ -2698,7 +2701,11 @@ fn prepare_tool_result_images(
         let Some(content) = block.get_mut("content") else {
             continue;
         };
-        crate::agent_image::prepare_result_content(content, sink);
+        if subagent {
+            crate::agent_image::drop_image_blocks(content);
+        } else if let Some(sink) = images {
+            crate::agent_image::prepare_result_content(content, sink);
+        }
     }
 }
 
