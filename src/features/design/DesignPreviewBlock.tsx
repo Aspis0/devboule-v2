@@ -34,16 +34,16 @@ export function previewsArtifact(message: DesignMessage): message is DesignPrevi
  */
 export function DesignPreviewBlock({
   message,
+  heading,
   canvasPageHeight,
 }: {
   message: DesignPreviewBlockMessage;
+  /** Non-empty, and never shared with another block in the column: the panel derives it. */
+  heading: string;
   /** The canvas viewport height: the page is shown at this height, scaled to the column. */
   canvasPageHeight: number;
 }) {
   const html = message.artifactHtml;
-  // Two results in one column have to be told apart by their agent, so the block is
-  // named; a reply that recorded no name is still named by what it is.
-  const heading = message.title !== "" ? message.title : "Design result";
 
   // The preview is the one part of a block that is a function of the sidebar's size:
   // the page is authored at ARTIFACT_PAGE_WIDTH and the transform has to bring it down
