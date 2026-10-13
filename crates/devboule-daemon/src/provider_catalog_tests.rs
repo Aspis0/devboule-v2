@@ -2316,3 +2316,38 @@ fn every_served_tool_is_classified_and_the_classes_decide_approval_and_waiting()
     }
     assert!(super::tool_consent("devboule_not_a_tool").is_none());
 }
+
+/// The initial instructions route design work to a Devboule child and teach
+/// the asynchronous wait: a child is not a provider subagent, so the creator
+/// ends its turn and is woken by the finish instead of waiting natively.
+#[test]
+fn initial_instructions_design_delegation_routes_and_ends_turn() {
+    let instructions = super::DEVBOULE_AGENT_INSTRUCTIONS;
+    for needle in [
+        "devboule_create_agent",
+        "devboule_list_profiles",
+        "Design profile",
+        "Design canvas",
+    ] {
+        assert!(
+            instructions.contains(needle),
+            "initial instructions miss design routing {needle:?}"
+        );
+    }
+    for needle in [
+        "not your provider's own subagent",
+        "end your turn",
+        "wakes you as a message",
+    ] {
+        assert!(
+            instructions.contains(needle),
+            "initial instructions miss asynchronous turn end {needle:?}"
+        );
+    }
+    for verb in ["spawn", "wait", "poll", "sleep"] {
+        assert!(
+            instructions.contains(verb),
+            "initial instructions miss native wait denial {verb:?}"
+        );
+    }
+}
