@@ -1896,11 +1896,14 @@ fn validate_permission_request(
         ));
     };
     validate_permission_field("title", title)?;
-    for (field, value) in [
-        ("description", description.as_deref()),
-        ("command", command.as_deref()),
-        ("cwd", cwd.as_deref()),
-    ] {
+    if let Some(description) = description.as_deref() {
+        validate_permission_field_within(
+            "description",
+            description,
+            MAX_ACP_PERMISSION_FIELD_BYTES + gate_sentence_overhead(description),
+        )?;
+    }
+    for (field, value) in [("command", command.as_deref()), ("cwd", cwd.as_deref())] {
         if let Some(value) = value {
             validate_permission_field(field, value)?;
         }
@@ -1993,17 +1996,42 @@ fn validate_permission_request(
 }
 
 fn validate_permission_field(field: &str, value: &str) -> Result<(), PermissionResponseError> {
+    validate_permission_field_within(field, value, MAX_ACP_PERMISSION_FIELD_BYTES)
+}
+
+/// One field's emptiness and length against `budget`, which a caller adjusts
+/// when the daemon has added its own fixed text to the value.
+fn validate_permission_field_within(
+    field: &str,
+    value: &str,
+    budget: usize,
+) -> Result<(), PermissionResponseError> {
     if value.is_empty() {
         return Err(PermissionResponseError::InvalidRequest(format!(
             "permission request has an empty {field}"
         )));
     }
-    if value.len() > MAX_ACP_PERMISSION_FIELD_BYTES {
+    if value.len() > budget {
         return Err(PermissionResponseError::InvalidRequest(format!(
-            "permission request {field} exceeds {MAX_ACP_PERMISSION_FIELD_BYTES} bytes"
+            "permission request {field} exceeds {budget} bytes"
         )));
     }
     Ok(())
+}
+
+/// What the creation card's own gate sentence costs a description: the
+/// sentence and the newline in front of it.
+///
+/// That text is the daemon's, not the profile's, so it must not spend the
+/// budget the title, the mode note and the saved spawn prompt are measured
+/// against — a profile that fitted the description before the sentence existed
+/// would otherwise be refused here and never show its card at all.
+fn gate_sentence_overhead(description: &str) -> usize {
+    if description.contains(crate::mcp_broker::CREATION_GATE_SENTENCE) {
+        crate::mcp_broker::CREATION_GATE_SENTENCE.len() + 1
+    } else {
+        0
+    }
 }
 
 fn decision_from_outcome(journal_outcome: &str) -> HostDecision {
@@ -2298,8 +2326,9 @@ mod tests {
     use super::SessionRuntime;
     use super::{
         peer_card_count, permission, permission_path, permission_plan, permission_with_kinds,
-        test_broker, HostDecision, PermissionBroker, PermissionOption, PermissionSender,
-        MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
+        test_broker, validate_permission_request, HostDecision, PermissionBroker, PermissionOption,
+        PermissionSender, MAX_ACP_PERMISSION_ARGS, MAX_ACP_PERMISSION_FIELD_BYTES,
+        MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
     use devboule_protocol::PeerRole;
@@ -2401,6 +2430,37 @@ mod tests {
                 if plan.len() == crate::plan_text::MAX_PLAN_BYTES - 3
                     && plan.ends_with("[Plan truncated.]")
         ));
+    }
+
+    /// The creation card's gate sentence is the daemon's own text, so it never
+    /// spends the budget the caller's spawn prompt is measured against: a
+    /// description that fitted before the sentence existed still fits, and one
+    /// byte more is still refused rather than truncated.
+    #[test]
+    fn the_creation_gate_sentence_does_not_spend_the_description_budget() {
+        fn description_of(size: usize) -> SessionEvent {
+            let sentence = crate::mcp_broker::CREATION_GATE_SENTENCE;
+            let mut request = permission("create-budget");
+            if let SessionEvent::PermissionRequest { description, .. } = &mut request {
+                *description = Some(format!("Kid · claude\n{sentence}\n{}", "p".repeat(size)));
+            }
+            request
+        }
+        // The rule charges everything but the sentence and the newline in front of
+        // it, so the prompt's own room is the budget minus the card's line and
+        // the newline that follows the sentence.
+        let fitted = MAX_ACP_PERMISSION_FIELD_BYTES - "Kid · claude\n".len();
+        let mut request = description_of(fitted);
+        assert!(
+            validate_permission_request("create-budget", &mut request).is_ok(),
+            "the card a profile at the old limit would raise still registers"
+        );
+
+        let mut over = description_of(fitted + 1);
+        assert!(
+            validate_permission_request("create-budget", &mut over).is_err(),
+            "one byte past the profile's own room is still refused"
+        );
     }
 
     #[test]

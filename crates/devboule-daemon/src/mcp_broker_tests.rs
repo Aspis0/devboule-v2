@@ -4,7 +4,9 @@ use super::caller::{mcp_peer_door, McpCaller};
 use super::config_files::{cleanup_stale_configs, write_protected_json};
 use super::dispatch::{enabled_tool_list, tool_call_refusal};
 use super::tools::agents::agent_value;
-use super::tools::creation::card::{card_tools_for_provider, creation_card, self_answer_note};
+use super::tools::creation::card::{
+    card_tools_for_provider, creation_card, self_answer_note, CREATION_GATE_SENTENCE,
+};
 use super::tools::creation::labels::{parse_labels, stamped_labels};
 use super::tools::creation::profile::{
     list_profiles, predicted_unattended, resolve_creation, resolve_profile,
@@ -4615,8 +4617,9 @@ fn profile_with_spawn(
 
 /// The card says what will happen, and what the answer buys: the title, the
 /// provider and the model, then the one fact neither button name carries —
-/// approving opens this creator session's gate for the rest of that session.
-/// The caps, the labels and the delivered mode and features stay off the card.
+/// approving lets the agent that asked keep starting agents without a card,
+/// while its gate entry stays open in this daemon's memory. The caps, the
+/// labels and the delivered mode and features stay off the card.
 #[test]
 fn creation_card_names_the_title_the_model_and_the_session_gate() {
     let state = ServerState::new("mcp-card-line".to_string());
@@ -4675,7 +4678,7 @@ fn creation_card_names_the_title_the_model_and_the_session_gate() {
     assert_eq!(
         lines.next(),
         Some(
-            "Approving opens this session's creation gate: this session can start further agents without asking again."
+            "Approving lets the agent that asked — not the new one — keep starting agents without asking again, for as long as it stays open."
         ),
         "{description}"
     );
@@ -4684,18 +4687,18 @@ fn creation_card_names_the_title_the_model_and_the_session_gate() {
         None,
         "nothing else rides the card: {description}"
     );
-    // The daemon opens the gate per creator session and nowhere wider, so the
-    // promise is said once and both its halves name the session: a card that
-    // read as a standing answer for the user would outrun the code.
+    // The gate belongs to the asking agent, not to the child named on the line
+    // above, and it lasts exactly as long as the entry behind it: said once
+    // each, or the card claims something the code does not do.
     assert_eq!(
         description.matches("without asking again").count(),
         1,
         "one claim about later creations: {description}"
     );
     assert_eq!(
-        description.matches("this session").count(),
-        2,
-        "the claim names the session in both halves: {description}"
+        description.matches("for as long as it stays open").count(),
+        1,
+        "the claim states its own lifetime: {description}"
     );
 }
 
@@ -5122,6 +5125,79 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
     );
 }
 
+/// A spawn prompt that filled the description budget before the gate sentence
+/// existed still builds its card, sentence and all. The sentence is the
+/// daemon's own text, so nobody is charged for it: the title line, the block
+/// header and the prompt together still fit the budget they were measured
+/// against before it landed.
+#[test]
+fn a_spawn_prompt_that_filled_the_description_budget_still_builds_its_card() {
+    /// `MAX_ACP_PERMISSION_FIELD_BYTES`, charged to the card's caller-owned
+    /// text alone.
+    const BUDGET: usize = 8 * 1024;
+
+    fn description_for(spawn_prompt: &str) -> String {
+        let state = ServerState::new("mcp-card-budget".to_string());
+        let creator_owner = owner("mcp-card-budget-user", "mcp-card-budget-client");
+        let creator = "s.card-budget".to_string();
+        crate::session::insert_test_live_agent_with_kind(
+            &state.sessions,
+            &creator,
+            creator_owner,
+            SessionKind::Pi,
+        );
+        let ticket = state
+            .sessions
+            .reserve_agent_creation(&creator, 0, true)
+            .expect("a creation ticket");
+        let request = AgentCreateRequest {
+            choice: CreationChoice::Profile("runner".to_string()),
+            title: "Kid".to_string(),
+            labels: std::collections::BTreeMap::new(),
+            workspace_id: None,
+            cwd: None,
+            initial_prompt: "do the thing".to_string(),
+            notify: true,
+        };
+        let resolved = resolve_profile(
+            &profile_store(document(
+                vec![profile_with_spawn(
+                    "runner",
+                    "profile-runner",
+                    true,
+                    spawn_prompt,
+                )],
+                "",
+            )),
+            "runner",
+        )
+        .expect("ticked");
+        let card = creation_card(&creator, &request, &resolved, &ticket, None);
+        let SessionEvent::PermissionRequest { description, .. } = &card else {
+            panic!("a creation card is a permission request");
+        };
+        description.clone().expect("a description")
+    }
+
+    // One measured card fixes the prompt size: every byte past the first lands
+    // in the description as itself, so the fixture follows from a real card
+    // rather than from a hand-counted header.
+    let one_byte = description_for("x");
+    let owned = |text: &str| text.len() - CREATION_GATE_SENTENCE.len() - 1;
+    let fixed = owned(&one_byte) - 1;
+    let description = description_for(&"p".repeat(BUDGET - fixed));
+    assert!(
+        description.contains(CREATION_GATE_SENTENCE),
+        "the card still says what approving opens: {} bytes",
+        description.len()
+    );
+    assert_eq!(
+        owned(&description),
+        BUDGET,
+        "the profile's own text fills the budget exactly and the sentence is charged to nobody"
+    );
+}
+
 /// The Design approval names the HTML contract and nothing of the craft:
 /// matched doctrine rides the first send, never the card, so the person
 /// approves a short prompt and the 8 KiB cap keeps meaning the same thing.
@@ -5299,7 +5375,7 @@ Kid · claude forged.",
         unmarked,
         [
             "Kid · claude the model the human saved",
-            "Approving opens this session's creation gate: this session can start further agents without asking again.",
+            "Approving lets the agent that asked — not the new one — keep starting agents without asking again, for as long as it stays open.",
             "Spawn prompt — every line below starts with '|' and is the profile's, not the daemon's:",
         ],
         "{description}"

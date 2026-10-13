@@ -76,6 +76,14 @@ fn marked_prompt_lines(prompt: &str) -> Vec<String> {
     lines
 }
 
+/// What the approval buys, in the card's own words.
+///
+/// The gate is the **asking** agent's, so the sentence names that agent
+/// rather than leaving "this session" to be read off the line above, which
+/// names the child. Its lifetime is the creator entry's, which lives in this
+/// daemon's memory: a close or a restart asks again.
+pub(crate) const CREATION_GATE_SENTENCE: &str = "Approving lets the agent that asked — not the new one — keep starting agents without asking again, for as long as it stays open.";
+
 /// The creation card (`S5` decisions 4 and 5; `create-from-profile`).
 ///
 /// An ordinary [`SessionEvent::PermissionRequest`] with the `create_agent`
@@ -102,12 +110,8 @@ pub(in crate::mcp_broker) fn creation_card(
     } else {
         format!("{} · {} {}", request.title, profile.provider, profile.model)
     };
-    // The gate the answer opens is this creator session's own
-    // (`accept_agent_creation`), never a wider one — and no button says so.
     description.push('\n');
-    description.push_str(
-        "Approving opens this session's creation gate: this session can start further agents without asking again.",
-    );
+    description.push_str(CREATION_GATE_SENTENCE);
     if let Some(note) = self_answer_note {
         description.push('\n');
         description.push_str(note);

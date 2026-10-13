@@ -213,6 +213,10 @@ use self::transport::{mcp_accept_loop, MCP_PATH};
 
 pub(crate) use self::config_files::write_protected_str;
 pub(crate) use self::redact::redact_broker_text;
+/// The creation card's fixed sentence: the permission broker measures a
+/// description against the budget the caller's own text is held to, and the
+/// daemon's own sentence must not spend it.
+pub(crate) use self::tools::creation::card::CREATION_GATE_SENTENCE;
 
 /// Whether the browser lane's own command table serves `tool`: the one list the
 /// router and the peer door's browser rule both read, so a `browser_*` name the

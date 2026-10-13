@@ -507,6 +507,77 @@ fn a_provider_switched_off_while_the_card_waits_starts_no_child() {
     }
 }
 
+/// The same wait, but the person approves: the switch still refuses to start
+/// the child, and the approval they gave is not thrown away with it. The gate
+/// is theirs and it opens on the answer, so the next creation owes no card —
+/// closing it here would make the card promise a second question about a
+/// decision already made.
+#[test]
+fn an_approval_that_meets_a_provider_switched_off_still_opens_the_gate() {
+    fn direct_request() -> AgentCreateRequest {
+        AgentCreateRequest::parse(&json!({
+            "provider": "devboule-acp-stub",
+            "model": "stub-model",
+            "mode": "ask",
+            "title": "Probe child",
+            "initialPrompt": "Do the probe thing.",
+        }))
+        .expect("direct request parses")
+    }
+    let stub = crate::session::session_resume_fixture::acp_stub();
+    let _stub = super::tests::StubOverride::set("devboule-acp-stub", &stub);
+    let state = ServerState::new("create-switch-card-approved".to_string());
+    acp_creator(&state, "d1a-creator");
+    let thread_state = Arc::clone(&state);
+    let handle = std::thread::spawn(move || {
+        create_agent_now(
+            &thread_state,
+            &McpCaller::Local,
+            &registration("d1a-creator"),
+            &json!(52),
+            direct_request(),
+        )
+    });
+    let start = Instant::now();
+    let card = loop {
+        let pending = state
+            .sessions
+            .live_runtime("d1a-creator", &owner())
+            .expect("live creator")
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids();
+        if let Some(card) = pending.into_iter().next() {
+            break card;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the card was never raised"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    state
+        .provider_switches
+        .set("devboule-acp-stub", false)
+        .expect("the person turns the provider off");
+    answer(&state, "d1a-creator", &card);
+    let refused = handle.join().expect("creation thread");
+    assert_eq!(
+        error_text(&refused),
+        crate::provider_switches::disabled_sentence("devboule-acp-stub"),
+        "the child is still refused: the switch outranks the answer's timing, not the answer"
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation("d1a-creator", 1, true)
+        .expect("the session may still create");
+    assert!(
+        !ticket.card_owed(),
+        "the approval stands: the next creation asks nothing"
+    );
+    drop(ticket);
+}
+
 /// A creator that runs in a non-asking posture creates its child without asking
 /// the person: no creation card is raised, whatever the child's own mode.
 #[test]

@@ -398,13 +398,17 @@ fn run_creation(
         }
         // The person may have turned the provider off while the card waited: the
         // switch is read again now, before the child is started (owner item 1).
-        if let Err(error) = crate::provider_switches::refuse_unless_enabled(
+        // They answered allow either way, so the gate opens before this
+        // refusal — dropping the ticket here would close it again and ask the
+        // same person the same question a second time.
+        let switched_off = crate::provider_switches::refuse_unless_enabled(
             &state.provider_switches,
             &profile.provider,
-        ) {
+        );
+        state.sessions.accept_agent_creation(&creator_id);
+        if let Err(error) = switched_off {
             return tool_error(id, &error.message);
         }
-        state.sessions.accept_agent_creation(&creator_id);
     }
     let creator_runtime = state
         .sessions
