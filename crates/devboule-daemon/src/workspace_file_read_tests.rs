@@ -461,7 +461,7 @@ fn a_colon_inside_a_name_is_named_as_an_alternate_stream() {
 #[test]
 fn an_alternate_stream_spelling_is_refused_before_it_is_read_on_windows() {
     let repo = Repo::new("alternate-stream");
-    repo.write("x.txt", b"plain text".to_vec());
+    repo.write("x.txt", b"plain text");
     std::fs::write(
         repo.root.join("x.txt:p.png"),
         vec![0x89u8, b'P', b'N', b'G'],
@@ -483,7 +483,7 @@ fn an_alternate_stream_spelling_is_refused_before_it_is_read_on_windows() {
 #[test]
 fn a_text_file_under_a_picture_name_is_refused_as_not_a_picture() {
     let repo = Repo::new("fake-picture");
-    repo.write("fake.png", b"plain text, not a picture".to_vec());
+    repo.write("fake.png", b"plain text, not a picture");
     let reply = content_of(&repo.root, "fake.png", None, None);
     assert_ne!(reply.status, WorkspaceFileContentStatus::Ok, "{reply:?}");
     assert_eq!(reply.content, None, "no text is handed back as a picture");
