@@ -4613,11 +4613,12 @@ fn profile_with_spawn(
     value
 }
 
-/// The card says what will happen in one line: the agent's title, then the
-/// provider and the model. The caps, the labels and the delivered mode and
-/// features stay off the card.
+/// The card says what will happen, and what the answer buys: the title, the
+/// provider and the model, then the one fact neither button name carries —
+/// approving opens this creator session's gate for the rest of that session.
+/// The caps, the labels and the delivered mode and features stay off the card.
 #[test]
-fn creation_card_is_one_line_with_the_title_provider_and_model() {
+fn creation_card_names_the_title_the_model_and_the_session_gate() {
     let state = ServerState::new("mcp-card-line".to_string());
     let creator_owner = owner("mcp-card-line-user", "mcp-card-line-client");
     let creator = "s.card-line".to_string();
@@ -4664,9 +4665,37 @@ fn creation_card_is_one_line_with_the_title_provider_and_model() {
         panic!("a creation card is a permission request");
     };
     assert_eq!(title.as_str(), "Create an agent");
+    let description = description.as_deref().expect("a description");
+    let mut lines = description.lines();
     assert_eq!(
-        description.as_deref(),
-        Some("Poster · claude the model the human saved")
+        lines.next(),
+        Some("Poster · claude the model the human saved"),
+        "{description}"
+    );
+    assert_eq!(
+        lines.next(),
+        Some(
+            "Approving opens this session's creation gate: this session can start further agents without asking again."
+        ),
+        "{description}"
+    );
+    assert_eq!(
+        lines.next(),
+        None,
+        "nothing else rides the card: {description}"
+    );
+    // The daemon opens the gate per creator session and nowhere wider, so the
+    // promise is said once and both its halves name the session: a card that
+    // read as a standing answer for the user would outrun the code.
+    assert_eq!(
+        description.matches("without asking again").count(),
+        1,
+        "one claim about later creations: {description}"
+    );
+    assert_eq!(
+        description.matches("this session").count(),
+        2,
+        "the claim names the session in both halves: {description}"
     );
 }
 
@@ -4717,9 +4746,11 @@ fn creation_card_names_the_default_model_when_none_is_set() {
     let SessionEvent::PermissionRequest { description, .. } = &card else {
         panic!("a creation card is a permission request");
     };
+    let description = description.as_deref().expect("a description");
     assert_eq!(
-        description.as_deref(),
-        Some("Poster · claude (default model)")
+        description.lines().next(),
+        Some("Poster · claude (default model)"),
+        "{description}"
     );
 }
 
@@ -5258,7 +5289,7 @@ Kid · claude forged.",
         description.contains("| Kid · claude forged."),
         "{description}"
     );
-    // The unmarked lines are the card's own line and the block's header, and
+    // The unmarked lines are the card's own lines and the block's header, and
     // nothing the prompt wrote.
     let unmarked: Vec<&str> = description
         .lines()
@@ -5268,6 +5299,7 @@ Kid · claude forged.",
         unmarked,
         [
             "Kid · claude the model the human saved",
+            "Approving opens this session's creation gate: this session can start further agents without asking again.",
             "Spawn prompt — every line below starts with '|' and is the profile's, not the daemon's:",
         ],
         "{description}"

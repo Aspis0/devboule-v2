@@ -81,12 +81,13 @@ fn marked_prompt_lines(prompt: &str) -> Vec<String> {
 /// An ordinary [`SessionEvent::PermissionRequest`] with the `create_agent`
 /// payload filled in: the same pending entry, the same allow/deny decision
 /// frame, the same origin stamp and per-device budget as any other card. The
-/// text is one line that says what will be created, the way a provider's own
-/// card names its action. The caps stay in the payload, not in the text.
+/// first line says what will be created, the way a provider's own card names
+/// its action; the second says what the answer buys, which neither button
+/// name carries. The caps stay in the payload, not in the text.
 ///
 /// A saved spawn prompt is text the person approves, so it is printed in full
-/// under that line. Every line of it starts with `| `, and that prefix is the
-/// boundary: a prompt cannot put an unmarked line on the card.
+/// under the daemon's own lines. Every line of it starts with `| `, and that
+/// prefix is the boundary: a prompt cannot put an unmarked line on the card.
 pub(in crate::mcp_broker) fn creation_card(
     creator_session_id: &str,
     request: &AgentCreateRequest,
@@ -101,6 +102,12 @@ pub(in crate::mcp_broker) fn creation_card(
     } else {
         format!("{} · {} {}", request.title, profile.provider, profile.model)
     };
+    // The gate the answer opens is this creator session's own
+    // (`accept_agent_creation`), never a wider one — and no button says so.
+    description.push('\n');
+    description.push_str(
+        "Approving opens this session's creation gate: this session can start further agents without asking again.",
+    );
     if let Some(note) = self_answer_note {
         description.push('\n');
         description.push_str(note);
