@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import type { AgentProfile } from "../../../types/ipc";
+import { isBuiltinRow } from "../AgentProfileDraft";
 import { profileMetaText, profileTileText } from "./profileText";
 
 function PencilIcon() {
@@ -111,7 +112,11 @@ export function ProfileRow({
       </div>
       {deleteArmed ? (
         <div className="device-inline-confirm">
-          <p className="device-copy">Deletes this profile.</p>
+          <p className="device-copy">
+            {isBuiltinRow(profile)
+              ? "Turns this profile off. It stays in the list and can be turned back on."
+              : "Deletes this profile."}
+          </p>
           <div className="device-actions">
             <button
               type="button"

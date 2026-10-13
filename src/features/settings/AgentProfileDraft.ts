@@ -98,6 +98,14 @@ function charCount(text: string): number {
  * Each stored name stays as its owner typed it; only the comparison is
  * normalised.
  */
+/**
+ * The built-in Design row names no provider, and no row the person saved does.
+ * It cannot be removed, so deleting it turns it off instead.
+ */
+export function isBuiltinRow(profile: { provider: string }): boolean {
+  return profile.provider === "";
+}
+
 export function normalizeName(name: string): string {
   return rustTrim(name).normalize("NFC");
 }

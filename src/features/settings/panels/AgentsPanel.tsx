@@ -18,6 +18,7 @@ import {
   type ProfileFormSeed,
   applyIdleClose,
   enabledNameClash,
+  isBuiltinRow,
   profileDraftRefusal,
   profileFeaturesFromDraft,
   rustTrim,
@@ -56,14 +57,6 @@ const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
  * fills the form instead of offering a create it knows cannot be kept.
  */
 const MAX_PROFILES = 64;
-
-/**
- * The built-in Design row names no provider, and no row the person saved does.
- * It cannot be removed, so deleting it saves it switched off instead.
- */
-function isBuiltinRow(profile: AgentProfile): boolean {
-  return profile.provider === "";
-}
 
 /** The rows the cap counts: the person's own, not the built-in. */
 function personalProfileCount(profiles: readonly AgentProfile[]): number {

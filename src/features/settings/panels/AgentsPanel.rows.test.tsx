@@ -126,6 +126,33 @@ describe("Settings agents panel — profile rows and their actions", () => {
     ]);
   });
 
+  it("says the built-in Design row is turned off, not deleted, when its delete is armed", async () => {
+    const builtin = makeProfile({
+      id: "design-builtin",
+      name: "Design",
+      provider: "",
+      model: "",
+      modeId: "",
+      enabledForAgents: true,
+      toolOverlay: ["browser_snapshot"],
+    });
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "profile-2", name: "Coder" }), builtin],
+      standingInstructions: "",
+    });
+
+    await act(async () => rowButton("Design", "Delete").click());
+    await act(async () => undefined);
+    expect(dom.container.textContent).toContain(
+      "Turns this profile off. It stays in the list and can be turned back on.",
+    );
+    expect(dom.container.textContent).not.toContain("Deletes this profile");
+
+    await act(async () => rowButton("Coder", "Delete").click());
+    await act(async () => undefined);
+    expect(dom.container.textContent).toContain("Deletes this profile");
+  });
+
   it("saves the built-in Design row switched off when it is deleted, and keeps it", async () => {
     const builtin = makeProfile({
       id: "design-builtin",
