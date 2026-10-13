@@ -370,6 +370,100 @@ fn a_codex_diff_counts_its_hunk_lines() {
 }
 
 #[test]
+fn codex_add_object_kind_reads_the_diff_as_new_file_content() {
+    let edits = codex_file_change_edits(
+        Some(&json!([
+            {"kind": {"type": "add"}, "path": "alpha.txt", "diff": "Alpha live check.\n"},
+            {"kind": {"type": "add"}, "path": "beta.txt", "diff": "Beta live check.\n"},
+            {"kind": {"type": "update"}, "path": "notes.txt",
+             "diff": "@@ -1 +1 @@\n-vecchio\n+nuovo\n"},
+        ])),
+        None,
+    )
+    .expect("changes");
+    assert_eq!(edits.len(), 3);
+    assert_eq!(edits[0].path, "alpha.txt");
+    assert_eq!(edits[0].kind, AgentEditKind::Write);
+    assert_eq!(
+        edits[0].text,
+        Some(AgentEditText::Replace {
+            old: String::new(),
+            new: "Alpha live check.\n".to_string(),
+        })
+    );
+    assert_eq!((edits[0].added, edits[0].removed), (1, 0));
+    assert_eq!(edits[1].path, "beta.txt");
+    assert_eq!(edits[1].kind, AgentEditKind::Write);
+    assert_eq!((edits[1].added, edits[1].removed), (1, 0));
+    assert_eq!(edits[2].path, "notes.txt");
+    assert_eq!(edits[2].kind, AgentEditKind::Edit);
+    assert_eq!(
+        edits[2].text,
+        Some(AgentEditText::Diff {
+            text: "@@ -1 +1 @@\n-vecchio\n+nuovo\n".to_string(),
+        })
+    );
+    assert_eq!((edits[2].added, edits[2].removed), (1, 1));
+}
+
+#[test]
+fn codex_add_content_with_literal_patch_markers_is_counted_as_content() {
+    let edits = codex_file_change_edits(
+        Some(&json!([
+            {"kind": {"type": "add"}, "path": "markers.txt",
+             "diff": "+literal plus\n-literal minus\n@@ literal header\n"},
+        ])),
+        None,
+    )
+    .expect("change");
+    assert_eq!(
+        edits[0].text,
+        Some(AgentEditText::Replace {
+            old: String::new(),
+            new: "+literal plus\n-literal minus\n@@ literal header\n".to_string(),
+        })
+    );
+    assert_eq!((edits[0].added, edits[0].removed), (3, 0));
+}
+
+#[test]
+fn codex_add_without_a_diff_keeps_its_path_and_counts_nothing() {
+    let edits = codex_file_change_edits(
+        Some(&json!([
+            {"kind": {"type": "add"}, "path": "empty.txt"},
+            {"kind": {"type": "add"}, "path": "blank.txt", "diff": ""},
+        ])),
+        None,
+    )
+    .expect("changes");
+    assert_eq!(edits.len(), 2);
+    for edit in &edits {
+        assert_eq!(edit.kind, AgentEditKind::Write);
+        assert_eq!(edit.text, None);
+        assert_eq!((edit.added, edit.removed), (0, 0));
+    }
+}
+
+#[test]
+fn codex_add_legacy_string_kind_keeps_its_unified_diff() {
+    let edits = codex_file_change_edits(
+        Some(&json!([
+            {"kind": "add", "path": "src/new.rs", "diff": "+hello\n"},
+        ])),
+        None,
+    )
+    .expect("change");
+    assert_eq!(edits[0].kind, AgentEditKind::Write);
+    assert_eq!(
+        edits[0].text,
+        Some(AgentEditText::Diff {
+            text: "+hello\n".to_string(),
+        })
+    );
+    assert_eq!((edits[0].added, edits[0].removed), (1, 0));
+}
+
+#[test]
 fn an_acp_delete_counts_the_old_lines_it_removed() {
     let edits = acp_diff_edits(
         Some(&json!([{"type": "diff", "path": "gone.txt", "oldText": "bye\n"}])),

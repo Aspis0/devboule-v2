@@ -1,8 +1,15 @@
 //! The per-workspace fold: one row per path, the sums of what each call
 //! recorded, and the newest edit's agent.
 
+use devboule_protocol::{AgentEditText, SessionKind, WorkspaceIsolation};
+use serde_json::json;
+
 use super::{fold, MAX_CALLS_PER_FILE, MAX_FILES, MAX_REPLY_BYTES};
 use crate::agent_edit_records::AgentEditRecord;
+use crate::journal::{
+    acp_envelope_record, new_session_record, now_ms, tmp_journal, Journal, ProjectRecord,
+    WorkspaceRecord,
+};
 
 fn record(
     path: &str,
@@ -112,4 +119,124 @@ fn the_reply_stops_adding_rows_past_its_byte_budget() {
     assert!(files.len() < MAX_FILES);
     let encoded = serde_json::to_vec(&files).expect("encode");
     assert!(encoded.len() <= MAX_REPLY_BYTES);
+}
+
+/// A Codex session of a workspace rooted at the fixture root.
+fn codex_session(journal: &Journal, session_id: &str, workspace_id: &str) {
+    journal
+        .project_add(ProjectRecord {
+            id: "p.1".to_string(),
+            name: "Project".to_string(),
+            path: crate::test_support::FIXTURE_ROOT.to_string(),
+            git_state: "not_repository".to_string(),
+            created_at_ms: now_ms(),
+            updated_at_ms: now_ms(),
+        })
+        .expect("project row");
+    journal
+        .workspace_create(WorkspaceRecord {
+            id: workspace_id.to_string(),
+            project_id: "p.1".to_string(),
+            title: "Workspace".to_string(),
+            isolation: WorkspaceIsolation::Local,
+            path: crate::test_support::FIXTURE_ROOT.to_string(),
+            branch: None,
+            created_at_ms: now_ms(),
+            updated_at_ms: now_ms(),
+        })
+        .expect("workspace row");
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            Some(workspace_id.to_string()),
+            SessionKind::Codex,
+            "Codex",
+        ))
+        .expect("session row");
+}
+
+/// One `fileChange` frame journaled for replay through the Codex reader.
+fn codex_file_change_frame(
+    journal: &Journal,
+    session_id: &str,
+    seq: u64,
+    method: &str,
+    status: &str,
+    changes: &serde_json::Value,
+) {
+    let envelope = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": {
+            "threadId": "th",
+            "turnId": "tu",
+            "item": {
+                "type": "fileChange",
+                "id": "fc.1",
+                "status": status,
+                "changes": changes,
+            },
+        },
+    });
+    journal
+        .append_blocking(
+            acp_envelope_record(session_id.to_string(), 1, seq, &envelope).expect("row"),
+        )
+        .expect("append");
+}
+
+#[test]
+fn codex_add_changes_fold_from_the_journalled_replay() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    codex_session(&journal, "s.codex.1", "ws.1");
+    let changes = json!([
+        {"kind": {"type": "add"}, "path": "alpha.txt", "diff": "Alpha live check.\n"},
+        {"kind": {"type": "add"}, "path": "beta.txt", "diff": "Beta live check.\n"},
+        {"kind": {"type": "update"}, "path": "notes.txt",
+         "diff": "@@ -1 +1 @@\n-vecchio\n+nuovo\n"},
+    ]);
+    codex_file_change_frame(
+        &journal,
+        "s.codex.1",
+        1,
+        "item/started",
+        "inProgress",
+        &changes,
+    );
+    codex_file_change_frame(
+        &journal,
+        "s.codex.1",
+        2,
+        "item/completed",
+        "completed",
+        &changes,
+    );
+
+    let found = crate::agent_edit_records::read(&journal, "ws.1", now_ms());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(found.error.is_none());
+    let (files, totals, capped) = fold(&found.records);
+    assert!(!capped);
+    let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["alpha.txt", "beta.txt", "notes.txt"]);
+    assert_eq!((files[0].additions, files[0].deletions), (1, 0));
+    assert_eq!((files[1].additions, files[1].deletions), (1, 0));
+    assert_eq!((files[2].additions, files[2].deletions), (1, 1));
+    assert_eq!((totals.additions, totals.deletions), (3, 1));
+    let alpha = found
+        .records
+        .iter()
+        .find(|record| record.path == "alpha.txt")
+        .expect("alpha is replayed");
+    assert_eq!(
+        alpha.text,
+        Some(AgentEditText::Replace {
+            old: String::new(),
+            new: "Alpha live check.\n".to_string(),
+        })
+    );
 }
