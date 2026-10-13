@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore, type DesignSessionState } from "../../store/appStore";
@@ -20,6 +20,7 @@ import {
   ARTIFACT_RENDER_CRITIC_SOURCE,
 } from "./artifactRenderCritic";
 import { DesignPreviewPanel } from "./DesignPreviewPanel";
+import { ImageLightbox } from "../workspace/transcript/ImageLightbox";
 
 const EMPTY_CANVAS_MESSAGE =
   "Nothing on the canvas yet. A Design agent's result appears here when it finishes.";
@@ -35,6 +36,21 @@ const HOST: DesignHost = {
     throw new Error("not used in this test");
   },
 };
+
+/** The transcript's own viewer, so a test can open one over the enlarged preview. */
+function TransientImageLightbox() {
+  const [open, setOpen] = useState(true);
+  return open ? (
+    <ImageLightbox
+      images={[{ url: "blob:shot", alt: "Attached image 1 of 1" }]}
+      index={0}
+      openedIndex={0}
+      openedUrl="blob:shot"
+      onIndexChange={() => undefined}
+      onClose={() => setOpen(false)}
+    />
+  ) : null;
+}
 
 // The preview's stylesheet, read as text. happy-dom does not lay out, so the half of the
 // geometry that lives in CSS — which property the page box reads its height from, and
@@ -140,6 +156,32 @@ function session(overrides: Partial<DesignSessionState> = {}): {
       ...overrides,
     },
   };
+}
+
+/** What the render critic posts back from its off-screen measurement frame. */
+function criticResult(contentHeight: number): Record<string, unknown> {
+  return {
+    kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
+    source: ARTIFACT_RENDER_CRITIC_SOURCE,
+    version: 1,
+    findings: [],
+    structure: [],
+    contentHeight,
+  };
+}
+
+function shiftWheel(deltaY: number): WheelEvent {
+  const wheel = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+  Object.defineProperties(wheel, {
+    deltaY: { value: deltaY },
+    deltaMode: { value: 0 },
+    shiftKey: { value: true },
+  });
+  return wheel;
+}
+
+function press(key: string) {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 }
 
 describe("DesignPreviewPanel", () => {
@@ -882,27 +924,6 @@ describe("preview shared viewport", () => {
     expect(frame.style.transform).toBe(`translateY(${-max}px)`);
   });
 
-  function criticResult(contentHeight: number): Record<string, unknown> {
-    return {
-      kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
-      source: ARTIFACT_RENDER_CRITIC_SOURCE,
-      version: 1,
-      findings: [],
-      structure: [],
-      contentHeight,
-    };
-  }
-
-  function shiftWheel(deltaY: number): WheelEvent {
-    const wheel = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
-    Object.defineProperties(wheel, {
-      deltaY: { value: deltaY },
-      deltaMode: { value: 0 },
-      shiftKey: { value: true },
-    });
-    return wheel;
-  }
-
   it("measures a cold-cache page so its tail is reachable without opening Design", async () => {
     // Normal delegated flow: the child finished in Workspace, the canvas never
     // mounted, so no store height and nothing in the critic cache.
@@ -1021,5 +1042,363 @@ describe("preview shared viewport", () => {
     expect(block).toContain("left: -100000px");
     expect(block).toContain("visibility: hidden");
     expect(DESIGN_CSS).not.toContain(".design-artifact-measurement-frame");
+  });
+});
+
+// The Live preview opened out to the window: the same page the column shows,
+// in the transcript's own lightbox frame, fitted to the box the window leaves.
+describe("preview enlarged viewer", () => {
+  /** A stage box chosen so each fit lands on an exact number. */
+  const STAGE = { width: 1200, height: 700 };
+  const CANVAS_HEIGHT = 1000;
+
+  let restoreResizeObserver: () => void = () => undefined;
+  let container: HTMLDivElement;
+  let root: Root;
+  let overlayRoot: Root | null = null;
+  let overlayHost: HTMLDivElement | null = null;
+
+  beforeEach(() => {
+    restoreResizeObserver = installResizeObserverStub();
+    clearCachedArtifactSections();
+    useAppStore.setState({ activeSurface: "workspace" });
+    useAppStore.setState(session());
+  });
+
+  afterEach(async () => {
+    restoreResizeObserver();
+    clearCachedArtifactSections();
+    await act(async () => overlayRoot?.unmount());
+    overlayHost?.remove();
+    overlayRoot = null;
+    overlayHost = null;
+    await act(async () => root.unmount());
+    container?.remove();
+    document.body.style.overflow = "";
+    useAppStore.setState(session());
+  });
+
+  async function renderPanel(html = ARTIFACT_MARKUP, canvasHeight: number | null = CANVAS_HEIGHT) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    useAppStore.setState(session({ latestArtifact: { html } }));
+    if (canvasHeight !== null) {
+      useAppStore.getState().setCanvasPageHeight(HOST, canvasHeight);
+    }
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<DesignPreviewPanel />);
+    });
+  }
+
+  /**
+   * Presses the opener while the stage has a box: the viewer fits its own box in
+   * a callback ref, so the box has to exist when it mounts.
+   */
+  async function openViewer(html = ARTIFACT_MARKUP, canvasHeight: number | null = CANVAS_HEIGHT) {
+    await renderPanel(html, canvasHeight);
+    const opener = container.querySelector<HTMLButtonElement>(".design-artifact-preview-opener");
+    if (opener === null) throw new Error("preview opener missing");
+    const restoreBox = stubBoxMetrics(STAGE.width, STAGE.height);
+    try {
+      await act(async () => {
+        opener.click();
+      });
+    } finally {
+      restoreBox();
+    }
+    const stage = container.querySelector<HTMLElement>(".design-artifact-viewer-page");
+    if (stage === null) throw new Error("viewer stage missing");
+    return { opener, stage };
+  }
+
+  function dialog(): HTMLElement {
+    const found = container.querySelector<HTMLElement>('[role="dialog"]');
+    if (found === null) throw new Error("viewer dialog missing");
+    return found;
+  }
+
+  it("opens an enlarged dialog from the preview's own button", async () => {
+    await renderPanel(ARTIFACT_MARKUP);
+
+    const opener = container.querySelector<HTMLButtonElement>(".design-artifact-preview-opener");
+    if (opener === null) throw new Error("preview opener missing");
+    // A real button is what makes Enter and Space open it; the name is what tells
+    // a screen reader what pressing it does.
+    expect(opener.tagName).toBe("BUTTON");
+    expect(opener.getAttribute("type")).toBe("button");
+    expect(opener.getAttribute("aria-label")).toBe("Enlarge Design preview");
+    // The opener is the only target the change adds: Open Design is still there,
+    // nothing nests a button inside one, and the artifact itself is not focusable.
+    expect(container.querySelectorAll("button")).toHaveLength(2);
+    expect(container.querySelectorAll("button button")).toHaveLength(0);
+
+    const restoreBox = stubBoxMetrics(STAGE.width, STAGE.height);
+    try {
+      await act(async () => {
+        opener.click();
+      });
+    } finally {
+      restoreBox();
+    }
+
+    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(
+      "Design preview",
+    );
+  });
+
+  it("shows the same page, fitted to the window, under the artifact policy", async () => {
+    const { stage } = await openViewer();
+
+    // 700/1000 binds before 1200/1280, so the page is reduced to the height it
+    // has to fit and the width it had is left over as dark margin.
+    expect(stage.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.7");
+    // The canvas page height, the very one the column paints: same page, bigger box.
+    expect(stage.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("1000px");
+    const column = container.querySelector<HTMLElement>(".design-artifact-preview");
+    expect(column?.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("1000px");
+
+    const frame = dialog().querySelector<HTMLIFrameElement>("iframe");
+    expect(frame?.getAttribute("sandbox")).toBe("");
+    expect(frame?.getAttribute("scrolling")).toBe("no");
+    expect(frame?.style.pointerEvents).toBe("none");
+    const srcDoc = frame?.getAttribute("srcdoc") ?? "";
+    expect(srcDoc.startsWith(`${ARTIFACT_CSP_META}\n`)).toBe(true);
+    expect(srcDoc).toContain(ARTIFACT_MARKUP);
+    // `inert` sits on the page box, not the stage: the generated page is out of
+    // the focus order, and the stage keeps taking the wheel the window is on.
+    expect(frame?.closest(".design-artifact-preview-page")?.hasAttribute("inert")).toBe(true);
+    expect(stage.hasAttribute("inert")).toBe(false);
+  });
+
+  it("lets the width bind instead, when the window is tall enough", async () => {
+    await renderPanel();
+    const opener = container.querySelector<HTMLButtonElement>(".design-artifact-preview-opener");
+    if (opener === null) throw new Error("preview opener missing");
+    const restoreBox = stubBoxMetrics(900, 1000);
+    try {
+      await act(async () => {
+        opener.click();
+      });
+    } finally {
+      restoreBox();
+    }
+
+    const stage = container.querySelector<HTMLElement>(".design-artifact-viewer-page");
+    expect(stage?.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.703125");
+  });
+
+  it("refits when the window is reshaped", async () => {
+    const { stage } = await openViewer();
+    const observer = ResizeObserverStub.instances.at(-1);
+    if (observer === undefined) throw new Error("viewer observer missing");
+    expect(observer.observed).toEqual([stage]);
+
+    Object.defineProperty(stage, "clientWidth", { value: 800, configurable: true });
+    Object.defineProperty(stage, "clientHeight", { value: 1000, configurable: true });
+    await act(async () => {
+      observer.fire();
+    });
+
+    expect(stage.style.getPropertyValue("--design-artifact-preview-scale")).toBe("0.625");
+  });
+
+  it("leaves the stage's values in place while the dialog has no box", async () => {
+    await renderPanel();
+    const opener = container.querySelector<HTMLButtonElement>(".design-artifact-preview-opener");
+    if (opener === null) throw new Error("preview opener missing");
+    // No box metrics at all: the same 0x0 box a collapsed sidebar hands over.
+    await act(async () => {
+      opener.click();
+    });
+
+    const stage = container.querySelector<HTMLElement>(".design-artifact-viewer-page");
+    if (stage === null) throw new Error("viewer stage missing");
+    expect(stage.style.getPropertyValue("--design-artifact-preview-scale")).toBe("");
+    // The page height needs no box, so it lands even here.
+    expect(stage.style.getPropertyValue("--design-artifact-preview-page-height")).toBe("1000px");
+  });
+
+  it("returns focus to the opener when Escape closes it", async () => {
+    const { opener } = await openViewer();
+
+    expect(dialog().contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      press("Escape");
+    });
+
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("closes from its own close control and from the scrim", async () => {
+    const { opener } = await openViewer();
+
+    const close = container.querySelector<HTMLButtonElement>(".chat-image-lightbox-close");
+    if (close === null) throw new Error("close control missing");
+    expect(close.getAttribute("aria-label")).toBe("Close Design preview");
+    await act(async () => {
+      close.click();
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+
+    await act(async () => {
+      opener.click();
+    });
+    const scrim = container.querySelector<HTMLElement>(".chat-image-lightbox-scrim");
+    if (scrim === null) throw new Error("scrim missing");
+    await act(async () => {
+      scrim.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }),
+      );
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  // The frame the transcript's viewer is built on is shared, so the two are one
+  // stack: the image viewer opened over this one is the one Escape reaches, and
+  // neither takes the other's Tab trap or scroll lock with it when it closes.
+  it("keeps Tab inside and closes only the topmost of two viewers", async () => {
+    const { opener } = await openViewer();
+
+    const design = dialog();
+    const closeControl = design.querySelector<HTMLElement>(".chat-image-lightbox-close");
+    if (closeControl === null) throw new Error("close control missing");
+    closeControl.focus();
+    await act(async () => {
+      press("Tab");
+    });
+    expect(design.contains(document.activeElement)).toBe(true);
+
+    overlayHost = document.createElement("div");
+    document.body.appendChild(overlayHost);
+    const overlay = createRoot(overlayHost);
+    overlayRoot = overlay;
+    await act(async () => {
+      overlay.render(<TransientImageLightbox />);
+    });
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      press("Escape");
+    });
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await act(async () => {
+      press("Escape");
+    });
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("scrolls a cold-cache page to its tail once the critic has measured it", async () => {
+    // Nothing in the cache and no canvas height shared: the delegated cold start,
+    // with the enlarged window already open over the column.
+    const html = `<main>${"cold ".repeat(200)}</main>`;
+    const { stage } = await openViewer(html, null);
+    expect(dialog().querySelector<HTMLIFrameElement>("iframe")?.style.height).toBe("");
+
+    const measure = document.querySelector<HTMLIFrameElement>(".design-artifact-measurement-frame");
+    if (measure === null || measure.contentWindow === null) {
+      throw new Error("measurement frame did not mount on a cache miss");
+    }
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: criticResult(2641),
+          source: measure.contentWindow,
+        }),
+      );
+    });
+
+    const column = container.querySelector<HTMLIFrameElement>(".design-artifact-preview iframe");
+    const enlarged = dialog().querySelector<HTMLIFrameElement>("iframe");
+    expect(column?.style.height).toBe("2641px");
+    expect(enlarged?.style.height).toBe("2641px");
+    expect(enlarged?.style.transform).toBe("translateY(0px)");
+
+    // The same Shift+wheel window the column has, clamped the same way.
+    const max = maxArtifactScroll(2641, ARTIFACT_PAGE_HEIGHT);
+    await act(async () => {
+      stage.dispatchEvent(shiftWheel(100000));
+    });
+    expect(enlarged?.style.transform).toBe(`translateY(${-max}px)`);
+  });
+
+  it("closes on a replaced artifact, letting the observer go with it", async () => {
+    const html = `<main>${"long ".repeat(500)}</main>`;
+    setCachedArtifactStructure(html, { sections: [], contentHeight: 2641 });
+    const { stage } = await openViewer(html);
+    const observer = ResizeObserverStub.instances.at(-1);
+    if (observer === undefined) throw new Error("viewer observer missing");
+
+    await act(async () => {
+      useAppStore.setState(session({ latestArtifact: { html: "<main>second page</main>" } }));
+    });
+
+    // A window over an artifact the canvas no longer holds would be showing
+    // something that is gone.
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(observer.disconnects).toBe(1);
+    expect(stage.isConnected).toBe(false);
+  });
+
+  it("closes when the host is dropped", async () => {
+    await openViewer();
+
+    await act(async () => {
+      useAppStore.setState(session({ host: null }));
+    });
+
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain(EMPTY_CANVAS_MESSAGE);
+  });
+
+  it("leaves the dark remainder around the fitted page", () => {
+    // happy-dom does not lay out, so the stage's ground and the centring of the
+    // page inside it are only checkable by reading the sheet.
+    expect(cssBlockFor(".design-artifact-viewer-page {")).toContain(
+      "background: var(--design-canvas)",
+    );
+    const centred = cssBlockFor(".design-artifact-viewer-page .design-artifact-preview-page {");
+    expect(centred).toContain("left: 50%");
+    expect(centred).toContain("top: 50%");
+    // The scale hangs the page from the layout box's own top-left corner, so
+    // centring it means taking half the rendered size off in both axes. A
+    // positive half would drop the page a whole height below the stage.
+    expect(centred).toMatch(/margin-left: calc\([^;]*-\s*640px/);
+    expect(centred).toMatch(/margin-top: calc\([^;]*(\/ -2|\* -1 \/ 2)/);
+    // The stage is what fills the card, so the card's own scroll never runs. The
+    // rule is paired with the lightbox card's own class: alone it would be the
+    // same weight as that rule and lose on whichever sheet the build emits last.
+    expect(cssBlockFor(".chat-image-lightbox.design-artifact-viewer {")).toContain(
+      "align-items: stretch",
+    );
+  });
+
+  it("gives the enlarged card a size, so the stage has a box to fit into", () => {
+    // The shell caps the card with `max-*` and centres it as a grid item, which
+    // leaves an auto-sized card wrapping whatever is inside it: the bar. The
+    // page box is absolute and can never give that card a height, so the size
+    // has to be stated here, at the shell's own bounds.
+    const card = cssBlockFor(".chat-image-lightbox.design-artifact-viewer {");
+    expect(card).toContain("width: calc(100vw - 48px)");
+    expect(card).toContain("height: calc(100vh - 48px)");
+  });
+
+  it("keeps the preview's column intact under the opener", () => {
+    // The opener stands where the preview box used to stand in the card, so it
+    // has to hand that flex item on rather than becoming a block the page's own
+    // height sizes.
+    const opener = cssBlockFor(".design-artifact-preview-opener {");
+    expect(opener).toContain("display: flex");
+    expect(opener).toContain("flex-direction: column");
+    expect(opener).toMatch(/flex:\s*1/);
+    expect(opener).toContain("min-height: 0");
+    expect(opener).toContain("align-items: stretch");
   });
 });

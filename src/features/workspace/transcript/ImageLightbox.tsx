@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { getFocusableElements } from "../../../lib/focusableElements";
-import { isImeComposition } from "../../../lib/imeComposition";
-import { useModalOpen } from "../../../lib/modalOpen";
+import { useState } from "react";
+import { LightboxDialog } from "../../../components/LightboxDialog";
 import type { AttachmentReference } from "../../../lib/tauri";
 import { useChatImageUrl } from "./useChatImageUrl";
 
@@ -19,25 +17,6 @@ interface ChatLightboxUrl {
 
 /** One viewer page: a stored reference to read, or a URL already in hand. */
 type ChatLightboxSource = ChatLightboxStored | ChatLightboxUrl;
-
-/** Open viewers, oldest first. Only the top entry answers keys. */
-const viewerStack: number[] = [];
-let nextViewerId = 1;
-
-/** Shared scroll lock: hidden on the first open, restored on the last close. */
-let scrollLocks = 0;
-let savedBodyOverflow = "";
-
-function lockBodyScroll(): void {
-  if (scrollLocks === 0) savedBodyOverflow = document.body.style.overflow;
-  scrollLocks += 1;
-  document.body.style.overflow = "hidden";
-}
-
-function unlockBodyScroll(): void {
-  scrollLocks = Math.max(0, scrollLocks - 1);
-  if (scrollLocks === 0) document.body.style.overflow = savedBodyOverflow;
-}
 
 function LightboxPage({
   source,
@@ -90,10 +69,8 @@ function LoadingLightboxPage({ source }: { source: ChatLightboxStored }) {
 }
 
 /**
- * The fullscreen viewer over the transcript's thumbnails. Escape and the
- * scrim close the topmost viewer, arrows move through several images, Tab
- * stays inside, background scroll locks while any viewer is open, and
- * unmount hands focus back to the thumbnail that opened it.
+ * The fullscreen viewer over the transcript's thumbnails: the shared lightbox
+ * frame with arrows moving through several images and a count in its bar.
  */
 export function ImageLightbox({
   images,
@@ -115,133 +92,37 @@ export function ImageLightbox({
   onIndexChange: (index: number) => void;
   onClose: () => void;
 }) {
-  useModalOpen(true);
-  const [viewerId] = useState(() => nextViewerId++);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const stateRef = useRef({ onClose, onIndexChange, index, count: images.length });
-  useEffect(() => {
-    stateRef.current = { onClose, onIndexChange, index, count: images.length };
-  });
-
-  // Register this viewer on the shared stack; only the top entry answers
-  // keys, and the scroll lock counts opens rather than instances, so two
-  // viewers never unlock under each other or close together.
-  useEffect(() => {
-    const id = viewerId;
-    viewerStack.push(id);
-    lockBodyScroll();
-    return () => {
-      const at = viewerStack.lastIndexOf(id);
-      if (at !== -1) viewerStack.splice(at, 1);
-      unlockBodyScroll();
-    };
-  }, [viewerId]);
-
-  // Capture the opener (or whoever holds focus), land focus on the close
-  // control, and hand focus back on unmount.
-  useEffect(() => {
-    const origin = opener ?? (document.activeElement as HTMLElement | null);
-    closeRef.current?.focus();
-    return () => {
-      origin?.focus?.();
-    };
-  }, [opener]);
-
-  useEffect(() => {
-    function handleKeyDown(event: globalThis.KeyboardEvent) {
-      if (viewerStack[viewerStack.length - 1] !== viewerId) return;
-      if (isImeComposition(event)) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        stateRef.current.onClose();
-        return;
-      }
-      if (event.key === "Tab") {
-        const dialog = dialogRef.current;
-        if (dialog === null) return;
-        const focusable = getFocusableElements(dialog);
-        if (focusable.length === 0) {
-          event.preventDefault();
-          dialog.focus();
-          return;
-        }
-        const first = focusable[0]!;
-        const last = focusable[focusable.length - 1]!;
-        if (!dialog.contains(document.activeElement)) {
-          event.preventDefault();
-          first.focus();
-        } else if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-        return;
-      }
-      if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
-        const state = stateRef.current;
-        // One image has nowhere to move: leave the keys to the browser.
-        if (state.count < 2) return;
-        event.preventDefault();
-        const delta = event.key === "ArrowRight" ? 1 : -1;
-        state.onIndexChange((state.index + delta + state.count) % state.count);
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [viewerId]);
-
   const count = images.length;
   const current = images[index] ?? null;
 
   return (
-    <div
-      className="chat-image-lightbox-scrim"
-      onMouseDown={(event) => {
-        if (event.button !== 0 || event.target !== event.currentTarget) return;
-        stateRef.current.onClose();
-      }}
-    >
-      <div
-        ref={dialogRef}
-        className="chat-image-lightbox"
-        role="dialog"
-        aria-modal="true"
-        aria-label={current?.alt ?? "Image viewer"}
-        tabIndex={-1}
-      >
-        <div className="chat-image-lightbox-bar">
-          {count > 1 ? (
-            <span className="chat-image-lightbox-count">
-              {index + 1} of {count}
-            </span>
-          ) : null}
-          <button
-            ref={closeRef}
-            type="button"
-            className="chat-image-lightbox-close"
-            aria-label="Close image viewer"
-            onClick={() => stateRef.current.onClose()}
-          >
-            ×
-          </button>
-        </div>
-        {current === null ? null : (
-          <div key={index} className="chat-image-lightbox-page">
-            <LightboxPage source={current} presetUrl={index === openedIndex ? openedUrl : null} />
-          </div>
-        )}
-        {count > 1 ? (
+    <LightboxDialog
+      label={current?.alt ?? "Image viewer"}
+      closeLabel="Close image viewer"
+      opener={opener}
+      onClose={onClose}
+      // One image has nowhere to move: with no handler the arrows stay the
+      // browser's, rather than being swallowed by a dialog that cannot use them.
+      onArrowKey={
+        count < 2
+          ? null
+          : (key) => onIndexChange((index + (key === "ArrowRight" ? 1 : -1) + count) % count)
+      }
+      header={
+        count > 1 ? (
+          <span className="chat-image-lightbox-count">
+            {index + 1} of {count}
+          </span>
+        ) : null
+      }
+      footer={
+        count > 1 ? (
           <div className="chat-image-lightbox-nav">
             <button
               type="button"
               className="chat-image-lightbox-prev"
               aria-label="Previous image"
-              onClick={() =>
-                stateRef.current.onIndexChange((stateRef.current.index - 1 + count) % count)
-              }
+              onClick={() => onIndexChange((index - 1 + count) % count)}
             >
               ‹
             </button>
@@ -249,13 +130,19 @@ export function ImageLightbox({
               type="button"
               className="chat-image-lightbox-next"
               aria-label="Next image"
-              onClick={() => stateRef.current.onIndexChange((stateRef.current.index + 1) % count)}
+              onClick={() => onIndexChange((index + 1) % count)}
             >
               ›
             </button>
           </div>
-        ) : null}
-      </div>
-    </div>
+        ) : null
+      }
+    >
+      {current === null ? null : (
+        <div key={index} className="chat-image-lightbox-page">
+          <LightboxPage source={current} presetUrl={index === openedIndex ? openedUrl : null} />
+        </div>
+      )}
+    </LightboxDialog>
   );
 }
