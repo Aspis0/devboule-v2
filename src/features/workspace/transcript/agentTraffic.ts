@@ -11,6 +11,10 @@ import { isFailedToolCall } from "./toolFailure";
 // Calls the orchestrator makes to answer or poll for its children's cards.
 const PLUMBING_TOOLS = new Set(["answer_permission", "list_pending_permissions"]);
 
+// A child's own status notice. Its needs-you state stays on the child's rail
+// and tab, so the chat does not repeat it.
+const CHILD_STATUS_NOTICES = new Set(["agent_input_required", "agent_quiet", "agent_idle_closed"]);
+
 export function isAgentTraffic(item: AgentChatItem): boolean {
   switch (item.role) {
     case "system":
@@ -32,7 +36,7 @@ export function isAgentTraffic(item: AgentChatItem): boolean {
     case "permission_request":
       return true;
     case "daemon_notice":
-      return item.notice.recognized && item.notice.kind === "agent_idle_closed";
+      return item.notice.recognized && CHILD_STATUS_NOTICES.has(item.notice.kind);
     default:
       return false;
   }

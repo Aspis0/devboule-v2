@@ -122,6 +122,17 @@ describe("isAgentTraffic", () => {
     ).toBe(true);
   });
 
+  it("hides a child's needs-answer and quiet notices: the rail and the child's tab keep that state", () => {
+    const childNotice = (kind: string) =>
+      ({
+        id: `n-${kind}`,
+        role: "daemon_notice",
+        notice: { recognized: true, kind, childSessionId: "s.child.1", childName: "worker" },
+      }) as unknown as AgentChatItem;
+    expect(isAgentTraffic(childNotice("agent_input_required"))).toBe(true);
+    expect(isAgentTraffic(childNotice("agent_quiet"))).toBe(true);
+  });
+
   it("hides an idle-close notice and keeps other notices", () => {
     const idleClosed = {
       id: "i",

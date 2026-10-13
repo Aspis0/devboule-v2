@@ -4529,7 +4529,7 @@ describe("creator daemon notice cards", () => {
     expect(note?.textContent).toContain("cut off");
   });
 
-  it("renders the quiet notice from the frame's own idle time, and nothing quoted", async () => {
+  it("draws no row for the quiet notice: the child's tab and rail carry that it is quiet", async () => {
     await renderEnvelope(
       [
         "<devboule-system>",
@@ -4546,15 +4546,9 @@ describe("creator daemon notice cards", () => {
         "</devboule-system>",
       ].join("\n"),
     );
-    const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
-      "worker one",
-    );
-    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
-      "20 minutes",
-    );
-    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
-    expect(item?.textContent).not.toContain("<devboule-system>");
+    expect(container.querySelector("[data-testid='agent-daemon-notice']")).toBeNull();
+    expect(container.textContent).not.toContain("worker one");
+    expect(container.textContent).not.toContain("<devboule-system>");
   });
 
   it("draws no row for an idle-close notice: the child's close is not news to the person", async () => {
@@ -4579,7 +4573,7 @@ describe("creator daemon notice cards", () => {
     expect(container.textContent).not.toContain("<devboule-system>");
   });
 
-  it("renders the input-required notice as the daemon's fact, without a quoted block", async () => {
+  it("draws no row for the input-required notice: the child's tab and rail carry the needs-you state", async () => {
     await renderEnvelope(
       [
         "<devboule-system>",
@@ -4595,14 +4589,8 @@ describe("creator daemon notice cards", () => {
         "</devboule-system>",
       ].join("\n"),
     );
-    const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "worker one needs an answer",
-    );
-    expect(item?.querySelector(".workspace-chat-activity-body")?.textContent).toContain(
-      "waiting for a person to answer a permission card",
-    );
-    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
+    expect(container.querySelector("[data-testid='agent-daemon-notice']")).toBeNull();
+    expect(container.textContent).not.toContain("needs an answer");
   });
 
   it("keeps an unknown-kind frame visible and unformatted, never raw, never hidden", async () => {
