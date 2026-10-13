@@ -321,8 +321,6 @@ describe("walking every menu the source finds — the band's open is the outside
           providerMenu={null}
           peerNames={new Map<string, string>()}
           resolveCreator={() => null}
-          takeBackAvailable={false}
-          onTakeBack={() => undefined}
           overviewSessions={[]}
           workspaceName={null}
           onOpenSession={() => undefined}

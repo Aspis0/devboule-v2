@@ -210,8 +210,6 @@ function renderStrip(
           providerMenu={null}
           peerNames={new Map<string, string>()}
           resolveCreator={() => null as string | null}
-          takeBackAvailable={false}
-          onTakeBack={vi.fn()}
           overviewSessions={sessions}
           workspaceName="atelier"
           onOpenSession={onOpenSession}

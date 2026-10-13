@@ -14,7 +14,7 @@ import {
 } from "react";
 import type { Session } from "../../../types/ipc";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { sessionDelegationTakeBack, sessionOriginBadge } from "../workspaceSessions";
+import { sessionOriginBadge } from "../workspaceSessions";
 import type { useTabCloseFlow } from "./useTabCloseFlow";
 import type { useTabSelection } from "./useTabSelection";
 import { useSelectedTabVisible } from "./stripScroll";
@@ -68,8 +68,6 @@ export interface SessionStripProps {
   peerNames: ReadonlyMap<string, string>;
   /** The tooltip's creator line for one session; Workspace binds the roster. */
   resolveCreator: (session: Session) => string | null;
-  takeBackAvailable: boolean;
-  onTakeBack: () => void;
   /** Every roster session of the selected workspace: the strip shows a
    * subset, the end-of-strip overview lists all of it. */
   overviewSessions: readonly Session[];
@@ -105,8 +103,6 @@ export function SessionStrip({
   providerMenu,
   peerNames,
   resolveCreator,
-  takeBackAvailable,
-  onTakeBack,
   overviewSessions,
   workspaceName,
   onOpenSession,
@@ -285,9 +281,9 @@ export function SessionStrip({
     [openMenu, keyboardChipKeyDown, onMoveTab],
   );
 
-  // One derivation per row, recomputed only when the roster, the names, or
-  // the take-back switch change — a keystroke or daemon tick that leaves
-  // them alone reuses the same dot, words and tooltip objects.
+  // One derivation per row, recomputed only when the roster or the names
+  // change — a keystroke or daemon tick that leaves them alone reuses the
+  // same dot, words and tooltip objects.
   const chips = useMemo(
     () =>
       sessions.map((session) => {
@@ -304,10 +300,9 @@ export function SessionStrip({
           provenanceLines: [...display.detailLines, origin, creator].filter(
             (line) => line !== undefined,
           ),
-          takeBack: takeBackAvailable && sessionDelegationTakeBack(session),
         };
       }),
-    [sessions, peerNames, resolveCreator, takeBackAvailable],
+    [sessions, peerNames, resolveCreator],
   );
 
   // The rows themselves, memoised on the same stable inputs: an
@@ -352,7 +347,7 @@ export function SessionStrip({
       }
       const chip = chipById.get(tab.id);
       if (chip === undefined) return [];
-      const { session, display, tooltip, provenanceLines, takeBack } = chip;
+      const { session, display, tooltip, provenanceLines } = chip;
       return [
         <MemoStripChip
           key={session.id}
@@ -364,8 +359,6 @@ export function SessionStrip({
           tooltip={tooltip}
           provenanceLines={provenanceLines}
           menuOpen={menuAnchorId === session.id}
-          takeBack={takeBack}
-          onTakeBack={onTakeBack}
           onTabClick={(event) => handleTabClick(session, event)}
           onTabAuxClick={(event) => {
             if (event.button === 1) {
@@ -390,7 +383,6 @@ export function SessionStrip({
     selection,
     tabIndexFor,
     menuAnchorId,
-    onTakeBack,
     handleTabClick,
     closeTab,
     openMenu,

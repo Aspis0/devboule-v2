@@ -139,7 +139,8 @@ function delegationSourceSentence(source: string, enabled: boolean): string {
 /**
  * Settings → Agents, beside the profiles: the one consent surface for
  * delegated answering. One toggle row — the label, the switch on the right,
- * the stored answer's one-line status under it.
+ * the stored answer's one-line status under it — plus the action that stays
+ * reachable while that status says the answer is unreadable.
  */
 export function DelegationSetting({
   controller = delegationController,
@@ -211,6 +212,19 @@ export function DelegationSetting({
       {loadFailed ? (
         <button type="button" className="settings-device-action" onClick={retryLoad}>
           Retry
+        </button>
+      ) : null}
+      {enabled === null ? (
+        // A click on the unknown switch would mean guessing. Turning delegation
+        // off needs no stored answer (see `setEnabled`), so unknown must not
+        // withdraw the one control that can still act.
+        <button
+          type="button"
+          className="settings-device-action"
+          aria-label="Turn off agents answering their children's cards"
+          onClick={() => void controller.setEnabled(false)}
+        >
+          Turn off
         </button>
       ) : null}
     </section>

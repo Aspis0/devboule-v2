@@ -50,8 +50,6 @@ export interface StripChipProps {
    * through aria-describedby, never painted; empty means undescribed. */
   provenanceLines: string[];
   menuOpen: boolean;
-  takeBack: boolean;
-  onTakeBack: () => void;
   onTabClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onTabAuxClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onRowContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
@@ -60,7 +58,7 @@ export interface StripChipProps {
 }
 
 /** One session's row in the strip: the tab button (dot, kind mark, clipped
- * label), the trailing close overlay, and the take-back where it can act. */
+ * label) and the trailing close overlay. */
 export function StripChip({
   session,
   selected,
@@ -70,8 +68,6 @@ export function StripChip({
   tooltip,
   provenanceLines,
   menuOpen,
-  takeBack,
-  onTakeBack,
   onTabClick,
   onTabAuxClick,
   onRowContextMenu,
@@ -148,17 +144,6 @@ export function StripChip({
           </svg>
         </button>
       </span>
-      {takeBack ? (
-        <button
-          type="button"
-          className="workspace-tab-takeback"
-          aria-label="Take back — stops every agent from answering for its children"
-          title="Take back — stops every agent from answering for its children"
-          onClick={onTakeBack}
-        >
-          Take back
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -202,7 +187,7 @@ function BrowserLoading() {
   );
 }
 
-/** No take-back, no rename — a tool tab has no session behind it to act on. */
+/** No rename — a tool tab has no session behind it to act on. */
 export function ToolStripChip({
   tool,
   selected,

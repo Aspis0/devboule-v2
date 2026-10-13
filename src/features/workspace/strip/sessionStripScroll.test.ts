@@ -74,12 +74,6 @@ describe("the session strip", () => {
     const row = ruleBody(".workspace-session-row");
     expect(row).not.toContain("flex: none;");
     expect(declaredValue(row, "min-width")).toBe("96px");
-    // A row carrying the take-back never shrinks under its action.
-    const takeBackRow = css.match(
-      /\.workspace-session-row:has\(\.workspace-tab-takeback\) \{([\s\S]*?)\n\}/,
-    )?.[1];
-    expect(takeBackRow).toBeDefined();
-    expect(declaredValue(takeBackRow ?? "", "min-width")).toBe("fit-content");
     const chip = ruleBody(".workspace-session-tab");
     expect(declaredValue(chip, "min-width")).toBe("96px");
     expect(declaredValue(chip, "max-width")).toBe("160px");

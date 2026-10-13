@@ -16,7 +16,6 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ErrorText } from "../../components/ErrorText";
 import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
@@ -138,11 +137,6 @@ import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBa
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./strip/stripFocus";
 import { AnchoredPopover } from "./popoverPlace";
-import {
-  DELEGATION_CAPABILITY,
-  delegationController,
-  type DelegationController,
-} from "../../lib/delegation";
 import { SESSION_RENAME_CAPABILITY } from "../../lib/sessionRename";
 import { isImeComposition } from "../../lib/imeComposition";
 import {
@@ -232,13 +226,6 @@ export { WorkspacePermissionCard, formatPermissionCommand };
 
 interface WorkspaceProps {
   sidePanelRegistry?: readonly SidePanelEntry[];
-  /**
-   * The delegation switch's controller, injectable for tests like the panel
-   * registry. Defaults to the app's one shared instance: the take-back below
-   * and the Settings → Agents switch are two entry points to the same
-   * setting, and a value one flipped is what the other must read.
-   */
-  delegation?: DelegationController;
 }
 
 /**
@@ -345,11 +332,7 @@ function applyDraftModel(sessionId: string, picks: ResolvedDraftSelection): Prom
 const FIRST_PROMPT_NOT_ATTACHED =
   "The agent is not attached right now. Open the workspace's agent, then press send.";
 
-export function Workspace({
-  sidePanelRegistry = SIDE_PANEL_REGISTRY,
-  delegation: delegationControllerProp,
-}: WorkspaceProps = {}) {
-  const delegation = delegationControllerProp ?? delegationController;
+export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: WorkspaceProps = {}) {
   // Captured once per mount, not read on every render: the cell moves with the
   // selection, so a mount that re-read it would take its own navigation for
   // the user's. App keys the surface boundary by surface, so a visit to
@@ -2431,36 +2414,6 @@ export function Workspace({
     return unsubscribe;
   }, [handlePermissionRequest, handlePermissionResolved]);
 
-  // The take-back and the child rows read the one switch. Fetched here — not
-  // only in Settings — so the roster's control is right even if Settings was
-  // never opened. Capability-gated like every delegation RPC: a daemon that
-  // never advertised `permission_delegation` is never asked.
-  //
-  // The read is keyed on the daemon's IDENTITY, not just this component's
-  // mount: a daemon restart — even one the 2 s poll never saw
-  // as a gap — changes `instanceId`, and every reconnect transitions
-  // `state`. Either way the store's answer is re-asked, because a connection
-  // that dropped and returned means every cached answer is a guess, and the
-  // `delegation.json` the app's own `source: "file"` sentence advertises
-  // moves the daemon's value with no app-side event.
-  const delegationState = useSyncExternalStore(delegation.subscribe, delegation.getState);
-  const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
-  useEffect(() => {
-    if (!delegationSupported || daemon.state !== "connected") return;
-    void delegation.load();
-  }, [delegation, delegationSupported, daemon.state, daemon.instanceId]);
-  // The honest gate for the control that stops delegation: it
-  // is hidden only when the store POSITIVELY holds `false` — a value it can
-  // hold only from a daemon answer or an accepted write, never from silence —
-  // and it stays visible in the unknown state (`null`), where hiding it would
-  // let a stale belief withdraw the one control that corrects it. The write
-  // itself is the honest action from unknown: `false` needs no stored answer
-  // (see `setEnabled` in `lib/delegation.ts`), so the click acts instead of
-  // decorating a maybe.
-  const takeBackAvailable = delegationSupported && delegationState.enabled !== false;
-  const takeBack = useCallback(() => {
-    void delegation.setEnabled(false);
-  }, [delegation]);
   // The panel's slot is for the card that needs the human: the first
   // UNRESOLVED card of the session. A resolved card at the head must not
   // hide a waiting one behind it — a resolved card offers only
@@ -2906,8 +2859,6 @@ export function Workspace({
                   providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
                   peerNames={peerNames}
                   resolveCreator={resolveCreator}
-                  takeBackAvailable={takeBackAvailable}
-                  onTakeBack={takeBack}
                   overviewSessions={overviewSessions}
                   workspaceName={workspaceName}
                   onOpenSession={handleOpenOverviewSession}
@@ -3009,24 +2960,6 @@ export function Workspace({
                     >
                       ×
                     </button>
-                  </div>
-                ) : null}
-
-                {delegationState.error !== null ? (
-                  // The refusal (or failed read) reported where the delegation control
-                  // lives — the roster row's take-back included — never only on the
-                  // Settings tab (a refused consent control may not be
-                  // silent on the surface it was clicked on). No dismiss button: the
-                  // sentence is the store's standing answer, and the next successful
-                  // read or write clears it.
-                  <div className="workspace-session-error" role="alert">
-                    <span className="workspace-session-error-text">
-                      <ErrorText
-                        sentence={delegationState.error.sentence}
-                        detail={delegationState.error.detail}
-                        id="workspace-delegation-error"
-                      />
-                    </span>
                   </div>
                 ) : null}
 

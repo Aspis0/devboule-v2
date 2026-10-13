@@ -69,8 +69,6 @@ async function renderSession(
         tooltip={tooltip}
         provenanceLines={[]}
         menuOpen={false}
-        takeBack={false}
-        onTakeBack={() => undefined}
         {...handlers}
       />,
     ),

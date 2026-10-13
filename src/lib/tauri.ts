@@ -2091,8 +2091,8 @@ export const delegationGet = () =>
   invokeTyped("delegation_get") as unknown as Promise<DelegationReply>;
 /**
  * Turns delegated answering on or off for every agent — the one switch, so
- * the write is global and both entry points (the Agents panel's switch and a
- * roster row's take-back) go through this one wrapper. The daemon persists
+ * the write is global and every way of reaching it goes through this one
+ * wrapper. The daemon persists
  * `{ enabled }` and refuses nothing else: there is no per-child variant, by
  * the committente's own refusal of a two-level setting.
  */

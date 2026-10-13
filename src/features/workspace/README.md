@@ -159,12 +159,14 @@ swipe, its hover pills, the 5-second window, its persistence, the crash
 recovery and the unload flush are gone — records an older build persisted are
 dropped unread on startup (`OLDER_BUILD_PENDING_KEY`).
 
-The tab row is a plain row: the tab button, a trailing close chip — an
+The tab row is a plain row: the tab button and a trailing close chip — an
 18×18 "×" in a ~48 px overlay scrimmed with the tab's own background, shown on
-hover and while focus is inside the row, hidden and unclickable otherwise —
-and, where it applies, the take-back. A middle click closes; a right-click
+hover and while focus is inside the row, hidden and unclickable otherwise.
+A middle click closes; a right-click
 anywhere on the row, the chip included, opens the tab menu, which carries
 the four close entries and, after a separator, Delete in the destructive tone.
+Delegated answering is not a strip control: the one global switch lives in
+Settings → Agents.
 
 ## Terminal lifecycle
 

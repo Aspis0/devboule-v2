@@ -512,7 +512,8 @@ describe("delegation controller", () => {
     // store the app just failed to reach; if the read sent to settle that
     // doubt fails too, rendering that belief as a definite switch is the
     // false claim this file exists to prevent. The panel goes to the named
-    // unknown — where Retry lives, and where the take-back still works.
+    // unknown — where Retry lives, and where turning delegation off still
+    // works.
     let call = 0;
     const controller = createDelegationController({
       get: vi.fn(async (): Promise<DelegationReply> => {
@@ -534,7 +535,7 @@ describe("delegation controller", () => {
 
   it("the control that stops delegation works from the unknown state; granting still needs an answer", async () => {
     // The asymmetric half of the write rule (audit 3, F2): `false` can only
-    // reduce what the daemon exercises, so the take-back must act from the
+    // reduce what the daemon exercises, so turning it off must work from the
     // unknown — the human may be reaching for it BECAUSE the answer cannot
     // be read. `true` from silence is still the write-from-a-guess this
     // store refuses, and `false` over a confirmed `false` stays a no-op.
@@ -554,7 +555,7 @@ describe("delegation controller", () => {
     expect(set).toHaveBeenCalledWith(false);
     expect(controller.getState().enabled).toBe(false);
     expect(controller.getState().loadFailed).toBe(false);
-    // And once the store holds false, another take-back is a no-op, not a
+    // And once the store holds false, another turn-off is a no-op, not a
     // second write.
     expect(await controller.setEnabled(false)).toBe(false);
     expect(set).toHaveBeenCalledTimes(1);

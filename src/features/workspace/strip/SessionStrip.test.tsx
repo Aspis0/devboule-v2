@@ -81,8 +81,6 @@ function propsOf(sessions: Session[], activeTabId: string | null, overview = ses
     providerMenu: null,
     peerNames: new Map<string, string>(),
     resolveCreator: () => null as string | null,
-    takeBackAvailable: false,
-    onTakeBack: vi.fn(),
     overviewSessions: overview,
     workspaceName: "workspace one",
     onOpenSession: vi.fn(),
@@ -156,6 +154,35 @@ describe("SessionStrip", () => {
       expect(tab.querySelector(".workspace-tab-delegation")).toBeNull();
       expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
     }
+  });
+
+  it("carries no take-back on a delegated child, and leaves it selectable and pencil-marked", () => {
+    // Stopping delegated answering is Settings' one control; the strip keeps
+    // no second one. What the row is — a child's mark, a selection — is
+    // untouched by that.
+    const props = renderStrip(
+      [
+        session("child", "day worker", {
+          createdBy: "session-1",
+          delegation: { answered: 0, state: "active" },
+          profileId: "design-builtin",
+        }),
+      ],
+      null,
+    );
+
+    expect(container!.querySelector(".workspace-tab-takeback")).toBeNull();
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    expect(tab.querySelector(".strip-kind .workspace-panel-icon")).not.toBeNull();
+    expect(tab.getAttribute("aria-selected")).toBe("false");
+
+    act(() => {
+      tab.click();
+    });
+    expect(props.tabSelection.handleTabClick).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "child" }),
+      expect.anything(),
+    );
   });
 
   it("paints a tab with attention in label only: the state is heard, never seen", () => {

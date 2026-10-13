@@ -21,7 +21,6 @@ import {
   requiresConsent,
   sessionCreateFromProvider,
   sessionDelegationBadges,
-  sessionDelegationTakeBack,
   sessionOriginBadge,
   sessionOriginUnknown,
   sessionTitle,
@@ -1364,52 +1363,6 @@ describe("session delegation badges", () => {
       { tone: "active", label: "Answers to its creator." },
       { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
     ]);
-  });
-
-  it("offers the take-back on the one row where flipping the setting ends an answering relationship", () => {
-    expect(
-      sessionDelegationTakeBack({
-        ...liveSession("child-8"),
-        delegation: { answered: 0, state: "active" },
-      }),
-    ).toBe(true);
-  });
-
-  it("offers the take-back on no unattended row: the click cannot take back a birth fact", () => {
-    // The child was born able to run without asking and KEEPS that ability
-    // after delegation is off, so the button's own promise ("stops every
-    // agent from answering for its children") is empty here — and a control
-    // that cannot act is noise beside the loud pill.
-    expect(
-      sessionDelegationTakeBack({
-        ...liveSession("child-9"),
-        delegation: { answered: 0, state: "unattended" },
-      }),
-    ).toBe(false);
-  });
-
-  it("offers the take-back nowhere else: not on humans, not on answered-off or unknown children", () => {
-    expect(sessionDelegationTakeBack(liveSession("human-2"))).toBe(false);
-    expect(
-      sessionDelegationTakeBack({
-        ...liveSession("child-10"),
-        delegation: { answered: 4, state: "off" },
-      }),
-    ).toBe(false);
-    expect(
-      sessionDelegationTakeBack({
-        ...liveSession("child-13"),
-        delegation: { answered: 0, state: "unknown" },
-      }),
-    ).toBe(false);
-    // A fifth wire value cannot earn the control either.
-    const fifthState = "pending" as unknown as "off" | "active" | "unattended" | "unknown";
-    expect(
-      sessionDelegationTakeBack({
-        ...liveSession("child-14"),
-        delegation: { answered: 0, state: fifthState },
-      }),
-    ).toBe(false);
   });
 });
 

@@ -456,41 +456,6 @@ export function sessionDelegationBadges(
 }
 
 /**
- * Whether this row is one a take-back can act on: a child whose creator
- * answers for it (`active`) — the one case where flipping the setting ends an
- * answering relationship that exists right now. Every other row says no,
- * because a control that cannot act is noise that trains the eye to ignore
- * the pill beside it:
- *
- * - `unattended` — the child was born able to run without asking and KEEPS
- *   that ability after a human turns delegation off, so the click cannot do
- *   what the button's own accessible name promises. The loud pill stays; the
- *   empty control does not.
- * - `off` — there is no answering relationship to end.
- * - `unknown` — the app cannot say whether a relationship exists, so it
- *   cannot promise the click acts; refusal beats a guess.
- * - no `delegation` at all, and any state value this build cannot read — no.
- *
- * This is the row-side condition only. The caller adds the setting being on —
- * the whole point of the control is that it is global, so it reads the one
- * switch, never a per-row fact.
- */
-const TAKE_BACK_BY_STATE: Record<KnownDelegationState, boolean> = {
-  off: false,
-  active: true,
-  unattended: false,
-  unknown: false,
-};
-
-export function sessionDelegationTakeBack(session: Pick<Session, "delegation">): boolean {
-  const state = session.delegation?.state;
-  if (state === undefined) return false;
-  return Object.hasOwn(TAKE_BACK_BY_STATE, state)
-    ? TAKE_BACK_BY_STATE[state as KnownDelegationState]
-    : false;
-}
-
-/**
  * Where a roster badge for the A2A `input_required` state would go — measured
  * and deliberately not written.
  *

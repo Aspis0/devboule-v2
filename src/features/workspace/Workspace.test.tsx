@@ -101,9 +101,8 @@ vi.mock("../../lib/tauri", () => ({
   })),
   sessionsWatch: vi.fn(async () => undefined),
   sessionsUnwatch: vi.fn(async () => undefined),
-  // The delegation pair: the shared controller binds them at module load, so
-  // the mock must name them even though the tests below inject their own
-  // controller.
+  // The delegation pair: the workspace surface no longer reads the setting, so
+  // these are here for a test to assert exactly that — no request leaves here.
   delegationGet: vi.fn(async () => ({ enabled: true, source: "default" })),
   delegationSet: vi.fn(async () => undefined),
   // The session badge's name map: one read per daemon connection. Individual
@@ -387,6 +386,8 @@ import {
   sessionDelete,
   sessionPermissionRespond,
   createSessionStateChannel,
+  delegationGet,
+  delegationSet,
   sessionsList,
   sessionResume,
   sessionsWatch,
@@ -404,7 +405,6 @@ import { resetSharedSessionControllerForTests, sharedSessionController } from ".
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
-import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
 
 const terminal = (
@@ -3872,23 +3872,10 @@ describe("delegation on the roster", () => {
     delegation: { answered: 0, state: "active" },
   };
 
-  function enabledController() {
-    return createDelegationController({
-      get: vi.fn(async () => ({ enabled: true, source: "file" as const })),
-      set: vi.fn(async () => undefined),
-    });
-  }
-
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(createSessionStateChannel).mockClear();
-    // The take-back is capability-gated like every delegation RPC, so this
-    // describe's daemon advertises it.
-    vi.mocked(daemonStatus).mockResolvedValue({
-      ...daemonConnected,
-      capabilities: [...daemonConnected.capabilities, "permission_delegation"],
-    });
   });
 
   afterEach(async () => {
@@ -3896,19 +3883,13 @@ describe("delegation on the roster", () => {
     container.remove();
   });
 
-  it("keeps the loud pill after the switch turns off, takes the write on the active row, and drops only the take-back", async () => {
-    // The take-back lives on the ACTIVE row only: on an unattended row the
-    // click could not do what the button promises (the child keeps its born
-    // ability), so the control is not offered there at all.
-    const set = vi.fn(async () => undefined);
-    const delegation = createDelegationController({
-      get: vi.fn(async () => ({ enabled: true, source: "file" as const })),
-      set,
-    });
+  it("paints the loud pill for an unattended child and keeps both children in the strip", async () => {
+    // The dot is a fact of the child's birth, never a reading of the global
+    // switch: the workspace does not read that switch at all.
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
-      root.render(<Workspace delegation={delegation} />);
+      root.render(<Workspace />);
     });
     await act(async () => undefined);
 
@@ -3922,74 +3903,32 @@ describe("delegation on the roster", () => {
 
     const loud = container.querySelector(".strip-dot-unattended");
     expect(loud).not.toBeNull();
-    const loudTab = loud?.closest(".workspace-session-tab");
-    expect(loudTab?.getAttribute("title")).toContain(
+    expect(loud?.closest(".workspace-session-tab")?.getAttribute("title")).toContain(
       "Runs unattended — created in an auto-accepting profile.",
     );
-    // The take-back sits beside the row it can act on, and its accessible
-    // name declares the global scope.
-    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
-    expect(takeBack).not.toBeNull();
-    expect(takeBack?.getAttribute("aria-label")).toBe(
-      "Take back \u2014 stops every agent from answering for its children",
+    const rows = Array.from(container.querySelectorAll(".workspace-session-tab")).filter((tab) =>
+      tab.textContent?.includes("worker"),
     );
-    // ...and on the unattended row there is none, even with the switch on
-    // (the take-back renders as the tab's next sibling when it exists).
-    const unattendedTab = Array.from(container.querySelectorAll(".workspace-session-tab")).find(
-      (tab) => tab.textContent?.includes("night worker"),
-    );
-    expect(unattendedTab?.nextElementSibling?.classList.contains("workspace-tab-takeback")).toBe(
-      false,
-    );
-
-    // The human takes the power back from the active row.
-    if (takeBack === null) throw new Error("take-back did not render");
-    await act(async () => takeBack.click());
-    await act(async () => undefined);
-
-    // The take-back is a WRITE: the injected controller's set must have been
-    // asked for `false` — not merely mirrored optimistically in the store.
-    expect(set).toHaveBeenCalledWith(false);
-    expect(delegation.getState().enabled).toBe(false);
-    // The dot is a fact of the child's birth: it does NOT disappear or
-    // change because the live switch did. Deriving it from the setting is
-    // the named red mutation.
-    const loudAfter = container.querySelector(".strip-dot-unattended");
-    expect(loudAfter).not.toBeNull();
-    expect(loudAfter?.closest(".workspace-session-tab")?.getAttribute("title")).toContain(
-      "Runs unattended — created in an auto-accepting profile.",
-    );
-    // A control that cannot act is gone.
-    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
-    // And it closed nothing: the child's row is still in the strip.
-    const strip = Array.from(container.querySelectorAll(".workspace-session-tab")).find((tab) =>
-      tab.textContent?.includes("night worker"),
-    );
-    expect(strip).not.toBeUndefined();
+    expect(rows).toHaveLength(2);
   });
 
-  it("reports a refused take-back on the roster surface, where the click happened", async () => {
-    // The refusal's sentence belongs on the roster surface, where the click
-    // happened — not only on the Settings tab, where the button vanished and
-    // came back with no word. The re-read the refusal schedules is held back so
-    // the sentence's standing time is under the test's hand.
-    const get = vi
-      .fn()
-      .mockResolvedValueOnce({ enabled: true, source: "file" })
-      .mockImplementation(() => new Promise(() => undefined));
-    const delegation = createDelegationController({
-      get,
-      set: vi.fn(async () => {
-        throw new Error("the store refused the take-back");
-      }),
+  it("asks the daemon nothing about delegation, and draws no take-back on any child", async () => {
+    // The setting is Settings' one control. A workspace surface that read it
+    // would re-ask on every daemon restart to gate a button it no longer draws.
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...daemonConnected,
+      capabilities: [...daemonConnected.capabilities, "permission_delegation"],
     });
+    vi.mocked(delegationGet).mockClear();
+    vi.mocked(delegationSet).mockClear();
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
-      root.render(<Workspace delegation={delegation} />);
+      root.render(<Workspace />);
     });
     await act(async () => undefined);
-    await pushRoster([activeChild]);
+
+    await pushRoster([unattendedChild, activeChild]);
     await act(async () => {
       const controller = sharedSessionController();
       for (const row of controller.getState().sessions)
@@ -3997,123 +3936,16 @@ describe("delegation on the roster", () => {
     });
     await act(async () => undefined);
 
-    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
-    if (takeBack === null) throw new Error("take-back did not render");
-    await act(async () => takeBack.click());
-    await act(async () => undefined);
-
-    const alerts = Array.from(container.querySelectorAll('[role="alert"]')).map(
-      (element) => element.textContent ?? "",
-    );
-    expect(alerts.some((text) => text.includes("the store refused the take-back"))).toBe(true);
-  });
-
-  it("offers the take-back while the delegation answer is unknown, and the click still writes", async () => {
-    // The control that stops delegation must not be gated on the panel's belief
-    // — a failed read leaves the app knowing nothing, and that is exactly when
-    // a human may need to act. The write needs no stored answer: `false` can
-    // only reduce what the daemon exercises (see `setEnabled` in `lib/delegation.ts`).
-    const set = vi.fn(async () => undefined);
-    const delegation = createDelegationController({
-      get: vi.fn(async () => {
-        throw new Error("the daemon is unreachable");
-      }),
-      set,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace delegation={delegation} />);
-    });
-    await act(async () => undefined);
-    await pushRoster([activeChild]);
-    await act(async () => {
-      const controller = sharedSessionController();
-      for (const row of controller.getState().sessions)
-        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
-    });
-    await act(async () => undefined);
-
-    // Unknown is not off: the control stands on the active row.
-    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
-    expect(takeBack).not.toBeNull();
-    if (takeBack === null) throw new Error("take-back did not render");
-    await act(async () => takeBack.click());
-    await act(async () => undefined);
-    expect(set).toHaveBeenCalledWith(false);
-    expect(delegation.getState().enabled).toBe(false);
-    // The daemon took the take-back: the store now holds a definite off, and
-    // the control leaves with the belief it no longer needs to correct.
     expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+    expect(delegationGet).not.toHaveBeenCalled();
+    expect(delegationSet).not.toHaveBeenCalled();
   });
 
-  it("re-reads the switch when the daemon restarts, and the take-back follows the fresh answer", async () => {
-    // Nothing re-read the setting after the first load, so a daemon restart
-    // that reloads `delegation.json` left the roster's belief stale forever —
-    // here the restart is even invisible to the poll (no disconnected gap):
-    // only the instance id changes. The controller must re-ask, and the
-    // row's control must follow the fresh answer.
-    vi.useFakeTimers();
-    try {
-      const statusFor = (instanceId: string): DaemonStatus => ({
-        state: "connected",
-        pid: 42,
-        instanceId,
-        protocolVersion: 1,
-        clients: 1,
-        capabilities: [...daemonConnected.capabilities, "permission_delegation"],
-        message: null,
-      });
-      const answers: DaemonStatus[] = [statusFor("daemon-a"), statusFor("daemon-b")];
-      vi.mocked(daemonStatus).mockImplementation(() => {
-        const next = answers.shift();
-        return Promise.resolve(next ?? statusFor("daemon-b"));
-      });
-      const get = vi
-        .fn()
-        .mockResolvedValueOnce({ enabled: false, source: "file" })
-        .mockResolvedValueOnce({ enabled: true, source: "file" });
-      const delegation = createDelegationController({ get, set: vi.fn(async () => undefined) });
-      root = createRoot(container);
-      await act(async () => {
-        await openListedSessionsForTest();
-        root.render(<Workspace delegation={delegation} />);
-      });
-      await act(async () => undefined);
-      await pushRoster([activeChild]);
-      await act(async () => {
-        const controller = sharedSessionController();
-        for (const row of controller.getState().sessions)
-          controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
-      });
-      await act(async () => undefined);
-
-      // The first daemon holds off: no take-back, honestly.
-      expect(get).toHaveBeenCalledTimes(1);
-      expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
-
-      // The restart: a new instance, same capabilities, no gap observed.
-      await act(async () => {
-        vi.advanceTimersByTime(2_000);
-      });
-      await act(async () => undefined);
-
-      // The roster re-asked its new daemon — which holds ON, a human having
-      // flipped delegation.json while the old one was down — and the control
-      // that answers it is back.
-      expect(get).toHaveBeenCalledTimes(2);
-      expect(container.querySelector(".workspace-tab-takeback")).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("renders no delegation pill and no take-back on a human-started session", async () => {
-    const delegation = enabledController();
+  it("renders no delegation pill on a human-started session", async () => {
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
-      root.render(<Workspace delegation={delegation} />);
+      root.render(<Workspace />);
     });
     await act(async () => undefined);
     await pushRoster([
@@ -4135,15 +3967,13 @@ describe("delegation on the roster", () => {
 
     expect(container.querySelector(".workspace-tab-delegation")).toBeNull();
     expect(container.querySelector(".strip-dot-unattended")).toBeNull();
-    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
   });
 
   it("renders the quiet answering line in the tooltip with the answered count from the push", async () => {
-    const delegation = enabledController();
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
-      root.render(<Workspace delegation={delegation} />);
+      root.render(<Workspace />);
     });
     await act(async () => undefined);
     await pushRoster([
