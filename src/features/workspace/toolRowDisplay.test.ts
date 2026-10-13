@@ -77,6 +77,22 @@ describe("toolRowDisplay", () => {
     });
   });
 
+  it("shows the count a row naming several files was titled with, not its first path", () => {
+    const many = [{ path: "alpha.md" }, { path: "beta.md" }, { path: "gamma.md" }];
+    expect(toolRowDisplay(tool({ kind: "edit", title: "3 files", locations: many }))).toEqual({
+      displayName: "Edit",
+      summary: "3 files",
+    });
+    expect(toolRowDisplay(tool({ kind: "delete", title: "2 files", locations: many }))).toEqual({
+      displayName: "Delete",
+      summary: "2 files",
+    });
+    // One named file is still shown by its path, from the location or the title.
+    expect(
+      toolRowDisplay(tool({ kind: "edit", title: "alpha.md", locations: [{ path: "alpha.md" }] })),
+    ).toEqual({ displayName: "Edit", summary: "alpha.md" });
+  });
+
   it("labels a search call with its query", () => {
     expect(toolRowDisplay(tool({ kind: "search", title: "how to test" }))).toEqual({
       displayName: "Search",

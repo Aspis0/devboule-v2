@@ -1461,6 +1461,24 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("reports paths from a completed create as sources", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // A Codex fileChange item that only created files wears kind "write", and a
+    // mixed set wears "change". Neither is an "edit", and a run that owns the
+    // kinds it is given must not drop a real write for want of one.
+    emitToolCall("write-1", "completed", "write", ["src/generated.tsx"]);
+    emitToolCall("change-1", "completed", "change", ["src/updated.tsx"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual(["src/generated.tsx", "src/updated.tsx"]);
+    expect(result.title).toBe("Wrote");
+
+    await disposeAgentHost(host);
+  });
+
   it("ignores locations from non-write tool kinds", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);

@@ -137,7 +137,9 @@ type ToolObservation = {
   completed: boolean;
 };
 
-const WRITE_TOOL_KINDS = new Set(["edit", "delete", "move"]);
+// Every kind a row wears while it changes files on disk; a missing one is a real
+// write this run drops. `write` and `change` derive from a Codex fileChange item.
+const WRITE_TOOL_KINDS = new Set(["edit", "delete", "write", "change", "move"]);
 const COMPLETED_TOOL_STATUS = "completed";
 // The other settled tool status: the tool ran and exited non-zero.
 const FAILED_TOOL_STATUS = "failed";

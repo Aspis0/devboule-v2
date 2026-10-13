@@ -1,5 +1,6 @@
 import { browserToolName, isBrowserToolRow } from "../../lib/browserToolName";
 import type { AgentChatItem } from "../../lib/agentSession";
+import { isFileChangeKind } from "../../lib/toolRowKind";
 import type { AgentToolEdit } from "../../types/ipc";
 import { linkTarget } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
@@ -224,11 +225,14 @@ export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolR
   let summary: string | undefined;
   let linkUrl: string | undefined;
   if (!fromBareName && kind !== "plan") {
-    if (kind === "read" || kind === "edit" || kind === "delete") {
-      const first = item.locations?.[0]?.path;
+    if (kind === "read" || isFileChangeKind(kind)) {
+      // A row naming one file shows that path; one naming several shows the
+      // title it was given, because its first path is not the row.
+      const named = item.locations ?? [];
+      const only = named.length === 1 ? named[0]?.path : undefined;
       summary =
-        first !== undefined && first.length > 0
-          ? first
+        only !== undefined && only.length > 0
+          ? only
           : item.title.length > 0
             ? item.title
             : undefined;

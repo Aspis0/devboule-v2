@@ -1164,8 +1164,8 @@ impl CodexView {
                     }
                 })
             }
-            "item/commandExecution/outputDelta" => tool_delta(params, "execute"),
-            "item/fileChange/outputDelta" => tool_delta(params, "edit"),
+            "item/commandExecution/outputDelta" => tool_delta(params, Some("execute")),
+            "item/fileChange/outputDelta" => tool_delta(params, file_change_delta_kind(params)),
             "item/started" => self.item_event(params.get("item"), false, replay_items),
             "item/completed" => self.item_event(params.get("item"), true, replay_items),
             "thread/tokenUsage/updated" => self.note_usage(params.get("tokenUsage")),
@@ -1474,7 +1474,7 @@ where
     )]
 }
 
-fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
+fn tool_delta(params: &Value, kind: Option<&str>) -> Vec<SessionEvent> {
     let Some(text) = params.get("delta").and_then(Value::as_str) else {
         return Vec::new();
     };
@@ -1490,7 +1490,7 @@ fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
         status: None,
         text: Some(text.to_string()),
         title: None,
-        kind: Some(kind.to_string()),
+        kind: kind.map(str::to_string),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -1716,19 +1716,22 @@ fn named_changes(value: Option<&Value>) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-/// The kind a fileChange row wears, read off the changes' own kinds: a file
-/// that was created is not an edit, and a set that creates one file and
-/// changes another is neither. `edit` stays the kind for changes that only
-/// update or delete, and for a row that names no file at all.
+/// The kind a fileChange row wears, read off the changes' own kinds: a set that
+/// only creates, only updates or only deletes wears that one, and a set whose
+/// changes differ claims none of them. A row that names no file keeps `edit`,
+/// which is all it has ever said about one.
 fn file_change_row_kind(changes: &[&Value]) -> &'static str {
-    let added = changes
-        .iter()
-        .filter(|change| codex_change_kind(change).0 == AgentEditKind::Write)
-        .count();
-    match (added, changes.len()) {
-        (0, _) => "edit",
-        (added, total) if added == total => "write",
-        _ => "change",
+    let mut kinds = changes.iter().map(|change| codex_change_kind(change).0);
+    let Some(first) = kinds.next() else {
+        return "edit";
+    };
+    if kinds.any(|kind| kind != first) {
+        return "change";
+    }
+    match first {
+        AgentEditKind::Write => "write",
+        AgentEditKind::Delete => "delete",
+        AgentEditKind::Edit => "edit",
     }
 }
 
@@ -1745,6 +1748,14 @@ fn file_change_title(changes: &[&Value], cwd: Option<&std::path::Path>) -> Strin
         .and_then(Value::as_str)
         .map(|path| relativize_tool_path(path, cwd))
         .unwrap_or_default()
+}
+
+/// The delta's own changes decide the kind when it carries any. With none, the
+/// update carries no kind at all, so the row keeps the one its start derived
+/// instead of being stamped back to a single action mid-run.
+fn file_change_delta_kind(params: &Value) -> Option<&'static str> {
+    let changes = named_changes(params.get("changes"));
+    (!changes.is_empty()).then(|| file_change_row_kind(&changes))
 }
 
 fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec<ToolLocation>> {
@@ -2440,6 +2451,38 @@ mod tests {
             events_from_envelope(&started).as_slice(),
             [SessionEvent::AgentToolCall { title, kind: Some(kind), .. }]
                 if title == "alpha.md" && kind == "write"
+        ));
+    }
+
+    #[test]
+    fn file_change_of_only_deletions_reads_as_a_delete() {
+        let started = parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f6","status":"inProgress","changes":[{"kind":{"type":"delete"},"path":"old.md"},{"kind":"delete","path":"older.md"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
+        );
+        assert!(matches!(
+            events_from_envelope(&started).as_slice(),
+            [SessionEvent::AgentToolCall { title, kind: Some(kind), .. }]
+                if title == "2 files" && kind == "delete"
+        ));
+    }
+
+    #[test]
+    fn file_change_output_delta_keeps_the_kind_the_start_derived() {
+        let delta = parse(
+            r#"{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"itemId":"f3","delta":"@@ -1 +1 @@\n"}}"#,
+        );
+        // The delta names no changes, so its update carries no kind: a kind here
+        // would stamp one action over the row the start already derived.
+        assert!(matches!(
+            events_from_envelope(&delta).as_slice(),
+            [SessionEvent::AgentToolUpdate { kind: None, .. }]
+        ));
+        let with_changes = parse(
+            r#"{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"itemId":"f3","delta":"x","changes":[{"kind":{"type":"add"},"path":"alpha.md"}]}}"#,
+        );
+        assert!(matches!(
+            events_from_envelope(&with_changes).as_slice(),
+            [SessionEvent::AgentToolUpdate { kind: Some(kind), .. }] if kind == "write"
         ));
     }
 
