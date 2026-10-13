@@ -2,9 +2,15 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionTabElementId } from "./useTabCloseFlow";
 import { sessionProviderLabel, sessionTitle } from "../workspaceSessions";
+import { PanelIcon } from "../panel/PanelIcon";
 import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
 import { toolTabKindLabel, toolTabLabel, toolTabSubject, type ToolTab } from "./toolTabs";
+
+/** The daemon's built-in Design profile id (`DESIGN_PROFILE_ID` in
+ * crates/devboule-daemon/src/design_profile.rs): the tab keys on the id alone,
+ * so a rename of the profile never moves the mark. */
+const DESIGN_PROFILE_ID = "design-builtin";
 
 /** How a browser tab names itself in the strip: the page's own favicon once
  * it has one, and the same globe the rest of the app draws for a page until
@@ -73,6 +79,7 @@ export function StripChip({
   onClose,
 }: StripChipProps) {
   const title = sessionTitle(session);
+  const designProfile = session.profileId === DESIGN_PROFILE_ID;
   const provenanceId = `${sessionTabElementId(session.id)}-provenance`;
   const described = provenanceLines.length > 0 ? provenanceId : undefined;
   const tone = isAgentKind(session.kind) ? "agent" : "quiet";
@@ -98,10 +105,20 @@ export function StripChip({
         <span
           className={`workspace-status-dot ${DOT_CLASS[display.dot]}${display.pulse ? " dot-pulse" : ""}`}
         />
-        <StripKindMark kind={session.kind} />
+        {designProfile ? (
+          <span className="strip-kind" aria-hidden="true">
+            <PanelIcon name="design" />
+          </span>
+        ) : (
+          <StripKindMark kind={session.kind} />
+        )}
         <span className="workspace-tab-label">{title}</span>
-        {/* Heard, never seen: a chip paints a dot tone, never a sentence. */}
-        <span className="workspace-sr-only">{`${sessionProviderLabel(session)}, ${display.stateLine}`}</span>
+        {/* Heard, never seen: a chip paints a dot tone, never a sentence. The
+            Design pencil is hidden too, so the profile it stands for is heard
+            here, beside the provider the row still reports. */}
+        <span className="workspace-sr-only">
+          {`${sessionProviderLabel(session)}${designProfile ? ", Design profile" : ""}, ${display.stateLine}`}
+        </span>
       </button>
       {/* The description lives beside the button, never inside it: a
           described-by span inside the button would join the accessible

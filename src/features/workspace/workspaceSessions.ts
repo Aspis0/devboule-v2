@@ -518,9 +518,9 @@ export function sessionDelegationTakeBack(session: Pick<Session, "delegation">):
  * `refresh()` erases rows just as a push replaces them (re-audit F5: the
  * known-child mint existed only on the push path, so every session exit and
  * daemon reconnect re-rendered a child as a human-started row until the next
- * push). Creator, origin and the tri-state are identity and birth facts, not
- * list state: an omitting list lets the row's known values stand, and a known
- * child no source has described still mints the unknown ledger.
+ * push). Creator, origin, profile and the tri-state are identity and birth
+ * facts, not list state: an omitting list lets the row's known values stand,
+ * and a known child no source has described still mints the unknown ledger.
  */
 function carrySession(listed: Session, previous: Session | undefined): Session {
   const createdBy = listed.createdBy ?? previous?.createdBy;
@@ -529,6 +529,9 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
     ...listed,
     createdBy,
     origin: listed.origin ?? previous?.origin,
+    // Birth identity: a list that carries a profile lands it, and a list that
+    // says nothing about it leaves the known one standing.
+    profileId: listed.profileId ?? previous?.profileId,
     // The wire's list row carries no activity, attention or goal, so an
     // omitting list lets the row's known values stand — a refresh must not
     // strip the turn, the pending ask or the goal a push landed.
@@ -711,6 +714,10 @@ export function createWorkspaceSessionController(
         // The creator is identity, like origin: a push that carries it lands
         // it, and a push that omits it lets the row's known value stand.
         createdBy: snapshot.createdBy ?? previous?.createdBy,
+        // The profile is birth identity the same way: a push that carries it
+        // lands it (a child born while the app is open is a push-only row), and
+        // one that omits it says nothing rather than "no profile".
+        profileId: snapshot.profileId ?? previous?.profileId,
         // Context is the legacy ancestry signal when the push omits createdBy.
         contextId: snapshot.contextId ?? previous?.contextId,
         // The name is identity, like the creator: a rename arrives as a
