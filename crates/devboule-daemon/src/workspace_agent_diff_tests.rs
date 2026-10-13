@@ -2,6 +2,7 @@
 //! more than one, and marked truncated when any recorded text was cut.
 
 use devboule_protocol::{AgentEditText, WorkspaceGitDiffLine, WorkspaceGitDiffLineKind};
+use serde_json::json;
 
 use super::{lines_for, MAX_DIFF_REPLY_BYTES};
 use crate::agent_edit_records::AgentEditRecord;
@@ -95,6 +96,63 @@ fn an_edit_with_no_text_contributes_no_rows() {
     let (lines, truncated) = lines_for(&[&empty]);
     assert!(lines.is_empty());
     assert!(!truncated);
+}
+
+/// The mixed fixture as the adapter records it: two object-kind adds whose
+/// text is the new file body, one object-kind update carrying a patch.
+fn codex_add_records() -> Vec<AgentEditRecord> {
+    let changes = json!([
+        {"kind": {"type": "add"}, "path": "alpha.txt", "diff": "Alpha live check.\n"},
+        {"kind": {"type": "add"}, "path": "beta.txt", "diff": "Beta live check.\n"},
+        {"kind": {"type": "update"}, "path": "notes.txt",
+         "diff": "@@ -1 +1 @@\n-vecchio\n+nuovo\n"},
+    ]);
+    crate::agent_edit::codex_file_change_edits(Some(&changes), None)
+        .expect("changes")
+        .into_iter()
+        .enumerate()
+        .map(|(index, edit)| AgentEditRecord {
+            session_id: "s.a".to_string(),
+            agent: "agent s.a".to_string(),
+            tool_call_id: "call-1".to_string(),
+            at_ms: 100 + index as u64,
+            path: edit.path,
+            text: edit.text,
+            added: edit.added,
+            removed: edit.removed,
+            truncated: edit.truncated,
+        })
+        .collect()
+}
+
+#[test]
+fn codex_add_content_rows_read_as_added_lines_and_the_update_as_a_patch() {
+    let records = codex_add_records();
+    let of = |path: &str| {
+        records
+            .iter()
+            .filter(|record| record.path == path)
+            .collect::<Vec<_>>()
+    };
+    let (alpha, _) = lines_for(&of("alpha.txt"));
+    assert_eq!(
+        alpha,
+        vec![line(WorkspaceGitDiffLineKind::Add, "Alpha live check.")]
+    );
+    let (beta, _) = lines_for(&of("beta.txt"));
+    assert_eq!(
+        beta,
+        vec![line(WorkspaceGitDiffLineKind::Add, "Beta live check.")]
+    );
+    let (notes, _) = lines_for(&of("notes.txt"));
+    assert_eq!(
+        notes,
+        vec![
+            line(WorkspaceGitDiffLineKind::Header, "@@ -1 +1 @@"),
+            line(WorkspaceGitDiffLineKind::Remove, "vecchio"),
+            line(WorkspaceGitDiffLineKind::Add, "nuovo"),
+        ]
+    );
 }
 
 #[test]

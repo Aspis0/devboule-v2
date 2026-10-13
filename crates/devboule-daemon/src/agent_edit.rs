@@ -1,10 +1,11 @@
 //! The file changes one tool call carried, read off the provider's frame.
 //!
-//! Claude names the text it edited between, Codex sends its own unified diff,
-//! ACP sends `diff` content elements; each reader here turns one of those into
-//! [`AgentToolEdit`]s. The stored text of one call is budgeted by the JSON it
-//! encodes to, not by its raw bytes: a control byte costs six, so the call's
-//! frame stays far under the protocol's 1 MiB cap whatever the text holds.
+//! Claude names the text it edited between, Codex sends its own unified diff
+//! or a new file's text, ACP sends `diff` content elements; each reader here
+//! turns one of those into [`AgentToolEdit`]s. The stored text of one call is
+//! budgeted by the JSON it encodes to, not by its raw bytes: a control byte
+//! costs six, so the call's frame stays far under the protocol's 1 MiB cap
+//! whatever the text holds.
 
 use std::path::Path;
 
@@ -129,8 +130,10 @@ pub(crate) fn claude_write_result_edits(
 }
 
 /// Codex's `fileChange` item: one entry per changed file, each with its own
-/// unified diff. A change without a path is no file this daemon can name and
-/// is skipped; one without a diff keeps its path and kind.
+/// diff: a unified patch off the string kind, the whole new file's text off
+/// the modern `kind` object (see [`codex_change_kind`]). A change without a
+/// path is no file this daemon can name and is skipped; one without a diff
+/// keeps its path and kind.
 pub(crate) fn codex_file_change_edits(
     changes: Option<&Value>,
     cwd: Option<&Path>,
@@ -143,15 +146,14 @@ pub(crate) fn codex_file_change_edits(
                 .get("path")
                 .and_then(Value::as_str)
                 .filter(|path| !path.is_empty())?;
-            let kind = match change.get("kind").and_then(Value::as_str) {
-                Some("add") => AgentEditKind::Write,
-                Some("delete") => AgentEditKind::Delete,
-                _ => AgentEditKind::Edit,
-            };
+            let (kind, diff_is_new_file) = codex_change_kind(change);
             let diff = change
                 .get("diff")
                 .and_then(Value::as_str)
                 .filter(|diff| !diff.is_empty());
+            if diff_is_new_file {
+                return Some(replace_or_none(edit_path(path, cwd), kind, None, diff));
+            }
             let (added, removed) = changed_counts(&diff.map(unified_lines).unwrap_or_default());
             Some(AgentToolEdit {
                 path: edit_path(path, cwd),
@@ -166,6 +168,28 @@ pub(crate) fn codex_file_change_edits(
         })
         .collect();
     capped(edits)
+}
+
+/// One change's kind as Codex spells it: the string `kind` it always sent and
+/// the newer `kind` object's `type`. The bool marks the object's add, whose
+/// `diff` is the whole new file's text rather than a unified patch.
+fn codex_change_kind(change: &Value) -> (AgentEditKind, bool) {
+    match change.get("kind") {
+        Some(Value::String(name)) => (codex_kind_name(name), false),
+        Some(kind) => match kind.get("type").and_then(Value::as_str) {
+            Some(name) => (codex_kind_name(name), name == "add"),
+            None => (AgentEditKind::Edit, false),
+        },
+        None => (AgentEditKind::Edit, false),
+    }
+}
+
+fn codex_kind_name(name: &str) -> AgentEditKind {
+    match name {
+        "add" => AgentEditKind::Write,
+        "delete" => AgentEditKind::Delete,
+        _ => AgentEditKind::Edit,
+    }
 }
 
 /// The `diff` elements of an ACP tool call's `content`. The element carries
