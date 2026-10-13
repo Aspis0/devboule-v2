@@ -336,3 +336,45 @@ fn a_marker_the_provider_writes_is_dropped() {
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_dir_all(&images);
 }
+
+/// The sink's own race: the folder a provider-named image sits in is swapped
+/// for a link after the walk checked it. The open goes through the link to
+/// another folder's picture of the same name, and the store refuses it.
+#[test]
+fn a_provider_path_whose_folder_is_swapped_for_a_link_after_the_check_is_refused() {
+    let (workspace, images) = roots("swap-sink");
+    let outside = crate::test_dirs::test_temp_dir("devboule-agent-image-outside-swap");
+    std::fs::create_dir_all(workspace.join("sub")).expect("the workspace folder");
+    std::fs::create_dir_all(outside.join("sub")).expect("the outside folder");
+    std::fs::write(
+        workspace.join("sub").join("shot.png"),
+        crate::raster_metadata::clean_png(0x0b),
+    )
+    .expect("the workspace image");
+    std::fs::write(
+        outside.join("sub").join("shot.png"),
+        crate::raster_metadata::clean_png(0x0c),
+    )
+    .expect("the outside image");
+    let sink = sink("swap", &workspace, &images);
+
+    let root = workspace.clone();
+    let outside_sub = outside.join("sub");
+    crate::checked_file::between::install(Box::new(move || {
+        std::fs::rename(root.join("sub"), root.join("sub.moved")).expect("move the folder");
+        assert!(
+            crate::checked_file::link_dir(&root.join("sub"), &outside_sub),
+            "the folder link is planted"
+        );
+    }));
+    let stored = sink.store(&AgentImageSource::Path(
+        workspace.join("sub").join("shot.png"),
+    ));
+    assert!(
+        stored.is_err(),
+        "the outside picture is never stored: {stored:?}"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&images);
+}

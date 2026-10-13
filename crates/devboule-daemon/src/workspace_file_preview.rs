@@ -86,6 +86,7 @@ use devboule_protocol::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::checked_file::{is_link, open_checked, Refusal, LOCATION_UNCONFIRMED};
 use crate::workspace_file_read::{stamped, IMAGE_EXTENSIONS};
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
@@ -125,28 +126,12 @@ const REMOVE_FAILED: &str = "the preview copy could not be removed";
 /// every sentence here: the OS error is dropped, because it carries a path.
 const OPEN_FAILED: &str = "the file could not be opened for the preview";
 
-/// The sentence for an open this code cannot vouch for: the handle's own
-/// stat or its resolved path came back unusable, so "inside the workspace"
-/// cannot be affirmed — and an unaffirmed location is a refusal, never a
-/// copy.
-const LOCATION_UNCONFIRMED: &str =
-    "the file's location could not be confirmed inside the workspace";
-
 /// Non-Windows only: what the handle holds is not the object the walk
 /// stat'ed — a component under it was replaced between the two (a symlink
 /// resolved through, a folder redirected). The identity of an open handle
 /// cannot be forged by such a swap, and no path is re-examined to say it.
 #[cfg(not(windows))]
 const REPLACED_WHILE_STAGED: &str = "the file changed after it was checked; nothing was copied";
-
-/// Windows only: `FILE_FLAG_OPEN_REPARSE_POINT` — the flag that opens the
-/// final component as itself instead of resolving it, so a link planted
-/// over the validated name yields a handle **to the link** (refused on its
-/// attribute below) and its target is never touched, not even stat'ed.
-/// Hardcoded the way this house hardcodes `0x400` in
-/// `workspace_git_support::is_reparse_point`.
-#[cfg(windows)]
-const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 /// Serializes stage against stage and unstage: the folder's "at most one
 /// copy" invariant is written here, and two panel clicks are two threads
@@ -281,43 +266,21 @@ fn copy_of(root: &Path, requested: &str, previews: &Path) -> WorkspaceFilePrevie
 }
 
 /// Open the source once and prove on the handle what the walk proved on
-/// the path: not a link (the final component never resolved), a regular
-/// file, still inside `root` — then hand back the handle to copy from.
-/// Every error is a static sentence; the OS error itself is dropped,
-/// because it carries a path.
-///
-/// The binding is per platform and it is the point of the function:
-/// Windows asks the handle where it *really* lives
-/// (`GetFinalPathNameByHandle` reports a component swapped for a junction
-/// as the outside path the open resolved through); the rest resolves
-/// links at open and compares the handle's own identity with the walk's
-/// stat, which no swap can keep equal. Neither branch opens the source a
-/// second time **for its bytes**: the path already lied once, so every
-/// byte that could be copied comes from this one handle. The only
-/// name-side lookup that remains is [`open_failure_sentence`]'s
-/// diagnostic stat — run after an open that already failed, it chooses a
-/// static sentence for a refusal and enables no copy.
+/// the path (`crate::checked_file::open_checked`). Every byte that could be
+/// copied comes from this one handle. The only name-side lookup left is
+/// `open_failure_sentence`'s diagnostic stat, run after an open that already
+/// failed: it chooses a static sentence and enables no copy.
 fn verified_source(
     root: &Path,
     target: &Path,
     walked: &std::fs::Metadata,
 ) -> Result<(File, std::fs::Metadata), &'static str> {
-    let file = open_source(target).map_err(|_| open_failure_sentence(target))?;
-    let metadata = match file.metadata() {
-        Ok(metadata) => metadata,
-        // A handle this code opened but cannot stat: choose the sentence
-        // from the path instead — a refusal either way, and a link that
-        // got here still gets the link's words.
-        Err(_) => return Err(open_failure_sentence(target)),
-    };
-    if opened_final_is_link(&metadata) {
-        return Err(LINK_FINAL);
-    }
-    if !metadata.is_file() {
-        return Err(NOT_A_FILE);
-    }
-    confirm_binding(&file, root, walked)?;
-    Ok((file, metadata))
+    open_checked(root, target, walked).map_err(|refusal| match refusal {
+        Refusal::Unopened => open_failure_sentence(target),
+        #[cfg(not(windows))]
+        Refusal::Replaced => REPLACED_WHILE_STAGED,
+        other => other.sentence(),
+    })
 }
 
 /// The sentence for a source that would not open. The path is stat'ed
@@ -325,118 +288,10 @@ fn verified_source(
 /// nothing, and nothing is read through it.
 fn open_failure_sentence(target: &Path) -> &'static str {
     match std::fs::symlink_metadata(target) {
-        Ok(metadata) if opened_final_is_link(&metadata) => LINK_FINAL,
+        Ok(metadata) if is_link(&metadata) => LINK_FINAL,
         Ok(_) => OPEN_FAILED,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => DOES_NOT_EXIST,
         Err(_) => LOCATION_UNCONFIRMED,
-    }
-}
-
-/// One open of the source, without resolving a link at the final
-/// component, so a link planted over the validated name is opened as the
-/// link it is and its target is never touched.
-#[cfg(windows)]
-fn open_source(target: &Path) -> std::io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(target)
-}
-
-/// One open of the source. Plain on non-Windows: links are resolved here,
-/// which is what the identity half of [`confirm_binding`] then refuses —
-/// the target may be *stat'ed* through that follow, never read: its bytes
-/// are copied only from a handle that matched the walk's own stat.
-#[cfg(not(windows))]
-fn open_source(target: &Path) -> std::io::Result<File> {
-    OpenOptions::new().read(true).open(target)
-}
-
-/// The house predicate for "this stat is a link", spelled without
-/// `is_symlink()`: whether a junction answers to that label is a
-/// measurement this house has seen flip (`workspace_git_support`), while
-/// the attribute never has.
-#[cfg(windows)]
-fn opened_final_is_link(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
-}
-
-/// Non-Windows spelling of the same predicate, on a stat — where a symlink
-/// is a symlink and the label has no junction to disagree about.
-#[cfg(not(windows))]
-fn opened_final_is_link(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
-/// The binding, on Windows: where the handle *really* lives. The walk's
-/// stat carries no identity stable Rust can read (`file_index` is still
-/// unstable), so the proof is the handle's own resolved path —
-/// `GetFinalPathNameByHandle` reports what the open actually traversed,
-/// which makes a component swapped for a junction show up as the outside
-/// path it leads to, and a handle whose location cannot even be named is
-/// a refusal rather than a copy.
-#[cfg(windows)]
-fn confirm_binding(
-    file: &File,
-    root: &Path,
-    _walked: &std::fs::Metadata,
-) -> Result<(), &'static str> {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
-
-    let root = std::fs::canonicalize(root).map_err(|_| LOCATION_UNCONFIRMED)?;
-    let mut buffer = vec![0u16; 1024];
-    let length = loop {
-        let written = unsafe {
-            GetFinalPathNameByHandleW(
-                file.as_raw_handle() as _,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                VOLUME_NAME_DOS,
-            )
-        };
-        if written == 0 {
-            return Err(LOCATION_UNCONFIRMED);
-        }
-        // Success excludes the terminating null (it fits); too small
-        // returns the size *including* it — exactly the length to retry
-        // with, and `+ 1` where they are equal so the loop cannot stall.
-        if (written as usize) < buffer.len() {
-            break written as usize;
-        }
-        if written > 32_768 {
-            return Err(LOCATION_UNCONFIRMED);
-        }
-        buffer.resize((written as usize).max(buffer.len() + 1), 0);
-    };
-    let resolved = PathBuf::from(OsString::from_wide(&buffer[..length]));
-    if resolved.starts_with(&root) {
-        Ok(())
-    } else {
-        Err(OUTSIDE_THE_WORKSPACE)
-    }
-}
-
-/// The binding, on non-Windows: the handle's own identity (`dev`, `ino` —
-/// both readable from the walk's lstat there) against the identity the
-/// walk stat'ed. No swap of any component keeps them equal, and no path
-/// is re-examined — the handle answers.
-#[cfg(not(windows))]
-fn confirm_binding(
-    file: &File,
-    _root: &Path,
-    walked: &std::fs::Metadata,
-) -> Result<(), &'static str> {
-    use std::os::unix::fs::MetadataExt;
-    let opened = file.metadata().map_err(|_| LOCATION_UNCONFIRMED)?;
-    if (opened.dev(), opened.ino()) == (walked.dev(), walked.ino()) {
-        Ok(())
-    } else {
-        Err(REPLACED_WHILE_STAGED)
     }
 }
 

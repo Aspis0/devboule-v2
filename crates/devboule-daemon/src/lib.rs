@@ -40,6 +40,8 @@ mod browser_registry;
 #[cfg(feature = "server")]
 mod browser_tool_title;
 #[cfg(feature = "server")]
+mod checked_file;
+#[cfg(feature = "server")]
 mod ci_gh;
 #[cfg(feature = "server")]
 mod ci_pages;

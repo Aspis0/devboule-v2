@@ -403,3 +403,29 @@ fn the_worst_content_still_fits_one_frame() {
         MAX_FRAME_BYTES
     );
 }
+
+/// A folder the walk checked is swapped for a link after the check. The open
+/// goes through the link to another folder's image of the same name, and the
+/// handle is refused: the bytes read are never the bytes the check saw.
+#[test]
+fn an_image_whose_folder_is_swapped_for_a_link_after_the_check_is_refused() {
+    let repo = Repo::new("swap-folder-image");
+    repo.write("sub/shot.png", vec![b'a'; 64]);
+    let outside = crate::test_dirs::test_temp_dir("devboule-file-read-outside-swap");
+    std::fs::create_dir_all(outside.join("sub")).expect("the outside folder");
+    std::fs::write(outside.join("sub").join("shot.png"), vec![b'b'; 64]).expect("outside image");
+
+    let root = repo.root.clone();
+    let outside_sub = outside.join("sub");
+    crate::checked_file::between::install(Box::new(move || {
+        std::fs::rename(root.join("sub"), root.join("sub.moved")).expect("move the folder");
+        assert!(
+            crate::checked_file::link_dir(&root.join("sub"), &outside_sub),
+            "the folder link is planted"
+        );
+    }));
+    let reply = content_of(&repo.root, "sub/shot.png", None, None);
+    assert_ne!(reply.status, WorkspaceFileContentStatus::Ok, "{reply:?}");
+    assert_eq!(reply.content, None, "no outside byte is handed back");
+    let _ = std::fs::remove_dir_all(&outside);
+}

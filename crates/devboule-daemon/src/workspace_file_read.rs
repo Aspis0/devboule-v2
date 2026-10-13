@@ -32,6 +32,7 @@ use devboule_protocol::{
     DaemonMessage, WorkspaceFileContent, WorkspaceFileContentKind, WorkspaceFileContentStatus,
 };
 
+use crate::checked_file::{open_checked, read_capped};
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
 use crate::workspace_git_support::{confined, relativize, walk, Walked, OUTSIDE_THE_WORKSPACE};
@@ -163,7 +164,7 @@ fn content_of(
             // decodes to nothing: it is the one road here with no window
             // in it, withheld whole over the cap.
             if is_image(requested) {
-                return image_of(&target, &metadata);
+                return image_of(root, &target, &metadata);
             }
             match window_of(&target, first, line_count) {
                 Err(_) => refused(READ_FAILED),
@@ -332,23 +333,26 @@ fn window_of(target: &Path, from_line: u64, line_count: Option<u64>) -> std::io:
 
 /// An image's own road: the whole file as base64, under the cap the frame
 /// can carry — the withholding left standing, because a window of base64
-/// is not content anyone can decode.
-fn image_of(target: &Path, metadata: &std::fs::Metadata) -> WorkspaceFileContent {
-    if metadata.len() > IMAGE_READ_MAX_BYTES {
-        return withheld(metadata.len(), stamped(metadata));
+/// is not content anyone can decode. The bytes come from the handle the
+/// walk's check is bound to, and the read stops one byte past the cap.
+fn image_of(root: &Path, target: &Path, walked: &std::fs::Metadata) -> WorkspaceFileContent {
+    let (mut file, opened) = match open_checked(root, target, walked) {
+        Ok(verified) => verified,
+        Err(refusal) => return refused(refusal.sentence()),
+    };
+    if opened.len() > IMAGE_READ_MAX_BYTES {
+        return withheld(opened.len(), stamped(&opened));
     }
-    let bytes = match std::fs::read(target) {
-        Ok(bytes) => bytes,
+    // The file can grow after the open. A grown file is withheld with the
+    // cap's next byte as its size: that is a floor, not its real length.
+    let bytes = match read_capped(&mut file, IMAGE_READ_MAX_BYTES) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return withheld(IMAGE_READ_MAX_BYTES + 1, stamped(&opened)),
         Err(_) => return refused(READ_FAILED),
     };
-    // The file can grow between the stat and the read: the cap is
-    // re-checked on the bytes in hand.
     let size = bytes.len() as u64;
-    if size > IMAGE_READ_MAX_BYTES {
-        return withheld(size, stamped(metadata));
-    }
     let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    answered(WorkspaceFileContentKind::Image, base64, size, metadata)
+    answered(WorkspaceFileContentKind::Image, base64, size, &opened)
 }
 
 /// An image's bytes came back whole, with the stat's own numbers: no

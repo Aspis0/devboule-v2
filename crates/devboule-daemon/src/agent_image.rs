@@ -7,7 +7,6 @@
 //! URL or bare base64 is bytes, any other `result` string is a URL, and a
 //! failed generation is a tool row rather than an image.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -15,7 +14,9 @@ use devboule_protocol::{AttachmentReference, PromptAttachment};
 use serde_json::{json, Value};
 
 use crate::attachment_store::{extension_for, AttachmentStore};
+use crate::checked_file::{open_checked, read_capped};
 use crate::raster_metadata::{sniff_raster_mime, RasterMime};
+use crate::workspace_git_support::{confined, walk, Walked};
 
 /// One image's ceiling. Chosen against both budgets it sits under: fourteen
 /// of them fit the store's 72 MiB per-owner budget, and the base64 a frame
@@ -161,62 +162,43 @@ impl AgentImageSink {
     }
 
     /// A provider-named path is read only inside the session's workspace or
-    /// the provider's own image folder, and only when it is a regular file:
-    /// the frame chooses neither, and a FIFO or device would block the reader.
+    /// the provider's own image folder. The path is walked under the root it
+    /// sits in, so no component is a link, and the bytes come only from the
+    /// handle that walk is bound to, read at most one byte past the cap.
     fn read_path(&self, path: &Path) -> Result<Vec<u8>, String> {
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|_| "the named file could not be read".to_string())?;
-        if !metadata.file_type().is_file() {
-            return Err("the named path is not a regular file".to_string());
+        let outside = || "the named file is outside the session's folders".to_string();
+        let (root, relative) = self.root_of(path).ok_or_else(outside)?;
+        let target = confined(&root, &relative).ok_or_else(outside)?;
+        let walked = match walk(&root, &relative) {
+            Walked::Inside(metadata) => metadata,
+            Walked::Link(sentence) => return Err(sentence.to_string()),
+            Walked::Missing => return Err("the named file could not be read".to_string()),
+        };
+        let (mut file, _) = open_checked(&root, &target, &walked)
+            .map_err(|refusal| refusal.sentence().to_string())?;
+        read_capped(&mut file, MAX_AGENT_IMAGE_BYTES as u64)
+            .map_err(|_| "the named file could not be read".to_string())?
+            .ok_or_else(|| "the image is over the 5 MiB limit".to_string())
+    }
+
+    /// The root a provider-named path lies under and the path spelled from
+    /// it. Both sides are canonical, so a spelling the OS resolves differently
+    /// still lands in the root it names; the walk and the open then run on the
+    /// root as configured.
+    fn root_of(&self, path: &Path) -> Option<(PathBuf, String)> {
+        let resolved = path.canonicalize().ok()?;
+        let roots = std::iter::once(&self.workspace).chain(self.images_dir.as_ref());
+        for root in roots {
+            let Ok(canonical) = root.canonicalize() else {
+                continue;
+            };
+            if let Ok(relative) = resolved.strip_prefix(&canonical) {
+                return relative
+                    .to_str()
+                    .map(|relative| (root.clone(), relative.to_string()));
+            }
         }
-        let resolved = path
-            .canonicalize()
-            .map_err(|_| "the named file could not be read".to_string())?;
-        let allowed = [
-            self.workspace.canonicalize().ok(),
-            self.images_dir
-                .as_ref()
-                .and_then(|dir| dir.canonicalize().ok()),
-        ];
-        if !allowed
-            .iter()
-            .flatten()
-            .any(|root| resolved.starts_with(root))
-        {
-            return Err("the named file is outside the session's folders".to_string());
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // A FIFO swapped in after the path check must not block the open;
-            // the metadata check below is what refuses it.
-            options.custom_flags(libc::O_NONBLOCK);
-        }
-        let file = options
-            .open(&resolved)
-            .map_err(|_| "the named file could not be read".to_string())?;
-        // The open is the check's subject as well: a file swapped between the
-        // path check and here is still refused unless it is a regular file of
-        // a readable size.
-        let opened = file
-            .metadata()
-            .map_err(|_| "the named file could not be read".to_string())?;
-        if !opened.is_file() {
-            return Err("the named path is not a regular file".to_string());
-        }
-        if opened.len() > MAX_AGENT_IMAGE_BYTES as u64 {
-            return Err("the image is over the 5 MiB limit".to_string());
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_AGENT_IMAGE_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "the named file could not be read".to_string())?;
-        if bytes.len() > MAX_AGENT_IMAGE_BYTES {
-            return Err("the image is over the 5 MiB limit".to_string());
-        }
-        Ok(bytes)
+        None
     }
 }
 
