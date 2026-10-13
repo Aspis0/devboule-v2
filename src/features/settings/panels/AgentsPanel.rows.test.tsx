@@ -126,6 +126,43 @@ describe("Settings agents panel — profile rows and their actions", () => {
     ]);
   });
 
+  it("saves the built-in Design row switched off when it is deleted, and keeps it", async () => {
+    const builtin = makeProfile({
+      id: "design-builtin",
+      name: "Design",
+      provider: "",
+      model: "",
+      modeId: "",
+      enabledForAgents: true,
+      toolOverlay: ["browser_snapshot"],
+    });
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "profile-2", name: "Coder" }), builtin],
+      standingInstructions: "",
+    });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          makeProfile({ id: "profile-2", name: "Coder" }),
+          { ...builtin, enabledForAgents: false },
+        ],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Design", "Delete").click());
+    await act(async () => undefined);
+    await act(async () => panelButton("Delete now").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(sent?.profiles.map((profile) => [profile.name, profile.enabledForAgents])).toEqual([
+      ["Coder", false],
+      ["Design", false],
+    ]);
+  });
+
   it("deletes only the armed profile, and only after the inline confirm", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],

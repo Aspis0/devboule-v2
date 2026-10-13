@@ -21,7 +21,7 @@ import {
   renderAgentsPanel,
   typeText,
 } from "./agentsPanelTestHarness";
-import { rowButton, panelButton } from "./agentsPanelTestQueries";
+import { rowButton, panelButton, newProfileButton } from "./agentsPanelTestQueries";
 import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — spawn prompt, note and name limits", () => {
@@ -198,5 +198,23 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect(alert?.textContent).toContain("60-character cap");
     // The refusal truncates nothing and leaves the editor open.
     expect(valueOf(nameField)).toBe(name);
+  });
+  it("does not count the built-in Design row against the 64-profile cap", async () => {
+    const rows = Array.from({ length: 63 }, (_, index) =>
+      makeProfile({ id: `p-${index}`, name: `Profile ${index}` }),
+    );
+    const builtin = makeProfile({
+      id: "design-builtin",
+      name: "Design",
+      provider: "",
+      model: "",
+      modeId: "",
+      enabledForAgents: true,
+      toolOverlay: ["browser_snapshot"],
+    });
+    await renderAgentsPanel({ profiles: [...rows, builtin], standingInstructions: "" });
+
+    expect(dom.container.textContent).not.toContain("the maximum of 64 profiles");
+    expect(newProfileButton().disabled).toBe(false);
   });
 });

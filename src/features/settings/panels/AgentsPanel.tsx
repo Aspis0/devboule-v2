@@ -58,6 +58,19 @@ const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
 const MAX_PROFILES = 64;
 
 /**
+ * The built-in Design row names no provider, and no row the person saved does.
+ * It cannot be removed, so deleting it saves it switched off instead.
+ */
+function isBuiltinRow(profile: AgentProfile): boolean {
+  return profile.provider === "";
+}
+
+/** The rows the cap counts: the person's own, not the built-in. */
+function personalProfileCount(profiles: readonly AgentProfile[]): number {
+  return profiles.filter((profile) => !isBuiltinRow(profile)).length;
+}
+
+/**
  * Every write replaces the whole document, so each one travels on a deep
  * copy: a mutation made for one write must never sit under an earlier
  * write's revert base, and no render may alias the stored document.
@@ -471,7 +484,12 @@ export function AgentProfilesPanel() {
     const index = current.profiles.findIndex((profile) => profile.id === id);
     const removedId = current.profiles[index]?.id ?? "";
     const updated = cloneDocument(current);
-    updated.profiles = updated.profiles.filter((profile) => profile.id !== id);
+    const row = updated.profiles[index];
+    if (row !== undefined && isBuiltinRow(row)) {
+      row.enabledForAgents = false;
+    } else {
+      updated.profiles = updated.profiles.filter((profile) => profile.id !== id);
+    }
     setDeleteArmedId(null);
     void persist(updated).then((confirmed) => {
       setPendingFocus(confirmed ? { rowIndex: index } : { trashProfileId: removedId });
@@ -527,7 +545,7 @@ export function AgentProfilesPanel() {
   function createProfile(draft: ProfileFormSeed) {
     const current = documentRef.current;
     if (current === null) return;
-    if (current.profiles.length >= MAX_PROFILES) {
+    if (personalProfileCount(current.profiles) >= MAX_PROFILES) {
       setError({
         sentence: `The store already holds ${MAX_PROFILES} profiles, the maximum the daemon allows: delete one before creating another.`,
         detail: null,
@@ -606,7 +624,7 @@ export function AgentProfilesPanel() {
       ? (document.profiles.find((profile) => profile.id === dialog.id) ?? null)
       : null;
 
-  const atCap = profiles.length >= MAX_PROFILES;
+  const atCap = personalProfileCount(profiles) >= MAX_PROFILES;
 
   return (
     <div id="settings-panel-agents">

@@ -335,10 +335,16 @@ fn check_document(
     document: &mut AgentProfilesDocument,
     retained: &dyn Fn(&AgentProfile) -> bool,
 ) -> Result<(), String> {
-    if document.profiles.len() > MAX_PROFILES {
+    // A switched-off built-in row is not one of the person's profiles, so it
+    // does not take a place under the cap.
+    let counted = document
+        .profiles
+        .iter()
+        .filter(|profile| !crate::design_profile::is_switched_off(profile))
+        .count();
+    if counted > MAX_PROFILES {
         return Err(format!(
-            "the document holds {} profiles, over the {MAX_PROFILES}-profile cap",
-            document.profiles.len()
+            "the document holds {counted} profiles, over the {MAX_PROFILES}-profile cap"
         ));
     }
     let standing = document.standing_instructions.len();
@@ -923,6 +929,37 @@ mod tests {
         let kept = store.document();
         assert_eq!(names(&kept), vec!["Design"]);
         assert!(!kept.profiles[0].enabled_for_agents);
+    }
+
+    /// The 64-profile cap counts the person's rows. A switched-off built-in row is
+    /// not one of them, so a full list of 64 may still carry it.
+    #[test]
+    fn the_profile_cap_does_not_count_a_switched_off_builtin_row() {
+        let store = AgentProfilesStore::load(&temp_dir());
+        let mut rows: Vec<AgentProfile> = (0..MAX_PROFILES)
+            .map(|index| profile(&format!("p-{index}"), &format!("Profile {index}")))
+            .collect();
+        let mut off = profile("design-builtin", "Design");
+        off.provider.clear();
+        off.model.clear();
+        off.mode_id.clear();
+        off.enabled_for_agents = false;
+        rows.push(off);
+        store
+            .set(document(rows))
+            .expect("64 rows and the switched-off built-in fit the cap");
+        assert_eq!(store.document().profiles.len(), MAX_PROFILES + 1);
+    }
+
+    /// A Design row the person wrote is one of their rows, and counts.
+    #[test]
+    fn the_profile_cap_counts_a_persons_own_design_row() {
+        let store = AgentProfilesStore::load(&temp_dir());
+        let mut rows: Vec<AgentProfile> = (0..MAX_PROFILES)
+            .map(|index| profile(&format!("p-{index}"), &format!("Profile {index}")))
+            .collect();
+        rows.push(profile("p-design", "Design"));
+        assert!(store.set(document(rows)).is_err());
     }
 
     fn names(document: &AgentProfilesDocument) -> Vec<&str> {
