@@ -6,6 +6,7 @@ import {
   SECTION_SEPARATOR,
   type SkillSource,
 } from "./skillLoader";
+import craftManifest from "./craft/manifest.json";
 
 const BUILT_IN_SKILL_FILES = import.meta.glob<string>("./craft/*.md", {
   query: "?raw",
@@ -16,23 +17,8 @@ const BUILT_IN_SKILL_FILES = import.meta.glob<string>("./craft/*.md", {
 // This list is a truncation priority: its head is what survives when the
 // budget is refused. A section added without being placed in this list sorts
 // last by default, so a new .md file cannot silently displace a listed section.
-const BUILT_IN_SKILL_PRIORITY = [
-  "anti-ai-slop",
-  "typography",
-  "color",
-  "accessibility",
-  "spacing",
-  "state-coverage",
-  "layout",
-  "microcopy",
-  "icons",
-  "motion",
-  "rtl",
-  "form-validation",
-  "cognition",
-  "reference-research",
-  "slides",
-] as const;
+// The order lives in the shared craft manifest, which the daemon embeds too.
+const BUILT_IN_SKILL_PRIORITY: readonly string[] = craftManifest.priority;
 
 const BUILT_IN_SKILL_PRIORITY_INDEX: ReadonlyMap<string, number> = new Map(
   BUILT_IN_SKILL_PRIORITY.map((slug, index) => [slug, index]),
@@ -61,9 +47,9 @@ const BUILT_IN_SKILL_PRIORITY_INDEX: ReadonlyMap<string, number> = new Map(
  * catalogue — there the user names the section, so the declaration that
  * would narrow the corpus is the user's own choice and wins.
  */
-export const OUTPUT_MODE_SCOPED_SKILL_SLUGS: ReadonlyMap<string, DesignOutputMode> = new Map([
-  ["slides", "slides"],
-]);
+export const OUTPUT_MODE_SCOPED_SKILL_SLUGS: ReadonlyMap<string, DesignOutputMode> = new Map(
+  Object.entries(craftManifest.scoped) as Array<[string, DesignOutputMode]>,
+);
 
 /**
  * Whether a slug competes in this output mode. An unscoped slug always does.

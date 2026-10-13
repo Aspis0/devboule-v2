@@ -49,6 +49,11 @@ pub(in crate::mcp_broker) struct ResolvedProfile {
     /// names it and the creation carries it, so an edit to the profile after
     /// the creation began changes neither.
     pub(in crate::mcp_broker) spawn_prompt: String,
+    /// Whether this resolution took the unstored built-in Design road: the
+    /// only road whose child reads matched craft before its task. Frozen
+    /// here, at resolution, so the send never re-reads the store and a
+    /// stored profile that happens to share the name keeps its own prompt.
+    pub(in crate::mcp_broker) is_unstored_design: bool,
     pub(in crate::mcp_broker) overlay: crate::provider_catalog::ToolOverlay,
 }
 
@@ -118,6 +123,7 @@ pub(in crate::mcp_broker) fn resolve_profile(
         thinking_option_id: profile.thinking_option_id.clone(),
         features: profile.features.clone(),
         spawn_prompt: profile.spawn_prompt.clone(),
+        is_unstored_design: false,
         // The profile's own deny list, applied on top of the provider's stored
         // policy — the same two places a preset's overlay was applied. The store
         // has already refused a name outside the broker's table, so this can
@@ -247,6 +253,7 @@ pub(in crate::mcp_broker) fn resolve_creation(
         thinking_option_id: effort.clone(),
         features: serde_json::Map::new(),
         spawn_prompt: String::new(),
+        is_unstored_design: false,
         overlay,
     })
 }
@@ -286,6 +293,7 @@ fn resolve_design(
         thinking_option_id: None,
         features: serde_json::Map::new(),
         spawn_prompt: design_profile::DESIGN_SPAWN_PROMPT.to_string(),
+        is_unstored_design: true,
         overlay: crate::provider_catalog::ToolOverlay::from_profile_names(
             &design_profile::denied_names(),
         ),

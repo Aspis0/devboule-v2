@@ -897,6 +897,13 @@ pub(crate) struct AgentCreation {
     /// so the send composes from what was resolved and a later edit to the
     /// profile cannot reach a creation already under way.
     pub(crate) spawn_prompt: String,
+    /// Whether the creation resolved the unstored built-in Design profile:
+    /// the flag the send reads to compose matched craft before the task.
+    /// Frozen at resolution beside the spawn prompt, for the same reason —
+    /// a later profile edit cannot reach a creation already under way — and
+    /// never inferred from the name afterwards, so a stored profile that
+    /// shares the name keeps its existing prompt byte-identical.
+    pub(crate) is_unstored_design: bool,
     /// Everything the profile delivers to the child — the mode, the model, the
     /// thinking option and the `autoAccept` constraint — as one typed value.
     /// The card names all of these; the child is started on all of these or the

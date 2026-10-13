@@ -93,15 +93,19 @@ export interface ValidationError {
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
+// The ceilings live in the shared craft manifest, which the daemon embeds
+// too; the names below stay so every existing importer reads unchanged.
+
+import craftManifest from "./craft/manifest.json";
 
 /** Character ceiling for the composed doctrine block (~3000 tokens). See the header note. */
-export const DOCTRINE_CEILING_CHARS = 12000;
+export const DOCTRINE_CEILING_CHARS: number = craftManifest.ceilings.doctrine;
 
 /** Strict per-section ceiling: a section outgrowing it is two sections, not a bigger number. */
-export const DOCTRINE_SECTION_CEILING_CHARS = 2500;
+export const DOCTRINE_SECTION_CEILING_CHARS: number = craftManifest.ceilings.section;
 
 /** Strict character ceiling for relevance metadata; real descriptions are about 270 chars. */
-export const DOCTRINE_DESCRIPTION_CEILING_CHARS = 300;
+export const DOCTRINE_DESCRIPTION_CEILING_CHARS: number = craftManifest.ceilings.description;
 
 const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
 
@@ -402,10 +406,9 @@ export function resolveSections(
 
 // ── Composition ────────────────────────────────────────────────────────
 
-export const SECTION_SEPARATOR = "\n\n---\n\n";
+export const SECTION_SEPARATOR: string = craftManifest.sectionSeparator;
 
-export const TRUNCATION_NOTICE =
-  "Some doctrine sections were omitted to fit the budget; this block is not the complete doctrine.";
+export const TRUNCATION_NOTICE: string = craftManifest.truncationNotice;
 
 function fitSections(
   sections: readonly SkillSection[],

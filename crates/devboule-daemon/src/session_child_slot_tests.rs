@@ -18,25 +18,25 @@ use std::time::{Duration, Instant};
 /// way the wire create road takes it. The creator is a registry entry, not a
 /// process: what these tests measure is the child's road, and the creator only
 /// has to be live and counted.
-struct SlotFixture {
+pub(super) struct SlotFixture {
     dir: std::path::PathBuf,
-    state: Arc<ServerState>,
-    owner: OwnerId,
-    creator: String,
+    pub(super) state: Arc<ServerState>,
+    pub(super) owner: OwnerId,
+    pub(super) creator: String,
     /// The prompt path gates on the broker's authenticated `tools/list`, and a
     /// unit test has no `run_windows` to start the listener the provider dials.
     _mcp_server: crate::mcp_broker::McpServerHandle,
 }
 
 impl SlotFixture {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         Self::build(label, None)
     }
 
     /// The same fixture, with standing instructions already in the runtime
     /// directory: the profiles store the state attaches reads its file once,
     /// at construction, so the document is on disk *before* the state exists.
-    fn new_with_standing(label: &str, standing: &str) -> Self {
+    pub(super) fn new_with_standing(label: &str, standing: &str) -> Self {
         Self::build(label, Some(standing))
     }
 
@@ -107,15 +107,47 @@ impl SlotFixture {
     /// The child the broker's `devboule_create_agent` would ask for, with the
     /// preset facts the ACP override harness serves. An empty `prompt` is a
     /// child whose first prompt never goes out.
-    fn create(&self, prompt: &str) -> Result<Session, WireError> {
-        self.create_full(prompt, "", |_sessions| {})
+    pub(super) fn create(&self, prompt: &str) -> Result<Session, WireError> {
+        self.create_full(
+            prompt,
+            "profile-slot",
+            "Slot child",
+            "",
+            false,
+            |_sessions| {},
+        )
     }
 
     /// The same creation with the resolved profile's spawn prompt in the
     /// `AgentCreation`: the road under test carries it from the resolution
     /// into the child's first prompt.
-    fn create_with_spawn(&self, prompt: &str, spawn_prompt: &str) -> Result<Session, WireError> {
-        self.create_full(prompt, spawn_prompt, |_sessions| {})
+    pub(super) fn create_with_spawn(
+        &self,
+        prompt: &str,
+        spawn_prompt: &str,
+    ) -> Result<Session, WireError> {
+        self.create_full(
+            prompt,
+            "profile-slot",
+            "Slot child",
+            spawn_prompt,
+            false,
+            |_sessions| {},
+        )
+    }
+
+    /// The unstored built-in Design road: the creation carries the HTML
+    /// contract and the craft flag `resolve_design` froze at resolution, so
+    /// the child's first prompt composes matched doctrine before the task.
+    pub(super) fn create_design_child(&self, prompt: &str) -> Result<Session, WireError> {
+        self.create_full(
+            prompt,
+            crate::design_profile::DESIGN_PROFILE_ID,
+            "Design",
+            crate::design_profile::DESIGN_SPAWN_PROMPT,
+            true,
+            |_sessions| {},
+        )
     }
 
     /// `arm` runs after the reservation and before the creation, which is the
@@ -125,13 +157,16 @@ impl SlotFixture {
         prompt: &str,
         arm: impl FnOnce(&SessionRegistry),
     ) -> Result<Session, WireError> {
-        self.create_full(prompt, "", arm)
+        self.create_full(prompt, "profile-slot", "Slot child", "", false, arm)
     }
 
     fn create_full(
         &self,
         prompt: &str,
+        profile_id: &str,
+        profile_name: &str,
         spawn_prompt: &str,
+        is_unstored_design: bool,
         arm: impl FnOnce(&SessionRegistry),
     ) -> Result<Session, WireError> {
         let creator = self
@@ -153,9 +188,10 @@ impl SlotFixture {
                 creator_runtime: self.state.sessions.live_runtime(&self.creator, &self.owner),
                 display_name: "slot child".to_string(),
                 provider: "devboule-acp-stub".to_string(),
-                profile_id: "profile-slot".to_string(),
-                profile_name: "Slot child".to_string(),
+                profile_id: profile_id.to_string(),
+                profile_name: profile_name.to_string(),
                 spawn_prompt: spawn_prompt.to_string(),
+                is_unstored_design,
                 delivery: crate::profile_delivery::ProfileDelivery::none(),
                 overlay: crate::provider_catalog::ToolOverlay::NONE,
                 labels: Default::default(),
@@ -200,7 +236,7 @@ impl SlotFixture {
         }
     }
 
-    fn finish(self) {
+    pub(super) fn finish(self) {
         if let Some(journal) = self.state.sessions.journal.as_ref() {
             journal.shutdown();
         }
@@ -305,7 +341,7 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
 
 /// The first prompt the child's journal recorded as its `creation` line, once
 /// it has landed.
-fn creation_line(fixture: &SlotFixture, child: &str) -> String {
+pub(super) fn creation_line(fixture: &SlotFixture, child: &str) -> String {
     let journal = fixture
         .state
         .sessions
