@@ -360,6 +360,8 @@ export function AgentProfilesPanel() {
   // A row whose provider the catalog no longer lists is kept, and labelled.
   // Nothing is labelled until the catalog lists a provider: with none
   // installed, the picker says so and no row is judged against an empty list.
+  // The built-in row is the exception: it stores no provider, so it names none
+  // to install and would otherwise read as missing from every catalog.
   const installedIds = useMemo(
     () => new Set(installedProviders.map((provider) => provider.id)),
     [installedProviders],
@@ -698,7 +700,11 @@ export function AgentProfilesPanel() {
                 <li className="agent-profile-row" key={profile.id} data-profile-id={profile.id}>
                   <ProfileRow
                     profile={profile}
-                    providerMissing={judgeProviders && !installedIds.has(profile.provider)}
+                    providerMissing={
+                      judgeProviders &&
+                      !isBuiltinRow(profile) &&
+                      !installedIds.has(profile.provider)
+                    }
                     isFirst={index === 0}
                     isLast={index === profiles.length - 1}
                     busy={busy}

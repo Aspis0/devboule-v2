@@ -2,7 +2,8 @@
 
 // The profile row's display strings: the meta line reads provider · model ·
 // effort, with the serving provider between the first two when the profile
-// stores one — and the glyph tile's content.
+// stores one, names the creating agent's provider for the built-in row, and
+// the glyph tile's content.
 import { describe, expect, it } from "vitest";
 import { profileMetaText, profileTileText } from "./profileText";
 
@@ -36,6 +37,17 @@ describe("profileMetaText", () => {
         thinkingOptionId: null,
       }),
     ).toBe("pi · mimo-2-6");
+  });
+
+  it("names the creating agent's provider for the built-in row", () => {
+    expect(
+      profileMetaText({
+        provider: "",
+        model: "",
+        modelProvider: null,
+        thinkingOptionId: null,
+      }),
+    ).toBe("Uses the creating agent's provider");
   });
 
   it("reads a bare stored id exactly as before", () => {

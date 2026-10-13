@@ -1,5 +1,5 @@
 import type { AgentProfile } from "../../../types/ipc";
-import { rustTrim } from "../AgentProfileDraft";
+import { isBuiltinRow, rustTrim } from "../AgentProfileDraft";
 
 type MetaSource = Pick<AgentProfile, "provider" | "model" | "modelProvider" | "thinkingOptionId">;
 
@@ -8,8 +8,12 @@ type MetaSource = Pick<AgentProfile, "provider" | "model" | "modelProvider" | "t
  * serving provider between the first two when the profile stores one
  * (pi's catalog serves one id under several providers). A bare stored id
  * reads as before, so legacy rows need no migration to render.
+ *
+ * The built-in row stores no provider because it runs on whichever provider
+ * created it, so the line says that rather than rendering empty separators.
  */
 export function profileMetaText(profile: MetaSource): string {
+  if (isBuiltinRow(profile)) return "Uses the creating agent's provider";
   const serving = rustTrim(profile.modelProvider ?? "");
   const thinking = rustTrim(profile.thinkingOptionId ?? "");
   const base =

@@ -39,10 +39,38 @@ function fieldNamed(label: string): HTMLInputElement | HTMLTextAreaElement {
   return field;
 }
 
+/** A built-in Design and a personal profile may share one name, so this suite
+ * keys the row it means on the id the daemon stored. */
+function rowById(id: string): HTMLElement {
+  const row = dom.container.querySelector<HTMLElement>(`[data-profile-id="${id}"]`);
+  if (!row) throw new Error(`profile row ${id} did not render`);
+  return row;
+}
+
 const DOCUMENT = {
   profiles: [
     storedProfile("p-gone", { name: "Gone", provider: "does-not-exist", model: "old-model" }),
     storedProfile("p-good", { name: "Good", provider: "claude" }),
+  ],
+  standingInstructions: "",
+};
+
+const DESIGN_ROWS = {
+  profiles: [
+    // The built-in, turned off: it stores no provider because it runs on
+    // whichever provider created it.
+    storedProfile("design-builtin", {
+      name: "Design",
+      provider: "",
+      model: "",
+      modeId: "",
+      enabledForAgents: false,
+    }),
+    storedProfile("p-design-gone", {
+      name: "Design",
+      provider: "does-not-exist",
+      model: "old-model",
+    }),
   ],
   standingInstructions: "",
 };
@@ -55,6 +83,23 @@ describe("Settings agents panel — a profile whose provider is not installed", 
     await act(async () => undefined);
     expect(rowByName("Gone").textContent).toContain("not installed");
     expect(rowByName("Good").textContent).not.toContain("not installed");
+  });
+
+  it("names the creating agent's provider on the built-in row instead of calling it uninstalled", async () => {
+    await renderAgentsPanel(DESIGN_ROWS);
+    await act(async () => undefined);
+
+    const builtin = rowById("design-builtin");
+    expect(builtin.querySelector(".profile-meta")?.textContent).toBe(
+      "Uses the creating agent's provider",
+    );
+
+    // The name alone buys nothing: a personal Design keeps its stored meta and
+    // its missing provider called out.
+    const personal = rowById("p-design-gone");
+    expect(personal.querySelector(".profile-meta")?.textContent).toBe(
+      "does-not-exist · old-model · not installed",
+    );
   });
 
   it("locks every field but the provider until another installed provider is picked", async () => {
