@@ -91,7 +91,20 @@ describe("side panel dead controls", () => {
             },
           },
           document: null,
-          messages: [],
+          // The panel reads the transcript, and the store derives latestArtifact from
+          // the message carrying the html, so both carry it or the card is unreachable.
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              status: "done",
+              title: "Edited the card",
+              desc: "",
+              sources: [],
+              nodeIds: [],
+              artifactHtml: "<p>latest artifact</p>",
+            },
+          ],
           latestArtifact: { html: "<p>latest artifact</p>" },
           generation: null,
           sectionNotes: [],

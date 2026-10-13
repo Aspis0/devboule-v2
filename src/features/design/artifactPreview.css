@@ -49,12 +49,47 @@
 }
 
 /*
+ * The results, stacked. One column and one share each, so a transcript that holds
+ * several finished results fills the sidebar with pages instead of leaving the rest of
+ * it dark. The gap is the only thing between them: each block's own dark remainder
+ * already reads as the edge of a page, so nothing is drawn here.
+ */
+.design-preview-stack {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+/*
+ * The block's name, and the target that opens the canvas on that result. Quiet on
+ * purpose: it sits above a page that is the content, and it is only there to tell two
+ * results apart, so it takes the card's own padding and the type a reply card's
+ * heading takes rather than a heading size of its own.
+ */
+.design-preview-block-heading {
+  display: block;
+  flex: none;
+  width: 100%;
+  padding: var(--space-8) var(--space-12);
+  border: 0;
+  background: none;
+  color: var(--silence);
+  font-family: inherit;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
  * The shell owns this card's frame (`.workspace-generation-card` in
  * Workspace.css); this only turns it into a column so the preview can take what
- * the panel has left after the header row, the generation notice and the card's
- * own frame. Scoped to the class the panel adds to that one card: the reply card in
- * the branch below is a `.workspace-generation-card` too, and the rule below is what
- * keeps that one at its content height.
+ * the panel has left after the header row, the generation notice, the block's own
+ * heading and the card's own frame. Scoped to the class the panel adds to that one
+ * card: the reply card in the branch below is a `.workspace-generation-card` too, and
+ * the rule below is what keeps that one at its content height.
  */
 .design-preview-card {
   display: flex;
