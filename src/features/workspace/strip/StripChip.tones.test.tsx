@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 
-// What a tab says about its kind: an agent names its provider and its title, a
-// terminal or a file tab names its kind, and only the agent reads in ink.
+// What a tab says and draws about its kind: an agent names its provider and its
+// title, a terminal or a file tab names its kind, only the agent reads in ink,
+// and a child the Design profile birthed wears the Design pencil.
 
 import { act } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Session } from "../../../types/ipc";
+import type { Session, SessionStateSnapshot } from "../../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+import { PanelIcon, type PanelIconName } from "../panel/PanelIcon";
+import { createWorkspaceSessionController } from "../workspaceSessions";
 import { StripChip, ToolStripChip } from "./StripChip";
 import { chipDisplay } from "./stripDisplay";
 import { makeToolTab } from "./toolTabs";
@@ -49,7 +53,11 @@ afterEach(async () => {
 const tabButton = (): HTMLElement =>
   container.querySelector<HTMLElement>(".workspace-session-tab")!;
 
-async function renderSession(subject: Session, selected = false): Promise<HTMLElement> {
+async function renderSession(
+  subject: Session,
+  selected = false,
+  tooltip = "",
+): Promise<HTMLElement> {
   await act(async () =>
     root.render(
       <StripChip
@@ -58,7 +66,7 @@ async function renderSession(subject: Session, selected = false): Promise<HTMLEl
         multiselected={false}
         tabIndex={0}
         display={chipDisplay(subject)}
-        tooltip=""
+        tooltip={tooltip}
         provenanceLines={[]}
         menuOpen={false}
         takeBack={false}
@@ -133,5 +141,137 @@ describe("a tab's tone and name", () => {
 
     expect(tab.getAttribute("aria-selected")).toBe("true");
     expect(tab.classList.contains("workspace-session-tab-selected")).toBe(true);
+  });
+});
+
+/** The pencil path the panel's own glyph draws, read back from its markup — the
+ * chip shows this path or it is not the same pencil. */
+function panelIconPath(name: PanelIconName): string | null {
+  const host = document.createElement("div");
+  host.innerHTML = renderToStaticMarkup(<PanelIcon name={name} />);
+  return host.querySelector("path")?.getAttribute("d") ?? null;
+}
+
+function markPath(tab: HTMLElement): string | null {
+  return tab.querySelector(".strip-kind svg path")?.getAttribute("d") ?? null;
+}
+
+function freshSessionStateSnapshot(id: string, profileId?: string): SessionStateSnapshot {
+  return {
+    id,
+    workspaceId: "alpha",
+    kind: "claude",
+    title: "Design child",
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+    ...(profileId === undefined ? {} : { profileId }),
+  };
+}
+
+/** The controller behind the strip, fed by hand: a push lands through the watch
+ * the app subscribes to, and `list` answers the next refresh. */
+function rosterHarness(list: () => Session[] = () => []) {
+  const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+    listener: null,
+  };
+  const controller = createWorkspaceSessionController({
+    list: async () => list(),
+    create: async () => {
+      throw new Error("unused");
+    },
+    watch: async (listener) => {
+      watched.listener = listener;
+      return () => {
+        watched.listener = null;
+      };
+    },
+  });
+  const end = controller.watch();
+  return {
+    controller,
+    push: (snapshots: SessionStateSnapshot[]) => watched.listener?.(snapshots),
+    end,
+  };
+}
+
+describe("the mark a Design-profile child draws", () => {
+  it("draws the panel's pencil where the provider mark would be", async () => {
+    const tab = await renderSession({
+      ...session("claude", "Landing page"),
+      profileId: "design-builtin",
+    });
+
+    expect(tab.querySelector(".strip-kind .workspace-panel-icon")).not.toBeNull();
+    expect(markPath(tab)).toBe(panelIconPath("design"));
+    expect(tab.querySelector("[data-mark]")).toBeNull();
+  });
+
+  it("keeps the pencil under whatever name the row is renamed to", async () => {
+    const tab = await renderSession({
+      ...session("claude", "Shell 7"),
+      displayName: "Pricing page",
+      profileId: "design-builtin",
+    });
+
+    expect(tab.querySelector(".workspace-tab-label")?.textContent).toBe("Pricing page");
+    expect(markPath(tab)).toBe(panelIconPath("design"));
+  });
+
+  it("keeps the provider mark on a Design-titled child of another profile", async () => {
+    const tab = await renderSession({
+      ...session("claude", "Design"),
+      profileId: "user-profile-2",
+    });
+
+    expect(tab.querySelector('[data-mark="burst"]')).not.toBeNull();
+    expect(tab.querySelector(".workspace-panel-icon")).toBeNull();
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Claude, Running");
+  });
+
+  it("leaves a session that reports no profile exactly as it was", async () => {
+    const tab = await renderSession(session("terminal", "Terminal 2"));
+
+    expect(tab.querySelector('[data-mark="terminal"]')).not.toBeNull();
+    expect(tab.querySelector(".workspace-panel-icon")).toBeNull();
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Terminal, Running");
+  });
+
+  it("keeps the provider heard, the tooltip carried and the dot tone", async () => {
+    const tab = await renderSession(
+      { ...session("claude", "Landing page"), profileId: "design-builtin" },
+      false,
+      "Running",
+    );
+
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe(
+      "Claude, Design profile, Running",
+    );
+    expect(tab.getAttribute("title")).toBe("Running");
+    expect(tab.querySelector(".workspace-status-dot")?.classList.contains("strip-dot-live")).toBe(
+      true,
+    );
+  });
+});
+
+describe("a roster row's profile reaching the mark", () => {
+  it("draws the pencil for a push-only Design child, and keeps it when a later push and list stay silent", async () => {
+    let listed: Session[] = [];
+    const roster = rosterHarness(() => listed);
+    try {
+      roster.push([freshSessionStateSnapshot("child-1", "design-builtin")]);
+      let tab = await renderSession(roster.controller.getState().sessions[0]!);
+      expect(markPath(tab)).toBe(panelIconPath("design"));
+
+      roster.push([freshSessionStateSnapshot("child-1")]);
+      tab = await renderSession(roster.controller.getState().sessions[0]!);
+      expect(markPath(tab)).toBe(panelIconPath("design"));
+
+      listed = [{ ...session("claude", "Design child"), id: "child-1" }];
+      await roster.controller.refresh();
+      tab = await renderSession(roster.controller.getState().sessions[0]!);
+      expect(markPath(tab)).toBe(panelIconPath("design"));
+    } finally {
+      roster.end();
+    }
   });
 });

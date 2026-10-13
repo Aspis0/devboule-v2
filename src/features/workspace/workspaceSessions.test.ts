@@ -1130,6 +1130,108 @@ describe("session creator carry", () => {
   });
 });
 
+describe("session profile carry", () => {
+  it("lands the profile a fresh push carries on a push-only row", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "s.4242.12",
+        workspaceId: null,
+        kind: "acp",
+        title: "Design child",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+        profileId: "design-builtin",
+      },
+    ]);
+
+    expect(controller.getState().sessions[0]?.profileId).toBe("design-builtin");
+    release();
+  });
+
+  it("lands a profile a push carries for a listed row, and keeps it once both fall silent", async () => {
+    // The list never mentions a profile: the push is the only source, and once
+    // it has spoken, an omitting push or list must not un-say it.
+    let listed: Session[] = [{ ...liveSession("s.4242.13", "Design child"), kind: "acp" }];
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => listed),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    expect(controller.getState().sessions[0]?.profileId).toBeUndefined();
+
+    watched.listener?.([
+      {
+        id: "s.4242.13",
+        workspaceId: null,
+        kind: "acp",
+        title: "Design child",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+        profileId: "design-builtin",
+      },
+    ]);
+    expect(controller.getState().sessions[0]?.profileId).toBe("design-builtin");
+
+    watched.listener?.([
+      {
+        id: "s.4242.13",
+        workspaceId: null,
+        kind: "acp",
+        title: "Design child",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 6,
+      },
+    ]);
+    expect(controller.getState().sessions[0]?.profileId).toBe("design-builtin");
+
+    await controller.refresh();
+    expect(controller.getState().sessions[0]?.profileId).toBe("design-builtin");
+    release();
+  });
+
+  it("lands the profile a list row carries for a row the app has never seen", async () => {
+    const listed: Session = {
+      ...liveSession("s.4242.14", "Design child"),
+      kind: "acp",
+      profileId: "design-builtin",
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [listed]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+    });
+
+    await controller.refresh();
+
+    expect(controller.getState().sessions[0]?.profileId).toBe("design-builtin");
+  });
+});
+
 describe("session delegation badges", () => {
   it("shows nothing for a session that is not an agent-created child", () => {
     expect(sessionDelegationBadges(liveSession("human-1"))).toEqual([]);
