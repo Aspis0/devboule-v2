@@ -7,7 +7,8 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore, type DesignSessionState } from "../../store/appStore";
-import type { DesignHost } from "./designHost";
+import type { DesignHost, DesignMessage } from "./designHost";
+import { delegatedDesignCardId } from "./delegatedDesignMirror";
 import { ARTIFACT_CSP_META } from "./artifactCsp";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH, maxArtifactScroll } from "./artifactViewport";
 import {
@@ -158,6 +159,33 @@ function session(overrides: Partial<DesignSessionState> = {}): {
   };
 }
 
+/**
+ * A store-consistent one-result session. The panel reads the transcript rather than the
+ * store's derivation of it, so a session that sets only `latestArtifact` is a state the
+ * store cannot produce and renders no block: the html has to be on the message too.
+ */
+function artifactSession(
+  html: string,
+  overrides: Partial<DesignSessionState> = {},
+): { designSession: DesignSessionState } {
+  return session({
+    latestArtifact: { html },
+    messages: [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        status: "done",
+        title: "Edited the card",
+        desc: "",
+        sources: [],
+        nodeIds: [],
+        artifactHtml: html,
+      },
+    ],
+    ...overrides,
+  });
+}
+
 /** What the render critic posts back from its off-screen measurement frame. */
 function criticResult(contentHeight: number): Record<string, unknown> {
   return {
@@ -295,11 +323,11 @@ describe("DesignPreviewPanel", () => {
     // without it the panel would strand the user with no way back to the canvas.
     expect(container.textContent).toContain("Live preview");
     expect(container.querySelector(".workspace-open-design")).not.toBeNull();
-    // The page and nothing else. This branch used to carry the artifact message's title,
-    // description and source chips; the card is now the frame around the preview, so none
-    // of that text may reach it.
+    // The page and the agent's name for it. This branch used to carry the artifact
+    // message's description and source chips as well; the card is the frame around the
+    // preview, so none of that text may reach it.
     expect(container.querySelector(".design-preview-card")).not.toBeNull();
-    expect(container.textContent).not.toContain("Edited the card");
+    expect(container.textContent).toContain("Edited the card");
     expect(container.textContent).not.toContain("Snapped the radius to the token.");
     expect(container.textContent).not.toContain("src/real/source.tsx");
 
@@ -384,12 +412,11 @@ describe("DesignPreviewPanel", () => {
     expect(container.textContent).not.toContain("1 generation");
   });
 
-  // The artifact branch renders the page and nothing else, so there is no message text
-  // left in it to pair with anything: this pins that neither the artifact's own message
-  // nor the later settled reply reaches the panel. The store keeps ownership of which
-  // message an artifact belongs to (see `latestArtifact` in src/store/appStore.ts), and
-  // the panel no longer re-derives that predicate — with no text on the card, a wrong
-  // pairing has nothing to show itself in.
+  // The artifact branch renders the page and the agent's name for it and nothing else,
+  // so there is no message text left in it to pair with anything: this pins that a
+  // settled reply carrying no page never becomes a block, and that no reply commentary
+  // reaches the panel. The store keeps ownership of which message an artifact belongs
+  // to (see `latestArtifact` in src/store/appStore.ts).
   it("shows the preview alone in the artifact branch, never the transcript", async () => {
     useAppStore.setState(
       session({
@@ -421,7 +448,8 @@ describe("DesignPreviewPanel", () => {
     await renderPanel();
 
     expect(container.querySelectorAll("iframe")).toHaveLength(1);
-    expect(container.textContent).not.toContain("Made a card");
+    expect(container.querySelectorAll(".design-preview-card")).toHaveLength(1);
+    expect(container.textContent).toContain("Made a card");
     expect(container.textContent).not.toContain("Built the card.");
     expect(container.textContent).not.toContain("src/card/source.tsx");
     expect(container.textContent).not.toContain("Tokens used");
@@ -510,7 +538,7 @@ describe("DesignPreviewPanel", () => {
     afterEach(() => restoreResizeObserver());
 
     it("measures the scale from the column width and the page from the canvas store", async () => {
-      useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
       useAppStore.getState().setCanvasPageHeight(HOST, 922);
       await renderPanel();
 
@@ -545,7 +573,7 @@ describe("DesignPreviewPanel", () => {
       // element. Disconnecting and re-attaching here would buy nothing and open a frame
       // with no scale applied, on a box whose measurement cannot have changed.
       await act(async () => {
-        useAppStore.setState(session({ latestArtifact: { html: "<p>second artifact</p>" } }));
+        useAppStore.setState(artifactSession("<p>second artifact</p>"));
       });
       expect(observer.disconnects).toBe(0);
       expect(ResizeObserverStub.instances).toHaveLength(1);
@@ -561,7 +589,7 @@ describe("DesignPreviewPanel", () => {
     it("applies the column's scale on commit, without waiting for a delivery", async () => {
       const restoreBox = stubBoxMetrics(340, 600);
       try {
-        useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+        useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
         await renderPanel();
 
         const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -599,7 +627,7 @@ describe("DesignPreviewPanel", () => {
       expect(ResizeObserverStub.instances).toHaveLength(0);
 
       await act(async () => {
-        useAppStore.setState(session({ latestArtifact: { html } }));
+        useAppStore.setState(artifactSession(html));
       });
 
       const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -610,7 +638,7 @@ describe("DesignPreviewPanel", () => {
     });
 
     it("leaves the stylesheet's values in place while the column has no size", async () => {
-      useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
       await renderPanel();
 
       const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -636,7 +664,7 @@ describe("DesignPreviewPanel", () => {
     // guarded the way the canvas guards the same value. Two deliveries on one box, and
     // the second must reach the style object with nothing to say.
     it("writes nothing on a delivery that measures the box it already wrote", async () => {
-      useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
       await renderPanel();
 
       const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -691,7 +719,7 @@ describe("DesignPreviewPanel", () => {
     // narrowest preview the sidebar hands over (214px), and 3000 is taller than any
     // window — neither moves the page height now.
     it("scales a narrow box from its width while the page stays on the canvas height", async () => {
-      useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+      useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
       useAppStore.getState().setCanvasPageHeight(HOST, 922);
       await renderPanel();
 
@@ -819,7 +847,7 @@ describe("preview shared viewport", () => {
   }
 
   function setArtifactWithCanvasHeight(html: string, canvasHeight: number | null): void {
-    useAppStore.setState(session({ latestArtifact: { html } }));
+    useAppStore.setState(artifactSession(html));
     if (canvasHeight !== null) {
       useAppStore.getState().setCanvasPageHeight(HOST, canvasHeight);
     }
@@ -845,7 +873,7 @@ describe("preview shared viewport", () => {
 
   it("keeps the canvas height across narrow and wide resizes", async () => {
     setArtifactWithCanvasHeight(ARTIFACT_MARKUP, 922);
-    useAppStore.setState(session({ latestArtifact: { html: ARTIFACT_MARKUP } }));
+    useAppStore.setState(artifactSession(ARTIFACT_MARKUP));
     useAppStore.getState().setCanvasPageHeight(HOST, 922);
     await renderPanel();
     const preview = container.querySelector<HTMLElement>(".design-artifact-preview");
@@ -928,7 +956,7 @@ describe("preview shared viewport", () => {
     // Normal delegated flow: the child finished in Workspace, the canvas never
     // mounted, so no store height and nothing in the critic cache.
     const html = `<main>${"cold ".repeat(200)}</main>`;
-    useAppStore.setState(session({ latestArtifact: { html } }));
+    useAppStore.setState(artifactSession(html));
     const restoreBox = stubBoxMetrics(340, 600);
     try {
       await renderPanel();
@@ -973,7 +1001,7 @@ describe("preview shared viewport", () => {
   it("skips measurement on a cache hit", async () => {
     const html = `<main>${"warm ".repeat(200)}</main>`;
     setCachedArtifactStructure(html, { sections: [], contentHeight: 2641 });
-    useAppStore.setState(session({ latestArtifact: { html } }));
+    useAppStore.setState(artifactSession(html));
     const restoreBox = stubBoxMetrics(340, 600);
     try {
       await renderPanel();
@@ -989,7 +1017,7 @@ describe("preview shared viewport", () => {
   it("ignores a late result for a replaced artifact", async () => {
     const first = "<main>first page</main>";
     const second = "<main>second page</main>";
-    useAppStore.setState(session({ latestArtifact: { html: first } }));
+    useAppStore.setState(artifactSession(first));
     const restoreBox = stubBoxMetrics(340, 600);
     try {
       await renderPanel();
@@ -1005,7 +1033,7 @@ describe("preview shared viewport", () => {
     const staleWindow = firstMeasure.contentWindow;
 
     await act(async () => {
-      useAppStore.setState(session({ latestArtifact: { html: second } }));
+      useAppStore.setState(artifactSession(second));
     });
     const secondMeasure = document.querySelector<HTMLIFrameElement>(
       ".design-artifact-measurement-frame",
@@ -1081,7 +1109,7 @@ describe("preview enlarged viewer", () => {
   async function renderPanel(html = ARTIFACT_MARKUP, canvasHeight: number | null = CANVAS_HEIGHT) {
     container = document.createElement("div");
     document.body.appendChild(container);
-    useAppStore.setState(session({ latestArtifact: { html } }));
+    useAppStore.setState(artifactSession(html));
     if (canvasHeight !== null) {
       useAppStore.getState().setCanvasPageHeight(HOST, canvasHeight);
     }
@@ -1128,9 +1156,10 @@ describe("preview enlarged viewer", () => {
     expect(opener.tagName).toBe("BUTTON");
     expect(opener.getAttribute("type")).toBe("button");
     expect(opener.getAttribute("aria-label")).toBe("Enlarge Design preview");
-    // The opener is the only target the change adds: Open Design is still there,
-    // nothing nests a button inside one, and the artifact itself is not focusable.
-    expect(container.querySelectorAll("button")).toHaveLength(2);
+    // The block's own three targets and nothing else: Open Design, the heading that
+    // opens the canvas on this result, and the opener. Nothing nests a button inside
+    // one, and the artifact itself is not focusable.
+    expect(container.querySelectorAll("button")).toHaveLength(3);
     expect(container.querySelectorAll("button button")).toHaveLength(0);
 
     const restoreBox = stubBoxMetrics(STAGE.width, STAGE.height);
@@ -1337,7 +1366,7 @@ describe("preview enlarged viewer", () => {
     if (observer === undefined) throw new Error("viewer observer missing");
 
     await act(async () => {
-      useAppStore.setState(session({ latestArtifact: { html: "<main>second page</main>" } }));
+      useAppStore.setState(artifactSession("<main>second page</main>"));
     });
 
     // A window over an artifact the canvas no longer holds would be showing
@@ -1400,5 +1429,230 @@ describe("preview enlarged viewer", () => {
     expect(opener).toMatch(/flex:\s*1/);
     expect(opener).toContain("min-height: 0");
     expect(opener).toContain("align-items: stretch");
+  });
+});
+
+// The column stacks one block per finished result, in transcript order, so a
+// transcript that holds two Design agents' results shows both pages instead of
+// only the one that finished last.
+describe("stacked preview blocks", () => {
+  const PAGE_A = '<main data-probe="a">PAGE A</main>';
+  const PAGE_B = '<main data-probe="b">PAGE B</main>';
+  const CHILD_A = "child-a";
+  const CHILD_B = "child-b";
+
+  let container: HTMLDivElement;
+  let root: Root;
+
+  /** The card the mirror writes for a finished child (delegatedDesignMirror.ts). */
+  function mirroredCard(childSessionId: string, title: string, html: string): DesignMessage {
+    return {
+      id: delegatedDesignCardId(childSessionId),
+      role: "assistant",
+      status: "done",
+      title,
+      desc: "Finished by a Design agent.",
+      sources: [],
+      nodeIds: [],
+      artifactHtml: html,
+    } as DesignMessage;
+  }
+
+  function twoResults(): { designSession: DesignSessionState } {
+    return session({
+      latestArtifact: { html: PAGE_B },
+      messages: [
+        mirroredCard(CHILD_A, "Landing page", PAGE_A),
+        mirroredCard(CHILD_B, "Pricing table", PAGE_B),
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    useAppStore.setState({ activeSurface: "workspace" });
+    useAppStore.setState(session());
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    useAppStore.setState(session());
+  });
+
+  async function renderPanel(): Promise<void> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<DesignPreviewPanel />);
+    });
+  }
+
+  function blocks(): HTMLElement[] {
+    return [...container.querySelectorAll<HTMLElement>(".design-preview-card")];
+  }
+
+  function headings(): HTMLButtonElement[] {
+    return [...container.querySelectorAll<HTMLButtonElement>(".design-preview-block-heading")];
+  }
+
+  it("gives every finished result its own titled block, in transcript order", async () => {
+    useAppStore.setState(twoResults());
+
+    await renderPanel();
+
+    expect(blocks()).toHaveLength(2);
+    // Named by the agent that made each one: two pages in one column are only
+    // tellable apart by what is under them.
+    expect(headings().map((heading) => heading.textContent)).toEqual([
+      "Landing page",
+      "Pricing table",
+    ]);
+    // Transcript order is the column's order, block for block.
+    const pages = [...container.querySelectorAll<HTMLIFrameElement>("iframe")].map(
+      (frame) => frame.getAttribute("srcdoc") ?? "",
+    );
+    expect(pages).toHaveLength(2);
+    expect(pages[0]).toContain(PAGE_A);
+    expect(pages[1]).toContain(PAGE_B);
+  });
+
+  it("gives a message with no page behind it no block", async () => {
+    useAppStore.setState(
+      session({
+        latestArtifact: { html: PAGE_A },
+        messages: [
+          mirroredCard(CHILD_A, "Landing page", PAGE_A),
+          {
+            id: "assistant-2",
+            role: "assistant",
+            status: "done",
+            title: "Tokens used",
+            desc: "Listed the tokens.",
+            sources: ["src/tokens/source.ts"],
+            nodeIds: [],
+          },
+        ],
+      }),
+    );
+
+    await renderPanel();
+
+    expect(blocks()).toHaveLength(1);
+    expect(container.querySelectorAll("iframe")).toHaveLength(1);
+    // The reply card does not come back either: one result is enough to fill the
+    // column, and a reply that made no page is commentary about a run.
+    expect(container.textContent).not.toContain("Tokens used");
+    expect(container.textContent).not.toContain(NOTHING_GENERATED_MESSAGE);
+  });
+
+  it("renders a single result as the one block it was before the stack", async () => {
+    useAppStore.setState(
+      session({
+        latestArtifact: { html: ARTIFACT_MARKUP },
+        messages: [
+          {
+            id: "assistant-1",
+            role: "assistant",
+            status: "done",
+            title: "Edited the card",
+            desc: "Snapped the radius to the token.",
+            sources: ["src/real/source.tsx"],
+            nodeIds: ["node-1"],
+            artifactHtml: ARTIFACT_MARKUP,
+          },
+        ],
+      }),
+    );
+
+    await renderPanel();
+
+    expect(container.querySelector(".design-preview-stack")).not.toBeNull();
+    expect(blocks()).toHaveLength(1);
+    const frame = container.querySelector<HTMLIFrameElement>("iframe");
+    if (frame === null) throw new Error("preview frame missing");
+    // The same page render the single card carried: same policy, same confinement,
+    // same scaled page box, and still no reply commentary on the card.
+    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("scrolling")).toBe("no");
+    expect(frame.style.pointerEvents).toBe("none");
+    expect(frame.closest(".design-artifact-preview")?.hasAttribute("inert")).toBe(true);
+    expect(frame.parentElement?.className).toContain("design-artifact-preview-page");
+    expect(container.textContent).not.toContain("Snapped the radius to the token.");
+    expect(container.textContent).not.toContain("src/real/source.tsx");
+    // The markup lives in the frame's attribute and nowhere else, so the panel's own
+    // document still renders none of it.
+    expect(container.textContent).not.toContain("ARTIFACT MARKUP PAYLOAD");
+  });
+
+  it("keeps the empty and absent-host sentences exactly as they were", async () => {
+    useAppStore.setState({
+      designSession: {
+        host: null,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+        lastCanvasPageHeight: null,
+        mirroredFitPending: false,
+      },
+    });
+    await renderPanel();
+    expect(container.querySelector(".workspace-design-note")?.textContent).toBe(
+      EMPTY_CANVAS_MESSAGE,
+    );
+    expect(container.querySelectorAll(".design-preview-card")).toHaveLength(0);
+
+    await act(async () => root.unmount());
+    container.remove();
+    useAppStore.setState(session());
+    await renderPanel();
+    expect(container.querySelector(".workspace-design-note")?.textContent).toBe(
+      NOTHING_GENERATED_MESSAGE,
+    );
+    expect(container.querySelectorAll(".design-preview-card")).toHaveLength(0);
+  });
+
+  it("opens the canvas on the mirrored child whose heading was clicked", async () => {
+    useAppStore.setState(twoResults());
+
+    await renderPanel();
+    const [first] = headings();
+    if (first === undefined) throw new Error("block heading missing");
+    await act(async () => {
+      first.click();
+    });
+
+    const open = useAppStore.getState().designSession;
+    // The canvas renders the last card holding an artifact, so opening the first
+    // block moves that child's card to the end and leaves the other where it was.
+    expect(open.messages.map((message) => message.id)).toEqual([
+      delegatedDesignCardId(CHILD_B),
+      delegatedDesignCardId(CHILD_A),
+    ]);
+    expect(open.latestArtifact).toMatchObject({ html: PAGE_A });
+    expect(open.mirroredFitPending).toBe(true);
+    expect(useAppStore.getState().activeSurface).toBe("design");
+  });
+
+  it("gives the stack a share of the column each and only a gap between them", () => {
+    // happy-dom does not lay out, so the stack's share and the gap between blocks
+    // are only checkable by reading the sheet.
+    const stack = cssBlockFor(".design-preview-stack {");
+    expect(stack).toContain("display: flex");
+    expect(stack).toContain("flex-direction: column");
+    expect(stack).toMatch(/flex:\s*1/);
+    expect(stack).toContain("min-height: 0");
+    // A gap, not a border and not a panel: the dark remainder inside each block
+    // already reads as the edge of a page.
+    expect(stack).toContain("gap: var(--space-8)");
+    expect(stack).not.toContain("border");
+    expect(stack).not.toContain("background");
+
+    const heading = cssBlockFor(".design-preview-block-heading {");
+    expect(heading).toContain("border: 0");
+    expect(heading).toContain("background: none");
+    expect(heading).not.toContain("border-radius");
   });
 });

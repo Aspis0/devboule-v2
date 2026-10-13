@@ -62,6 +62,17 @@ export function delegatedDesignCardId(childSessionId: string): string {
   return `${DELEGATED_DESIGN_MESSAGE_PREFIX}${childSessionId}`;
 }
 
+/**
+ * The child one of those cards was written for, or null for any other transcript
+ * id. Nothing outside this module writes an id under the prefix, which is what makes
+ * the prefix the whole of the answer.
+ */
+export function delegatedChildSessionId(messageId: string): string | null {
+  return messageId.startsWith(DELEGATED_DESIGN_MESSAGE_PREFIX)
+    ? messageId.slice(DELEGATED_DESIGN_MESSAGE_PREFIX.length)
+    : null;
+}
+
 let mirrorSequence = 0;
 let writtenSequence = 0;
 
