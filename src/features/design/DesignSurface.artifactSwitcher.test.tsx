@@ -200,6 +200,37 @@ describe("the canvas toolbar's artifact switcher", () => {
     expect(arcade?.className).not.toContain("design-artifact-card-shown");
     expect(brief?.getAttribute("aria-pressed")).toBe("true");
     expect(brief?.className).toContain("design-artifact-card-shown");
+    // Nothing is scrolled out of sight here, so neither edge wears its fade.
+    const row = container.querySelector(".design-artifact-switcher");
+    expect(row?.getAttribute("data-fade-left")).toBe("false");
+    expect(row?.getAttribute("data-fade-right")).toBe("false");
+
+    await act(async () => root.unmount());
+  });
+
+  it("numbers two results whose runs named nothing", async () => {
+    const { container, root } = await renderDesign([
+      result("delegated-design-child-blank-a", "", '<main class="a">A</main>'),
+      result("delegated-design-child-blank-b", "", '<main class="b">B</main>'),
+    ]);
+
+    const titles = cardTitles(container);
+    expect(titles).toEqual(["Result 1", "Result 2"]);
+    expect(new Set(titles).size).toBe(2);
+    expect(titles.every((title) => (title ?? "").length > 0)).toBe(true);
+
+    await act(async () => root.unmount());
+  });
+
+  it("numbers results that answer to the same name", async () => {
+    const { container, root } = await renderDesign([
+      result("delegated-design-child-wrote-a", "Wrote", '<main class="a">A</main>'),
+      result("delegated-design-child-wrote-b", "Wrote", '<main class="b">B</main>'),
+    ]);
+
+    const titles = cardTitles(container);
+    expect(titles).toEqual(["Wrote 1", "Wrote 2"]);
+    expect(new Set(titles).size).toBe(2);
 
     await act(async () => root.unmount());
   });

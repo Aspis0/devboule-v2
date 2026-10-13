@@ -190,17 +190,64 @@
 }
 
 /* The result switcher: the strip's chip vocabulary, quieter than the strip —
-   the toolbar already carries the controls, so a card is a name on a fill. */
+   the toolbar already carries the controls, so a card is a name on a fill.
+
+   The row scrolls instead of widening the toolbar: the Folder control and the
+   history cluster hold their place at every width, and a card scrolled out of
+   sight is still reachable where a card that pushed the undo controls off the
+   bar is not. `overflow-y: hidden` is load-bearing — a lone `overflow-x: auto`
+   computes the other axis to `auto` and grows a bar beside 28 px cards. */
 .design-artifact-switcher {
   display: flex;
+  align-items: center;
   flex: 0 1 auto;
   min-width: 0;
   gap: var(--space-6);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
 
+.design-artifact-switcher::-webkit-scrollbar {
+  display: none;
+}
+
+/* The 36 px fade, only on the side that still hides cards. */
+.design-artifact-switcher[data-fade-right="true"] {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
+}
+
+.design-artifact-switcher[data-fade-left="true"] {
+  -webkit-mask-image: linear-gradient(to left, black calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to left, black calc(100% - 36px), transparent);
+}
+
+.design-artifact-switcher[data-fade-left="true"][data-fade-right="true"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 36px,
+    black calc(100% - 36px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 36px,
+    black calc(100% - 36px),
+    transparent
+  );
+}
+
+/* A card holds its own width and lets the row scroll past it: cards squeezed to
+   fit would truncate every name at once, which reads worse than one card off
+   the edge with the fade showing there is more. */
 .design-artifact-card {
   display: flex;
+  flex: none;
   align-items: center;
+  min-width: 0;
   max-width: 160px;
   height: var(--control-default);
   padding: 0 var(--space-8);
@@ -233,6 +280,14 @@
 .design-artifact-card-shown:focus-visible:not(:disabled) {
   color: var(--ink);
   background: var(--fill-selected-soft);
+}
+
+/* Forced colours drop the fill, so the card in front takes the system edge the
+   session strip's selected chip takes. */
+@media (forced-colors: active) {
+  .design-artifact-card-shown {
+    border-bottom: 2px solid Highlight;
+  }
 }
 
 .design-artifact-card:disabled {
