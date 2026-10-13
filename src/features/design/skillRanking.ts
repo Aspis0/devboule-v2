@@ -24,6 +24,8 @@
 //   IDF uses the non-negative variant used by Lucene and most
 //   implementations: ln(1 + (N - df + 0.5) / (df + 0.5)).
 
+import craftManifest from "./craft/manifest.json";
+
 export interface RankableSkill {
   slug: string;
   title: string;
@@ -54,15 +56,15 @@ export interface SkillRanking {
 // that is not about the section's topic; the body corroborates the
 // description, it does not lead. Exported so tests can reference them
 // without magic numbers.
-export const W_TITLE = 0.3;
-export const W_DESCRIPTION = 0.5;
-export const W_BODY = 0.2;
+export const W_TITLE = craftManifest.weights.title;
+export const W_DESCRIPTION = craftManifest.weights.description;
+export const W_BODY = craftManifest.weights.body;
 
 // Saturation and length-normalization constants, rationale in the file
 // header. Exported so tests and callers can read them without magic
 // numbers.
-export const K1 = 1.5;
-export const B = 0.75;
+export const K1 = craftManifest.bm25.k1;
+export const B = craftManifest.bm25.b;
 
 // Below this best-document BM25 score the query is treated as too weak to
 // rank on: the ranking would be a coin toss between near-zero scores, and
@@ -71,105 +73,17 @@ export const B = 0.75;
 // vague queries ("make it prettier") and no-match queries land below it.
 // Exported for tests; the value and its calibration are documented in
 // skillRanking.test.ts.
-export const FALLBACK_SCORE_THRESHOLD = 0.75;
+export const FALLBACK_SCORE_THRESHOLD = craftManifest.bm25.fallbackThreshold;
 
 // Minimal English stopword list. The sections are English; the list is
 // deliberately small because BM25's IDF already demotes ubiquitous terms —
 // removing them up front just saves arithmetic. Kept in one place, sorted.
-const STOPWORDS: ReadonlySet<string> = new Set([
-  "a",
-  "all",
-  "an",
-  "and",
-  "any",
-  "are",
-  "as",
-  "at",
-  "be",
-  "been",
-  "being",
-  "both",
-  "but",
-  "by",
-  "can",
-  "cannot",
-  "could",
-  "did",
-  "do",
-  "does",
-  "for",
-  "from",
-  "had",
-  "has",
-  "have",
-  "he",
-  "her",
-  "here",
-  "hers",
-  "him",
-  "his",
-  "how",
-  "i",
-  "if",
-  "in",
-  "into",
-  "is",
-  "it",
-  "its",
-  "me",
-  "might",
-  "must",
-  "my",
-  "no",
-  "not",
-  "now",
-  "of",
-  "on",
-  "only",
-  "or",
-  "other",
-  "our",
-  "out",
-  "over",
-  "she",
-  "should",
-  "so",
-  "some",
-  "such",
-  "than",
-  "that",
-  "the",
-  "their",
-  "them",
-  "then",
-  "there",
-  "these",
-  "they",
-  "this",
-  "those",
-  "to",
-  "too",
-  "up",
-  "us",
-  "was",
-  "we",
-  "were",
-  "what",
-  "when",
-  "which",
-  "who",
-  "whom",
-  "why",
-  "will",
-  "with",
-  "would",
-  "you",
-  "your",
-]);
+// The list lives in the shared craft manifest, which the daemon embeds too.
+const STOPWORDS: ReadonlySet<string> = new Set(craftManifest.stopwords);
 
 // Tokens shorter than this are dropped: single letters come from split
 // artifacts (accented characters, initials) and carry no topical signal.
-const MIN_TOKEN_LENGTH = 2;
+const MIN_TOKEN_LENGTH = craftManifest.minTokenLength;
 
 /**
  * Tokenize: lowercase, split on runs of non-alphanumeric characters,

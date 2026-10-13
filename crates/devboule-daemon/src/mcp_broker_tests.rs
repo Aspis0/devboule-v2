@@ -5091,6 +5091,121 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
     );
 }
 
+/// The Design approval names the HTML contract and nothing of the craft:
+/// matched doctrine rides the first send, never the card, so the person
+/// approves a short prompt and the 8 KiB cap keeps meaning the same thing.
+#[test]
+fn design_craft_the_design_creation_card_carries_no_doctrine() {
+    let state = ServerState::new("mcp-card-design-craft".to_string());
+    let creator_owner = owner("mcp-card-design-user", "mcp-card-design-client");
+    let creator = "s.card-design".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Codex,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0, true)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        choice: CreationChoice::Profile("Design".to_string()),
+        title: "Kid".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_creation(
+        &profile_store(document(vec![], "")),
+        &request.choice,
+        Some((&SessionKind::Codex, "auto")),
+        Some("codex"),
+    )
+    .expect("the built-in Design resolves");
+    assert!(resolved.is_unstored_design);
+    let card = creation_card(&creator, &request, &resolved, &ticket, None);
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    assert!(
+        description.contains("single fenced ```html"),
+        "the card still names the HTML contract: {description}"
+    );
+    for marker in [
+        "===== BEGIN DESIGN DOCTRINE",
+        "## Anti-AI-slop",
+        "reference material about design craft",
+    ] {
+        assert!(
+            !description.contains(marker),
+            "no doctrine on the approval card ({marker}): {description}"
+        );
+    }
+    assert!(
+        description.len() < crate::agent_profiles::MAX_PROFILE_SPAWN_PROMPT_BYTES,
+        "the card stays a short approval, not a doctrine dump"
+    );
+}
+
+/// The craft flag is frozen at resolution: the unstored built-in sets it,
+/// a stored profile that shares the Design name does not, and neither does
+/// a direct creation. The send reads the flag, never the name.
+#[test]
+fn design_craft_flag_is_set_only_for_the_unstored_builtin() {
+    let unstored = resolve_creation(
+        &profile_store(document(vec![], "")),
+        &CreationChoice::Profile("Design".to_string()),
+        Some((&SessionKind::Codex, "auto")),
+        Some("codex"),
+    )
+    .expect("the built-in Design resolves");
+    assert_eq!(unstored.id, crate::design_profile::DESIGN_PROFILE_ID);
+    assert!(unstored.is_unstored_design);
+
+    let stored = resolve_creation(
+        &profile_store(document(
+            vec![profile(
+                "Design",
+                "profile-design",
+                "claude",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        &CreationChoice::Profile("Design".to_string()),
+        Some((&SessionKind::Claude, "default")),
+        Some("claude"),
+    )
+    .expect("the person's Design row resolves");
+    assert_eq!(stored.id, "profile-design");
+    assert!(
+        !stored.is_unstored_design,
+        "a stored profile that shares the name keeps its own prompt"
+    );
+
+    let direct = resolve_creation(
+        &profile_store(document(vec![], "")),
+        &CreationChoice::Direct {
+            provider: "claude".to_string(),
+            model: None,
+            mode: Some("default".to_string()),
+            effort: None,
+            preset: None,
+        },
+        Some((&SessionKind::Claude, "default")),
+        Some("claude"),
+    )
+    .expect("a direct creation resolves");
+    assert!(!direct.is_unstored_design);
+}
+
 /// A prompt that tries to pass itself off as the card's own line cannot: the
 /// spawn prompt is a delimited block whose **every line is prefixed with `| `**,
 /// so an embedded line that imitates the card's line is a marked prompt line,

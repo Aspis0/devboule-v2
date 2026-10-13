@@ -99,6 +99,20 @@ mod daemon_record;
 #[cfg(feature = "server")]
 mod delegation_store;
 #[cfg(feature = "server")]
+mod design_craft;
+#[cfg(feature = "server")]
+mod design_craft_compose;
+#[cfg(feature = "server")]
+mod design_craft_corpus;
+#[cfg(all(test, feature = "server"))]
+mod design_craft_corpus_tests;
+#[cfg(feature = "server")]
+mod design_craft_rank;
+#[cfg(feature = "server")]
+mod design_craft_resolve;
+#[cfg(all(test, feature = "server"))]
+mod design_craft_tests;
+#[cfg(feature = "server")]
 mod design_profile;
 #[cfg(feature = "server")]
 mod device_identity;

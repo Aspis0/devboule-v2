@@ -486,6 +486,13 @@ mod session_restored_taint_tests;
 #[path = "session_untrusted_framing_tests.rs"]
 mod session_untrusted_framing_tests;
 pub(crate) use session_child_commands::CancelOutcome;
+/// The Design child's first prompt carved out beside the slot road: the flag
+/// only the unstored built-in sets, doctrine ordered before the creator's
+/// header, and the journaled first prompt of a real headless creation —
+/// with a stored-profile child pinned byte-identical beside it.
+#[cfg(test)]
+#[path = "design_craft_first_prompt_tests.rs"]
+mod design_craft_first_prompt_tests;
 /// The Unix announcement gate: the kernel uid the socket transport minted is
 /// the peer identity the agent report is checked against.
 #[cfg(all(test, unix))]
