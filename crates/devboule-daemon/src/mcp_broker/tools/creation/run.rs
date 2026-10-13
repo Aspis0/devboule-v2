@@ -431,6 +431,10 @@ fn run_creation(
         // into the child's first prompt (standing instructions, then this,
         // then the preamble, then the prompt).
         spawn_prompt: profile.spawn_prompt.clone(),
+        // The same freeze for the craft flag: the send injects matched
+        // doctrine for the unstored built-in Design only, and the decision
+        // is the resolution's, not a later look at the name.
+        is_unstored_design: profile.is_unstored_design,
         // What the card named is what the child gets: the profile's own mode,
         // model, thinking option and the *resolved* auto-accept answer, as
         // the one typed delivery the spawn path applies. A value that cannot

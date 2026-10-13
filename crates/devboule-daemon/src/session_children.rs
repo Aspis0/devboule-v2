@@ -538,13 +538,20 @@ impl super::SessionRegistry {
         if let Some(child_runtime) = child_runtime {
             child_runtime.update_ingress_chain(|_| creator_chain.clone());
         }
-        let preamble = format!(
-            "{}\n\n{}",
+        let creator_lead_in = Source::CreatorPrompt {
+            chain: &creator_chain,
+        }
+        .lead_in();
+        // A Design child's preamble carries the matched doctrine between the
+        // daemon's own preamble and the creator's header: ranked against the
+        // raw initial prompt, framed as the daemon's reference material, and
+        // never in the spawn field the card prints. Any other creation reads
+        // exactly what it always read.
+        let preamble = crate::design_craft_compose::child_preamble(
+            creation.is_unstored_design,
             crate::provider_catalog::AGENT_PREAMBLE,
-            Source::CreatorPrompt {
-                chain: &creator_chain
-            }
-            .lead_in()
+            &creator_lead_in,
+            &creation.initial_prompt,
         );
         let prompt = escape_for_model(&creation.initial_prompt);
         let spawn_prompt = creation.spawn_prompt.clone();
