@@ -10,6 +10,7 @@ import {
 } from "./artifactViewport";
 import { getCachedArtifactStructure, setCachedArtifactStructure } from "./artifactStructure";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
+import { DesignPreviewLightbox } from "./DesignPreviewLightbox";
 // The panel renders `design-artifact-frame` and the preview rules beside it, and those
 // live in their own stylesheet so importing them here cannot drag the 58 KB Design
 // stylesheet into the Workspace chunk, which loads on every start.
@@ -159,6 +160,13 @@ export function DesignPreviewPanel() {
     return () => card.removeEventListener("wheel", handleWheel);
   }, [canvasPageHeight, contentHeight, artifactHtml]);
 
+  // The enlarged page is the page, not a picture of it: it is open against the
+  // artifact and the host it was opened for, so a replacement or a dropped host
+  // closes it rather than leaving a window showing something the canvas dropped.
+  const [enlarged, setEnlarged] = useState<{ html: string; opener: HTMLElement } | null>(null);
+  const viewer =
+    enlarged !== null && enlarged.html === artifactHtml && host !== null ? enlarged : null;
+
   return (
     <div className="design-preview-panel">
       <div className="workspace-grounding-row">
@@ -187,7 +195,7 @@ export function DesignPreviewPanel() {
               <div>The last artifact was rejected.</div>
               <div>{latestArtifact.error}</div>
             </div>
-          ) : latestArtifact !== null && latestArtifact.html !== undefined ? (
+          ) : latestArtifact !== null && artifactHtml !== undefined ? (
             // The preview and nothing else. A Design run writes no files — the artifact is
             // HTML inside the reply, scraped by extractFencedHtml — so the title, the
             // description and the source chips this card used to carry were commentary
@@ -195,6 +203,11 @@ export function DesignPreviewPanel() {
             // artifact's own context belongs; the sidebar shows the page.
             <div className="workspace-generation-card design-preview-card" ref={cardRef}>
               {/*
+                The preview is the open target, so the page is inside a button —
+                the transcript's own thumbnail contract — and the opener is what
+                focus returns to. Only the box is the button's child: the frame and
+                its page keep the measurement and the policy they already had.
+
                 The panel renders the artifact itself, not a description of it: same
                 sandbox and the same `artifactSrcDoc`, so the preview cannot render
                 under a weaker policy than the canvas.
@@ -211,26 +224,35 @@ export function DesignPreviewPanel() {
                 the thumbnail — a control the user cannot use, drawn over ~15px of the
                 layout width the page was authored at.
               */}
-              <div className="design-artifact-preview" inert ref={attachPreview}>
-                <div className="design-artifact-preview-page">
-                  <iframe
-                    sandbox=""
-                    srcDoc={artifactSrcDoc(latestArtifact.html)}
-                    title="Generated artifact preview"
-                    className="design-artifact-frame"
-                    scrolling="no"
-                    style={
-                      contentHeight === undefined
-                        ? { pointerEvents: "none" }
-                        : {
-                            pointerEvents: "none",
-                            height: `${Math.max(canvasPageHeight, contentHeight)}px`,
-                            transform: `translateY(${-scrollOffset}px)`,
-                          }
-                    }
-                  />
+              <button
+                type="button"
+                className="design-artifact-preview-opener"
+                aria-label="Enlarge Design preview"
+                onClick={(event) =>
+                  setEnlarged({ html: artifactHtml, opener: event.currentTarget })
+                }
+              >
+                <div className="design-artifact-preview" inert ref={attachPreview}>
+                  <div className="design-artifact-preview-page">
+                    <iframe
+                      sandbox=""
+                      srcDoc={artifactSrcDoc(artifactHtml)}
+                      title="Generated artifact preview"
+                      className="design-artifact-frame"
+                      scrolling="no"
+                      style={
+                        contentHeight === undefined
+                          ? { pointerEvents: "none" }
+                          : {
+                              pointerEvents: "none",
+                              height: `${Math.max(canvasPageHeight, contentHeight)}px`,
+                              transform: `translateY(${-scrollOffset}px)`,
+                            }
+                      }
+                    />
+                  </div>
                 </div>
-              </div>
+              </button>
               {needsMeasure && artifactHtml !== undefined ? (
                 <ArtifactRenderCritic
                   html={artifactHtml}
@@ -261,6 +283,15 @@ export function DesignPreviewPanel() {
             </p>
           ) : null}
         </>
+      )}
+      {viewer === null ? null : (
+        <DesignPreviewLightbox
+          html={viewer.html}
+          canvasPageHeight={canvasPageHeight}
+          contentHeight={contentHeight}
+          opener={viewer.opener}
+          onClose={() => setEnlarged(null)}
+        />
       )}
     </div>
   );

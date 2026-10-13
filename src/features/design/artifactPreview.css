@@ -124,3 +124,78 @@
   transform-origin: top left;
   pointer-events: none;
 }
+
+/*
+ * The opener over the preview box. It takes over the preview box's place in the
+ * card's column, which means it has to be a column itself: the preview inside
+ * still fills its sidebar by being a flex item, and a plain block wrapper would
+ * leave that rule inert and let the page's own height set the box.
+ *
+ * The alignment is stated rather than left to the button's own defaults, so the
+ * one child is the whole button in every engine. Nothing else is drawn: the page
+ * is the entire target, which is why the button is named for what pressing it
+ * does rather than for the artifact it happens to be showing.
+ */
+.design-artifact-preview-opener {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+
+/*
+ * The enlarged page, in the transcript's own lightbox card: the same scrim, bar
+ * and close control, sized to fill the window instead of fitting a picture
+ * inside it. The card's own scroll is off because the stage is what scrolls.
+ *
+ * The size is stated, not left to the shell's `max-*`: those only cap a card
+ * that has a size, and the scrim centres a grid item rather than stretching it,
+ * so an auto-sized card wraps the bar and leaves the stage no height at all.
+ * The bounds below are the shell's own, so both cards stop 24px from the window.
+ *
+ * Paired with the card's own class, not standing alone: two selectors of equal
+ * weight would leave the winner to whichever sheet the build happened to emit
+ * last, and the Workspace imports these two from different modules.
+ */
+.chat-image-lightbox.design-artifact-viewer {
+  width: calc(100vw - 48px);
+  height: calc(100vh - 48px);
+  align-items: stretch;
+  padding: var(--space-8);
+  overflow: hidden;
+}
+
+/*
+ * The stage is the window the fitted page is shown through, and its box is what
+ * the fit is measured from — so the page below is centred on it rather than on
+ * the window. Dark around the page is the same colour the column leaves there.
+ */
+.design-artifact-viewer-page {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--design-canvas);
+}
+
+/*
+ * Centred without a wrapper box. `place-items` would centre the page's 1280px
+ * layout box, and the scale transforms that box from its own top-left corner, so
+ * the reduced page would hang off to one side; half the scaled page, taken off in
+ * both axes, puts the layout box under the scale instead of before it.
+ */
+.design-artifact-viewer-page .design-artifact-preview-page {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin-left: calc(var(--design-artifact-preview-scale) * -640px);
+  margin-top: calc(
+    var(--design-artifact-preview-scale) * var(--design-artifact-preview-page-height) / -2
+  );
+}
