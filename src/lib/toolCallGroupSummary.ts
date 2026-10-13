@@ -1,5 +1,6 @@
 import { isBrowserToolRow } from "./browserToolName";
 import type { ToolChatItem } from "./toolCallGroups";
+import { isFileChangeKind } from "./toolRowKind";
 
 export interface ToolCallGroupSummary {
   editedFileCount: number;
@@ -12,9 +13,10 @@ export interface ToolCallGroupSummary {
 
 /**
  * Count a run: edited and read files dedupe by path over every location a row
- * names, so one batch row counts each file it touched once; everything else
- * counts calls. A `fetch` is not one of the counted kinds here, so it lands in
- * `otherToolCount`. A row that names no file cannot be counted by file, so it
+ * names, so one batch row counts each file it touched once; a row that created
+ * a file or changed several files in different ways counts as an edit does.
+ * Everything else counts calls. A `fetch` is not one of the counted kinds here,
+ * so it lands in `otherToolCount`. A row that names no file cannot be counted by file, so it
  * counts as another tool instead of guessing by title. A browser call is one
  * kind of its own: the row shows as one, and a run that hides twenty browser
  * calls behind "other tools" says nothing about what the agent did.
@@ -28,7 +30,7 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
   let otherToolCount = 0;
   for (const item of items) {
     const kind = item.kind?.trim().toLowerCase() ?? "";
-    if (kind === "edit" || kind === "delete" || kind === "read") {
+    if (kind === "read" || isFileChangeKind(kind)) {
       const files = kind === "read" ? readFiles : editedFiles;
       let named = false;
       for (const location of item.locations ?? []) {

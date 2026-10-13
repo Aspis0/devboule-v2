@@ -28,6 +28,8 @@ function iconName(kind: string | undefined, title: string): keyof typeof PATHS {
     case "read":
       return "file";
     case "edit":
+    case "write":
+    case "change":
     case "delete":
       return "pencil";
     case "search":

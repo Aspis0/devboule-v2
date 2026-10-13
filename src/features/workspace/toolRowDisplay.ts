@@ -21,6 +21,10 @@ const DISPLAY_NAMES = new Map<string, string>([
   ["execute", "Run"],
   ["read", "Read"],
   ["edit", "Edit"],
+  // A file the provider created is not an edit, and a set whose changes do not
+  // share one action claims neither: each names what its own changes did.
+  ["write", "Create"],
+  ["change", "Change"],
   ["delete", "Delete"],
   ["search", "Search"],
   ["fetch", "Fetch"],
@@ -36,6 +40,8 @@ const RUNNING_NAMES = new Map<string, string>([
   ["execute", "Running"],
   ["read", "Reading"],
   ["edit", "Editing"],
+  ["write", "Creating"],
+  ["change", "Changing"],
   ["delete", "Deleting"],
   ["search", "Searching"],
   ["fetch", "Fetching"],

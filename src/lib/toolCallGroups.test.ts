@@ -201,6 +201,20 @@ describe("summarizeToolCallGroup", () => {
     expect(summarizeToolCallGroup([read, edit])).toBe("Edited 1 file, read 2 files");
   });
 
+  it("counts created files, and a mixed set, as the edits they are", () => {
+    const row = (kind: "write" | "change", paths: string[]): ToolItem =>
+      tool({ title: "batch", kind, locations: paths.map((path) => ({ path })) });
+    expect(
+      summarizeToolCallGroup([
+        row("write", ["alpha.txt", "beta.txt"]),
+        tool({ title: "ls", kind: "execute" }),
+      ]),
+    ).toBe("Edited 2 files, ran 1 command");
+    expect(summarizeToolCallGroup([row("change", ["alpha.txt", "beta.txt"])])).toBe(
+      "Edited 2 files",
+    );
+  });
+
   it("counts every path a delete batch names", () => {
     const remove = tool({
       title: "delete",

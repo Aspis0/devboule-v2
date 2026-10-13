@@ -173,7 +173,7 @@ pub(crate) fn codex_file_change_edits(
 /// One change's kind as Codex spells it: the string `kind` it always sent and
 /// the newer `kind` object's `type`. The bool marks the object's add, whose
 /// `diff` is the whole new file's text rather than a unified patch.
-fn codex_change_kind(change: &Value) -> (AgentEditKind, bool) {
+pub(crate) fn codex_change_kind(change: &Value) -> (AgentEditKind, bool) {
     match change.get("kind") {
         Some(Value::String(name)) => (codex_kind_name(name), false),
         Some(kind) => match kind.get("type").and_then(Value::as_str) {

@@ -11,11 +11,13 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use devboule_protocol::{
-    AgentTaskItem, AgentTaskStatus, ErrorCode, NoticeSeverity, PermissionOption, PlanCredits,
-    PlanWindow, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
+    AgentEditKind, AgentTaskItem, AgentTaskStatus, ErrorCode, NoticeSeverity, PermissionOption,
+    PlanCredits, PlanWindow, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, ToolLocation, TurnUsage, UnattendedState, WireError,
 };
 use serde_json::Value;
+
+use crate::agent_edit::codex_change_kind;
 
 use crate::shell_unwrap::normalize_command_execution_command;
 use crate::tool_paths::relativize_tool_path;
@@ -1619,6 +1621,8 @@ fn item_event(
             }
         }
         Some("fileChange") => {
+            let changes = named_changes(item.get("changes"));
+            let kind = file_change_row_kind(&changes);
             let locations = locations(item.get("changes"), cwd);
             if completed {
                 vec![SessionEvent::AgentToolUpdate {
@@ -1627,7 +1631,7 @@ fn item_event(
                     status: item.get("status").and_then(Value::as_str).map(status_name),
                     text: None,
                     title: None,
-                    kind: Some("edit".to_string()),
+                    kind: Some(kind.to_string()),
                     locations,
                     parent_tool_use_id: None,
                     spawn_depth: None,
@@ -1640,13 +1644,13 @@ fn item_event(
             } else {
                 vec![SessionEvent::AgentToolCall {
                     tool_call_id: id.to_string(),
-                    title: first_change_path(item.get("changes"), cwd).unwrap_or_default(),
+                    title: file_change_title(&changes, cwd),
                     status: item
                         .get("status")
                         .and_then(Value::as_str)
                         .map(status_name)
                         .unwrap_or_else(|| "in_progress".to_string()),
-                    kind: Some("edit".to_string()),
+                    kind: Some(kind.to_string()),
                     locations,
                     edits: crate::agent_edit::codex_file_change_edits(item.get("changes"), cwd),
                     subagent_type: None,
@@ -1693,12 +1697,54 @@ pub(crate) fn plan_text_update(tool_call_id: &str, text: &str) -> Vec<SessionEve
     item_event(Some(&completed), true, None)
 }
 
-fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
-    let changes = value?.as_array()?;
-    let path = changes
+/// The changes that name a file: a change with no path is not a file this row
+/// can name, so it neither counts in the row's title nor decides its kind.
+fn named_changes(value: Option<&Value>) -> Vec<&Value> {
+    value
+        .and_then(Value::as_array)
+        .map(|changes| {
+            changes
+                .iter()
+                .filter(|change| {
+                    change
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .is_some_and(|path| !path.is_empty())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The kind a fileChange row wears, read off the changes' own kinds: a file
+/// that was created is not an edit, and a set that creates one file and
+/// changes another is neither. `edit` stays the kind for changes that only
+/// update or delete, and for a row that names no file at all.
+fn file_change_row_kind(changes: &[&Value]) -> &'static str {
+    let added = changes
         .iter()
-        .find_map(|change| change.get("path")?.as_str())?;
-    Some(relativize_tool_path(path, cwd))
+        .filter(|change| codex_change_kind(change).0 == AgentEditKind::Write)
+        .count();
+    match (added, changes.len()) {
+        (0, _) => "edit",
+        (added, total) if added == total => "write",
+        _ => "change",
+    }
+}
+
+/// A row naming one file shows its path; one naming several shows how many,
+/// since the Changes panel is where each path is named. More than one is
+/// always plural, so no singular count is built here.
+fn file_change_title(changes: &[&Value], cwd: Option<&std::path::Path>) -> String {
+    if changes.len() > 1 {
+        return format!("{} files", changes.len());
+    }
+    changes
+        .first()
+        .and_then(|change| change.get("path"))
+        .and_then(Value::as_str)
+        .map(|path| relativize_tool_path(path, cwd))
+        .unwrap_or_default()
 }
 
 fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec<ToolLocation>> {
@@ -2348,6 +2394,65 @@ mod tests {
             }
             other => panic!("expected a diff-carrying fileChange, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn file_change_of_three_added_files_names_a_count_and_not_the_first_path() {
+        let changes = r#"[{"kind":{"type":"add"},"path":"alpha.md","diff":"Riga alpha\n"},{"kind":"add","path":"beta.md"},{"kind":"add","path":"gamma.md"}]"#;
+        let started = parse(&format!(
+            r#"{{"jsonrpc":"2.0","method":"item/started","params":{{"item":{{"type":"fileChange","id":"f3","status":"inProgress","changes":{changes}}},"startedAtMs":1,"threadId":"th","turnId":"tu"}}}}"#
+        ));
+        match events_from_envelope(&started).as_slice() {
+            [SessionEvent::AgentToolCall {
+                title,
+                kind: Some(kind),
+                locations: Some(locations),
+                ..
+            }] => {
+                assert_eq!(kind, "write");
+                assert_eq!(title, "3 files");
+                assert_eq!(locations.len(), 3);
+            }
+            other => panic!("expected a fileChange tool call, got {other:?}"),
+        }
+        // The settled row takes its kind from the completion, so the same item
+        // read a moment later must not fall back to claiming an edit.
+        let completed = parse(&format!(
+            r#"{{"jsonrpc":"2.0","method":"item/completed","params":{{"threadId":"th","turnId":"tu","item":{{"type":"fileChange","id":"f3","status":"completed","changes":{changes}}}}}}}"#
+        ));
+        assert!(matches!(
+            events_from_envelope(&completed).as_slice(),
+            [SessionEvent::AgentToolUpdate {
+                kind: Some(kind),
+                title: None,
+                locations: Some(locations),
+                ..
+            }] if kind == "write" && locations.len() == 3
+        ));
+    }
+
+    #[test]
+    fn file_change_of_one_added_file_keeps_its_path_and_reads_as_a_write() {
+        let started = parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f4","status":"inProgress","changes":[{"kind":{"type":"add"},"path":"alpha.md"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
+        );
+        assert!(matches!(
+            events_from_envelope(&started).as_slice(),
+            [SessionEvent::AgentToolCall { title, kind: Some(kind), .. }]
+                if title == "alpha.md" && kind == "write"
+        ));
+    }
+
+    #[test]
+    fn file_change_with_an_added_file_beside_an_updated_one_reads_as_a_change() {
+        let started = parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f5","status":"inProgress","changes":[{"kind":{"type":"add"},"path":"alpha.md"},{"kind":"update","path":"beta.md"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
+        );
+        assert!(matches!(
+            events_from_envelope(&started).as_slice(),
+            [SessionEvent::AgentToolCall { title, kind: Some(kind), .. }]
+                if title == "2 files" && kind == "change"
+        ));
     }
 
     #[test]

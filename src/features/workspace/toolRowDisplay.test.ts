@@ -55,6 +55,28 @@ describe("toolRowDisplay", () => {
     });
   });
 
+  it("labels a created file as created, and a mixed set as a change", () => {
+    expect(toolRowDisplay(tool({ kind: "write", title: "src/new.rs" }))).toEqual({
+      displayName: "Create",
+      summary: "src/new.rs",
+    });
+    // A row that names several files shows the count the daemon sent, never a
+    // path from the row's locations: it names one file, and this row is about three.
+    expect(
+      toolRowDisplay(
+        tool({
+          kind: "write",
+          title: "3 files",
+          locations: [{ path: "alpha.md" }, { path: "beta.md" }, { path: "gamma.md" }],
+        }),
+      ),
+    ).toEqual({ displayName: "Create", summary: "3 files" });
+    expect(toolRowDisplay(tool({ kind: "change", title: "2 files" }))).toEqual({
+      displayName: "Change",
+      summary: "2 files",
+    });
+  });
+
   it("labels a search call with its query", () => {
     expect(toolRowDisplay(tool({ kind: "search", title: "how to test" }))).toEqual({
       displayName: "Search",
@@ -255,9 +277,11 @@ describe("toolRowDisplay", () => {
       names("execute", true),
       names("read", true),
       names("edit", true),
+      names("write", true),
+      names("change", true),
       names("search", true),
       names("fetch", true),
-    ]).toEqual(["Running", "Reading", "Editing", "Searching", "Fetching"]);
+    ]).toEqual(["Running", "Reading", "Editing", "Creating", "Changing", "Searching", "Fetching"]);
     expect([names("execute", false), names("read", false), names("edit", false)]).toEqual([
       "Run",
       "Read",

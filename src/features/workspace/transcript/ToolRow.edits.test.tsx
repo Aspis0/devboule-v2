@@ -69,3 +69,36 @@ describe("an edit row in the transcript", () => {
     expect(container.querySelector(".workspace-chat-tool-body")).toBeNull();
   });
 });
+
+describe("a row whose files were created", () => {
+  const threeAdds: Partial<ToolChatItem> = {
+    title: "3 files",
+    kind: "write",
+    locations: [{ path: "alpha.md" }, { path: "beta.md" }, { path: "gamma.md" }],
+    edits: [
+      { path: "alpha.md", kind: "write", added: 1, removed: 0 },
+      { path: "beta.md", kind: "write", added: 1, removed: 0 },
+      { path: "gamma.md", kind: "write", added: 1, removed: 0 },
+    ],
+  };
+
+  it("reads as a creation and keeps the count of the three it made", async () => {
+    await render(editRow(threeAdds));
+    const label = container.querySelector(".workspace-chat-tool-label")?.textContent;
+    const summary = container.querySelector(".workspace-chat-tool-summary-text")?.textContent;
+    expect(`${label} ${summary}`).toBe("Create 3 files");
+    expect(container.querySelector(".workspace-changes-counts")?.textContent).toBe("+3");
+  });
+
+  it("reveals the first of the three it created in the Changes panel", async () => {
+    const onRevealChange = vi.fn();
+    await render(editRow(threeAdds), onRevealChange);
+    const summary = container.querySelector<HTMLButtonElement>(
+      "button.workspace-chat-tool-summary",
+    );
+    expect(summary).not.toBeNull();
+    await act(async () => summary?.click());
+
+    expect(onRevealChange).toHaveBeenCalledWith("alpha.md");
+  });
+});

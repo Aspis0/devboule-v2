@@ -1,5 +1,6 @@
 import { memo, useMemo, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
+import { isFileChangeKind } from "../../../lib/toolRowKind";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
@@ -100,14 +101,14 @@ export const ToolRow = memo(function ToolRow({
     () => (needsLines ? outputLines(hideUntrustedFrame(shownOutput)) : []),
     [shownOutput, needsLines],
   );
-  const isEdit = item.kind === "edit" || item.kind === "delete";
+  const isFileChange = isFileChangeKind(item.kind);
   // A file row's summary is the path itself, so it prints with forward slashes.
-  const isPathRow = isEdit || item.kind === "read";
+  const isPathRow = isFileChange || item.kind === "read";
   // A running or failed call draws no counts yet; a call with no edit draws none at all.
-  const editCounts = isEdit && !running && !failed ? editCountsOf(item.edits) : null;
+  const editCounts = isFileChange && !running && !failed ? editCountsOf(item.edits) : null;
   const revealPath =
     editCounts === null || onRevealChange === undefined ? undefined : item.edits?.[0]?.path;
-  const isDiff = useMemo(() => isEdit && diffStats(lines) !== null, [isEdit, lines]);
+  const isDiff = useMemo(() => isFileChange && diffStats(lines) !== null, [isFileChange, lines]);
   // A failure opens to its excerpt, never to a box: the words wait behind the
   // line like every other output.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
