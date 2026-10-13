@@ -1,6 +1,7 @@
 import { useAppStore } from "../../store/appStore";
 import type { DesignMessage } from "./designHost";
 import { delegatedDesignCardId } from "./delegatedDesignMirror";
+import { showDesignArtifact } from "./artifactSwitch";
 
 /** Whether the canvas's transcript holds this child's mirrored card. */
 export function hasMirroredDesignCard(
@@ -12,26 +13,12 @@ export function hasMirroredDesignCard(
 }
 
 /**
- * Opens Design on one mirrored child. The canvas shows the last card that holds
- * an artifact, so the child's card moves to the end of the transcript; the other
- * child's card stays in the list. The open also asks the canvas for one fit, so a
- * card that arrived while Design was unmounted still lands fully in view.
- *
- * Refused while a generation runs: its result takes the end of the transcript
- * when it settles, so the artifact shown would not be the requested one.
+ * Opens Design on one mirrored child. The switch itself is `showDesignArtifact`
+ * — the same move-to-end the canvas toolbar's switcher uses — and all this adds
+ * is the surface change, which a switch from inside the canvas has no reason to
+ * make. A refused switch leaves the surface alone.
  */
 export function openMirroredDesign(childSessionId: string): void {
-  const store = useAppStore.getState();
-  const { host, messages, generation } = store.designSession;
-  const cardId = delegatedDesignCardId(childSessionId);
-  const card = messages.find((message) => message.id === cardId);
-  if (host === null || card === undefined || generation !== null) return;
-  if (messages.at(-1) !== card) {
-    store.setDesignMessages(host, (current) => [
-      ...current.filter((message) => message.id !== cardId),
-      card,
-    ]);
-  }
-  store.requestMirroredFit(host);
-  store.selectSurface("design");
+  if (!showDesignArtifact(delegatedDesignCardId(childSessionId))) return;
+  useAppStore.getState().selectSurface("design");
 }

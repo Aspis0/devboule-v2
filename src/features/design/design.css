@@ -189,6 +189,57 @@
   border-top: 1px solid var(--border);
 }
 
+/* The result switcher: the strip's chip vocabulary, quieter than the strip —
+   the toolbar already carries the controls, so a card is a name on a fill. */
+.design-artifact-switcher {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: var(--space-6);
+}
+
+.design-artifact-card {
+  display: flex;
+  align-items: center;
+  max-width: 160px;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  color: var(--ink-soft);
+  background: transparent;
+  border-radius: var(--radius-6);
+  cursor: pointer;
+  font-size: var(--type-meta);
+}
+
+/* The name is the whole card, so a long one ellipsises inside its own fill
+   rather than widening the toolbar. */
+.design-artifact-card-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-artifact-card:hover:not(:disabled),
+.design-artifact-card:focus-visible:not(:disabled) {
+  color: var(--ink);
+  background: var(--fill-chip-hover);
+}
+
+/* The card in front keeps its fill under hover and focus, as the strip's
+   selected chip does: the fill is what says which one is in front. */
+.design-artifact-card-shown,
+.design-artifact-card-shown:hover:not(:disabled),
+.design-artifact-card-shown:focus-visible:not(:disabled) {
+  color: var(--ink);
+  background: var(--fill-selected-soft);
+}
+
+.design-artifact-card:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+}
+
 .design-grounding-toggle:hover,
 .design-grounding-toggle:focus-visible {
   border-color: var(--terracotta);

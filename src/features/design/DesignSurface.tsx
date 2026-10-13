@@ -49,6 +49,7 @@ import {
   type DesignSkillSelection,
 } from "./designSettings";
 import { DesignFolderControl } from "./DesignFolderControl";
+import { DesignArtifactSwitcher } from "./DesignArtifactSwitcher";
 import { DesignHistoryList } from "./DesignHistoryList";
 import {
   historyEntryInstruction,
@@ -261,6 +262,7 @@ export const DesignToolbar = memo(function DesignToolbar({
   return (
     <header className="design-toolbar">
       {folderControl}
+      <DesignArtifactSwitcher />
       {canSave ? (
         <>
           <span className="design-save-status" aria-live="polite">
