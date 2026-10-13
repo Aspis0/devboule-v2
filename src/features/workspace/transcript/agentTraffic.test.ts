@@ -67,7 +67,7 @@ describe("isAgentTraffic", () => {
     expect(isAgentTraffic(blocked)).toBe(false);
   });
 
-  it("keeps a poll or an answer that failed, since the person must see the failure", () => {
+  it("keeps a failed poll the person must see, and hides a failed answer or listing too", () => {
     const failed = (title: string, output: string): AgentChatItem => ({
       id: `failed-${title}`,
       role: "tool",
@@ -79,7 +79,12 @@ describe("isAgentTraffic", () => {
     expect(isAgentTraffic(failed("mcp__devboule__devboule_agent_activity", ""))).toBe(false);
     expect(
       isAgentTraffic(failed("mcp__devboule__devboule_answer_permission", "Mcp error -32602")),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      isAgentTraffic(
+        failed("mcp__devboule__devboule_list_pending_permissions", "user rejected MCP tool call"),
+      ),
+    ).toBe(true);
   });
 
   it("hides the orchestrator's answer and listing calls for children's cards", () => {

@@ -24,12 +24,14 @@ export function isAgentTraffic(item: AgentChatItem): boolean {
         isCreationStartNote(item.text)
       );
     case "tool": {
+      const name = devbouleToolName(item.title);
+      // The answer and listing rows stay out of the chat even when they fail: a
+      // failure is the relay's own, and the person answers in the child's tab.
+      if (PLUMBING_TOOLS.has(name)) return true;
       // A failed call is the person's to see, whatever it was for.
       if (isFailedToolCall(item)) return false;
-      const name = devbouleToolName(item.title);
       // A blocked agent is the one poll result the person needs; every other poll is noise.
-      if (name === "agent_activity") return devbouleActivity(item.output) !== "blocked";
-      return PLUMBING_TOOLS.has(name);
+      return name === "agent_activity" && devbouleActivity(item.output) !== "blocked";
     }
     // The relay of a child's card is what the orchestrator reads to answer it.
     // The person answers that card in the child's own tab.
