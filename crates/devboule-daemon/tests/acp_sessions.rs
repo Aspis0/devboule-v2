@@ -24,8 +24,8 @@ use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect, current_user_sid, spawn_daemon, spawn_daemon_with_env, DaemonClient, EventHandler,
-    RuntimePaths, SessionStateHandler,
+    connect, current_user_sid, spawn_daemon_with_env, DaemonClient, EventHandler, RuntimePaths,
+    SessionStateHandler,
 };
 use devboule_protocol::{
     AgentTaskState, AttentionReason, ClientHello, Cursor, DaemonMessage, ErrorCode, FinishArtifact,
@@ -137,35 +137,52 @@ struct Harness {
     dir: PathBuf,
     paths: RuntimePaths,
     child: Option<Child>,
+    /// The env this daemon was spawned with. A restart hands it the same
+    /// pairs: the child environment of the first spawn is what carries the
+    /// bounds below, and the process env alone would hand back the bare ones.
+    env: Vec<(String, String)>,
 }
 
-/// The handshake's ordinary bound, defaulted for the spawned daemons.
+/// The handshake's ordinary bound, defaulted for every daemon this harness
+/// spawns.
 ///
 /// Fifteen seconds is a ceiling for a healthy provider, and a saturated runner
-/// can spend it before the stub answers `session/new`. The client still caps
-/// `session_create` at 210 s, so a genuinely mute provider surfaces as a client
-/// timeout instead of the daemon's sentence — no test here waits for that
-/// sentence — and the override is not total: a live `session/set_mode` still
-/// uses the bare constant.
+/// can spend it before the stub answers `session/new`. The client waits the
+/// first answer plus four ordinary reads plus a 30 s margin, so a provider that
+/// stalls on one read is still refused by the daemon — with its own sentence,
+/// inside that window — and only accumulated stalls surface as a client
+/// timeout; no test here waits for either. The override is not total: a live
+/// `session/set_mode` still uses the bare constant.
 const HANDSHAKE_BUDGET_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 const HANDSHAKE_BUDGET_DEFAULT: &str = "60000";
 
 /// `extra_env` plus that default, unless the bound is already spoken for: a
 /// test asking for a shorter one through either the child env or the process
 /// env keeps it, since `Command::env` would otherwise shadow it silently.
-fn handshake_budget_env<'a>(extra_env: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+/// Resolved once, at spawn, and kept by the harness from then on.
+fn handshake_budget_env(extra_env: &[(&str, &str)]) -> Vec<(String, String)> {
     let spoken_for = extra_env
         .iter()
         .any(|(key, _)| *key == HANDSHAKE_BUDGET_ENV)
         || std::env::var_os(HANDSHAKE_BUDGET_ENV).is_some();
-    let mut env: Vec<(&'a str, &'a str)> = extra_env
+    let mut env: Vec<(String, String)> = extra_env
         .iter()
-        .map(|(key, value)| (*key, *value))
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect();
     if !spoken_for {
-        env.push((HANDSHAKE_BUDGET_ENV, HANDSHAKE_BUDGET_DEFAULT));
+        env.push((
+            HANDSHAKE_BUDGET_ENV.to_string(),
+            HANDSHAKE_BUDGET_DEFAULT.to_string(),
+        ));
     }
     env
+}
+
+/// The remembered pairs as the borrowed shape the spawn takes.
+fn env_pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    env.iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
 }
 
 impl Harness {
@@ -204,12 +221,14 @@ impl Harness {
             )
             .expect("the profile document the daemon reads at startup");
         }
-        let child = spawn_daemon_with_env(&daemon_bin(), &paths, &handshake_budget_env(extra_env))
-            .expect("spawn daemon");
+        let env = handshake_budget_env(extra_env);
+        let child =
+            spawn_daemon_with_env(&daemon_bin(), &paths, &env_pairs(&env)).expect("spawn daemon");
         let harness = Self {
             dir,
             paths,
             child: Some(child),
+            env,
         };
         harness.wait_until_up();
         harness
@@ -240,7 +259,10 @@ impl Harness {
             let _ = child.wait();
         }
         std::thread::sleep(Duration::from_millis(150));
-        self.child = Some(spawn_daemon(&daemon_bin(), &self.paths).expect("spawn daemon"));
+        self.child = Some(
+            spawn_daemon_with_env(&daemon_bin(), &self.paths, &env_pairs(&self.env))
+                .expect("spawn daemon"),
+        );
         self.wait_until_up();
     }
 }
