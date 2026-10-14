@@ -18,6 +18,15 @@ function read(path: string): string {
   return readFileSync(resolve(rootDir, path), "utf8");
 }
 
+// Sheet order matches the bundle: tokens, global, strip (pulled in by
+// SessionStrip, which Workspace imports before its own CSS), workspace.
+const sheets = [
+  read("src/styles/tokens.css"),
+  read("src/styles/global.css"),
+  read("src/features/workspace/strip/strip.css"),
+  read("src/features/workspace/Workspace.css"),
+];
+
 beforeEach(() => {
   beforeEachHarness();
 });
@@ -25,17 +34,11 @@ beforeEach(() => {
 afterEach(async () => {
   await unmountWorkspace();
   removeCssProof();
+  document.body.innerHTML = "";
 });
 
 describe("strip computed styles (real stylesheets, no app launch)", () => {
-  // Sheet order matches the bundle: tokens, global, strip (pulled in by
-  // SessionStrip, which Workspace imports before its own CSS), workspace.
-  const { inject, rulesFor, token } = assembleCssProof([
-    read("src/styles/tokens.css"),
-    read("src/styles/global.css"),
-    read("src/features/workspace/strip/strip.css"),
-    read("src/features/workspace/Workspace.css"),
-  ]);
+  const { inject, rulesFor, token } = assembleCssProof(sheets);
 
   it("the tab strip is a flex row again, not a stacked block", async () => {
     inject([".workspace-session-tabs"]);
@@ -153,17 +156,46 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     expect(selectedChip).toBe("");
   });
 
-  it("keeps the ×'s hover and focus on the band, not on a border-strength box", () => {
-    // Hover and focus answer alike, as they do on the strip's other ghost
-    // controls; the ring is what tells the two apart.
-    const hover = rulesFor(".workspace-session-chip-close:hover");
-    expect(hover).toBe(rulesFor(".workspace-session-chip-close:focus-visible"));
-    // The rate button's pair, read off the sheets so a theme retune moves the
-    // expectation with the token. A border token filled here would resolve to
-    // --line-strong and be the brightest surface on the band.
-    expect(hover).toBe(rulesFor("button.workspace-rate:hover"));
-    expect(hover).not.toContain(token("--line-strong")!);
-  });
+  it.each(["light", "dark"] as const)(
+    "the %s × rests on the band, not on the browser's button fill",
+    (theme) => {
+      const css = assembleCssProof(sheets, theme);
+      // The × names its own fill: the global :where(button) fallback otherwise
+      // paints ButtonFace, a mid grey under color-scheme: dark.
+      css.inject([".workspace-session-chip-close", ":where(button)"]);
+      const close = document.createElement("button");
+      close.className = "workspace-session-chip-close";
+      document.body.appendChild(close);
+
+      expect(getComputedStyle(close).backgroundColor).toBe("transparent");
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "the %s ×'s hover is the strip's ink wash, not a border-strength box",
+    (theme) => {
+      const css = assembleCssProof(sheets, theme);
+      const hover = css.rulesFor(".workspace-session-chip-close:hover");
+      // The rate button's pair, read off the sheets so a theme retune moves
+      // the expectation with the token. A border token filled here would
+      // resolve to --line-strong and be the brightest surface on the band.
+      expect(hover).toBe(css.rulesFor("button.workspace-rate:hover"));
+      expect(hover).not.toContain(css.token("--line-strong")!);
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "the %s focused tab's ring stays inside the tablist's scrollport",
+    (theme) => {
+      const css = assembleCssProof(sheets, theme);
+      const focus = css.rulesFor(".workspace-session-tab:focus-visible");
+      // --ring aliases --accent, so the ring resolves to the accent in both
+      // themes; only the offset differs from the app-wide outside-drawn one.
+      expect(css.token("--ring")).toBe("var(--accent)");
+      expect(focus).toContain(`outline: 2px solid ${css.token("--accent")}`);
+      expect(focus).toContain("outline-offset: -2px");
+    },
+  );
 
   it("paints the add button from the strip's own rule on the assembled sheets", async () => {
     inject([".workspace-session-add"]);
@@ -187,10 +219,12 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     // A ghost of the band until the pointer or the keyboard arrives: the
     // hover and focus fills are the inactive tab's own treatment, stated
     // as rule equality because --fill-chip-hover is a color-mix whose
-    // var() hops resolve deeper than the token map exposes.
+    // var() hops resolve deeper than the token map exposes. The + sits
+    // outside the tablist's scrollport, so it keeps the outside-drawn ring
+    // and shares only the fills.
     expect(rulesFor(".workspace-session-add:hover")).toBe(rulesFor(".workspace-session-tab:hover"));
     expect(rulesFor(".workspace-session-add:focus-visible")).toBe(
-      rulesFor(".workspace-session-tab:focus-visible"),
+      rulesFor(".workspace-session-tab:hover"),
     );
   });
 

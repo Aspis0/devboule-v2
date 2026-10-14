@@ -13,22 +13,20 @@ import { assembleCssProof, removeCssProof, specificity } from "../cssProof";
 
 const rootDir = resolve(import.meta.dirname, "../../../..");
 
-function read(path: string): string {
-  return readFileSync(resolve(rootDir, path), "utf8");
-}
-
-const { inject, rulesFor, token } = assembleCssProof([
-  read("src/styles/tokens.css"),
-  read("src/styles/global.css"),
-  read("src/features/workspace/panel/panel.css"),
-]);
+const sheets = [
+  readFileSync(resolve(rootDir, "src/styles/tokens.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/styles/global.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/features/workspace/panel/panel.css"), "utf8"),
+];
 
 afterEach(() => {
   removeCssProof();
   document.body.innerHTML = "";
 });
 
-describe("side panel tab focus (live stylesheets)", () => {
+describe.each(["light", "dark"] as const)("side panel tab (live stylesheets, %s)", (theme) => {
+  const { inject, rulesFor, token } = assembleCssProof(sheets, theme);
+
   it("draws the focused tab's ring inside its own box", () => {
     // --ring aliases --accent, so the resolved ring is the accent the rest of
     // the app's in-bounds rings use; only the offset differs from the global.

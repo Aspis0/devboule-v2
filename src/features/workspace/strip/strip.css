@@ -81,6 +81,13 @@
   background: var(--fill-chip-hover);
 }
 
+/* The tablist is a scrollport exactly the tab's height, so the app's
+   outside-drawn ring keeps only its left bar. In bounds, the whole tab has it. */
+.workspace-session-tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 /* Agents are the work and read in ink; every other tab is a tool: muted until
    it is the one in front, and smaller and regular in weight. */
 .workspace-session-tab-agent {
@@ -550,6 +557,8 @@ button.workspace-rate:focus-visible:hover {
   pointer-events: auto;
 }
 
+/* The global :where(button) fallback paints the UA ButtonFace on any button
+   that names no background — in the dark theme, a loud grey box on the band. */
 .workspace-session-chip-close {
   position: relative;
   display: flex;
@@ -559,13 +568,13 @@ button.workspace-rate:focus-visible:hover {
   height: var(--control-icon-small);
   border-radius: var(--radius-4);
   color: var(--ink-soft);
+  background: transparent;
   cursor: pointer;
 }
 
-/* A border token filled here would be the brightest surface on the band; the
-   × answers with the strip's translucent-ink wash and the full-strength glyph. */
-.workspace-session-chip-close:hover,
-.workspace-session-chip-close:focus-visible {
+/* Pointer-only by construction (tabIndex −1; the keyboard close is the tab's
+   own Delete), so hover is the only state that answers. */
+.workspace-session-chip-close:hover {
   color: var(--ink);
   background: var(--fill-hover);
 }
