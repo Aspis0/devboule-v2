@@ -100,18 +100,21 @@ fn drain(conn: &ConnHandle) -> (Vec<String>, Vec<String>) {
     (notices, messages)
 }
 
-/// Pull until the system line `text` appears; the assistant lines seen on
-/// the way are handed back.
+/// Pull until the system line `text` appears; every assistant line seen on the
+/// way is handed back, so a caller that expects none of them sees the ones an
+/// earlier poll already took.
 fn wait_for_notice(conn: &ConnHandle, text: &str) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = Vec::new();
     loop {
         let (notices, messages) = drain(conn);
+        seen.extend(messages);
         if notices.iter().any(|notice| notice == text) {
-            return messages;
+            return seen;
         }
         assert!(
             Instant::now() < deadline,
-            "no {text:?} system line yet: {notices:?} / {messages:?}"
+            "no {text:?} system line yet: {notices:?} / {seen:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -264,21 +267,49 @@ fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
     );
     // The shown marker must still be closed: the automatic start went up on
     // screen during the run, so the timeout owes the synthetic completion
-    // before the failure line — the same predicate pi_view shows by.
+    // before the failure line — the same predicate pi_view shows by. The two
+    // lines are one worker's publications and a poll can land between them, so
+    // accumulate every line with the channel it arrived on and compare the
+    // order in that one sequence.
+    let mut seen: Vec<(&'static str, String)> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let (notices, messages) = drain(&conn);
-        if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
+        // One pull per iteration: a second drain would find nothing, having
+        // already consumed what the loop is looking for.
+        for event in conn.pull_events() {
+            match event.envelope.event {
+                SessionEvent::SessionNotice { text, .. } => seen.push(("notice", text)),
+                SessionEvent::AgentMessage { text, .. } => seen.push(("message", text)),
+                _ => {}
+            }
+        }
+        let failed = seen.iter().position(|(kind, line)| {
+            *kind == "message"
+                && line == "[Error] Failed to compact context: Pi compact response timed out"
+        });
+        if let Some(failed) = failed {
+            let closed = seen
+                .iter()
+                .position(|(kind, line)| *kind == "notice" && line == "Context manually compacted")
+                .expect("the shown automatic marker is closed, not left dangling");
+            assert!(
+                closed < failed,
+                "the synthetic completion precedes the failure line: {seen:?}"
+            );
             assert_eq!(
-                notices,
-                ["Context manually compacted"],
-                "the shown automatic marker is closed, not left dangling"
+                seen.iter()
+                    .filter(|(kind, line)| {
+                        *kind == "notice" && line == "Context manually compacted"
+                    })
+                    .count(),
+                1,
+                "the shown automatic marker is closed once, not twice: {seen:?}"
             );
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "no bounded failure line: {messages:?}"
+            "no bounded failure line: {seen:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

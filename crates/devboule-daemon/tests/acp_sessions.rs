@@ -139,6 +139,35 @@ struct Harness {
     child: Option<Child>,
 }
 
+/// The handshake's ordinary bound, defaulted for the spawned daemons.
+///
+/// Fifteen seconds is a ceiling for a healthy provider, and a saturated runner
+/// can spend it before the stub answers `session/new`. The client still caps
+/// `session_create` at 210 s, so a genuinely mute provider surfaces as a client
+/// timeout instead of the daemon's sentence — no test here waits for that
+/// sentence — and the override is not total: a live `session/set_mode` still
+/// uses the bare constant.
+const HANDSHAKE_BUDGET_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
+const HANDSHAKE_BUDGET_DEFAULT: &str = "60000";
+
+/// `extra_env` plus that default, unless the bound is already spoken for: a
+/// test asking for a shorter one through either the child env or the process
+/// env keeps it, since `Command::env` would otherwise shadow it silently.
+fn handshake_budget_env<'a>(extra_env: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+    let spoken_for = extra_env
+        .iter()
+        .any(|(key, _)| *key == HANDSHAKE_BUDGET_ENV)
+        || std::env::var_os(HANDSHAKE_BUDGET_ENV).is_some();
+    let mut env: Vec<(&'a str, &'a str)> = extra_env
+        .iter()
+        .map(|(key, value)| (*key, *value))
+        .collect();
+    if !spoken_for {
+        env.push((HANDSHAKE_BUDGET_ENV, HANDSHAKE_BUDGET_DEFAULT));
+    }
+    env
+}
+
 impl Harness {
     fn spawn() -> Self {
         Self::spawn_with_env(&[])
@@ -175,7 +204,8 @@ impl Harness {
             )
             .expect("the profile document the daemon reads at startup");
         }
-        let child = spawn_daemon_with_env(&daemon_bin(), &paths, extra_env).expect("spawn daemon");
+        let child = spawn_daemon_with_env(&daemon_bin(), &paths, &handshake_budget_env(extra_env))
+            .expect("spawn daemon");
         let harness = Self {
             dir,
             paths,

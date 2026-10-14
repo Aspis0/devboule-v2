@@ -23,30 +23,41 @@ fn system_tool(name: &str) -> PathBuf {
 }
 
 /// Whether the pid names a live process, read from the OS task list now.
+///
+/// CSV output, so the pid is a column of its own rather than a few digits
+/// somewhere on the line.
 fn is_running(pid: u32) -> bool {
     let output = Command::new(system_tool("tasklist.exe"))
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .expect("tasklist runs");
-    String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.split(',')
+            .nth(1)
+            .is_some_and(|field| field.trim_matches('"') == pid.to_string())
+    })
 }
 
 /// The helper's pid, once the provider has written it to the file.
+///
+/// `Set-Content` ends its value with a newline: a read that lands mid-write
+/// would otherwise hand back a prefix of the pid, which parses as another
+/// process's — one this test would then signal.
 fn wait_for_pid(file: &std::path::Path) -> u32 {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let pid = std::fs::read_to_string(file)
+        let written = std::fs::read_to_string(file)
             .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok());
-        if let Some(pid) = pid {
+            .filter(|text| text.ends_with('\n'));
+        if let Some(pid) = written.and_then(|text| text.trim().parse::<u32>().ok()) {
             return pid;
         }
         assert!(
             Instant::now() < deadline,
-            "the provider writes the helper pid within twenty seconds"
+            "the provider writes the helper pid within a minute"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -94,8 +105,12 @@ fn a_helper_under_a_direct_provider_is_spared_and_keeps_running() {
         terminated_pids(&reply).is_empty(),
         "a helper under the provider is never a target"
     );
-    assert!(is_running(helper), "the helper keeps running");
+    assert!(
+        is_running(helper),
+        "the helper keeps running after the cleanup"
+    );
     let outcome = audit_outcome(&state);
+    assert!(is_running(helper), "the helper outlives the audit row");
     assert!(
         outcome.contains(&format!("{helper}:agent_descendant")),
         "{outcome}"

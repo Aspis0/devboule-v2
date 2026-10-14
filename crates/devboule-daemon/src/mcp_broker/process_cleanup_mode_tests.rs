@@ -117,17 +117,21 @@ fn member_pair() -> (std::process::Child, u32) {
         .spawn()
         .expect("PowerShell starts");
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // `Set-Content` ends its value with a newline: a read that lands mid-write
+    // would otherwise hand back a prefix of the pid, which parses as another
+    // process's — one these tests then signal.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let member = std::fs::read_to_string(&pid_file)
             .ok()
+            .filter(|text| text.ends_with('\n'))
             .and_then(|text| text.trim().parse::<u32>().ok());
         if let Some(member) = member {
             return (root, member);
         }
         assert!(
             Instant::now() < deadline,
-            "the shell writes the member pid within twenty seconds"
+            "the shell writes the member pid within a minute"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
