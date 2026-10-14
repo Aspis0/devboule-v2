@@ -45,6 +45,14 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     const style = getComputedStyle(strip);
     expect(style.display).toBe("flex");
     expect(style.height).toBe("36px");
+    // The band the inactive tabs sit on. --surface-muted aliases
+    // --panel-side; the proof resolves the alias hop, the token map does
+    // not, so the literal token is the comparable value.
+    expect(style.backgroundColor).toBe(token("--panel-side"));
+    // The tab lane sits on the strip's bottom edge, so the selected tab's
+    // square bottom meets the pane seam instead of floating on the band.
+    expect(rulesFor(".workspace-session-tabs-scroll")).toContain("align-self: flex-end;");
+    expect(rulesFor(".workspace-session-add-wrap")).toContain("align-self: flex-end;");
   });
 
   it("the tab chip and the add button keep the spec geometry", async () => {
@@ -164,6 +172,14 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     expect(style.paddingTop).toBe("0px");
     expect(style.cursor).toBe("pointer");
     expect(style.flexShrink).toBe("0");
+    // A ghost of the band until the pointer or the keyboard arrives: the
+    // hover and focus fills are the inactive tab's own treatment, stated
+    // as rule equality because --fill-chip-hover is a color-mix whose
+    // var() hops resolve deeper than the token map exposes.
+    expect(rulesFor(".workspace-session-add:hover")).toBe(rulesFor(".workspace-session-tab:hover"));
+    expect(rulesFor(".workspace-session-add:focus-visible")).toBe(
+      rulesFor(".workspace-session-tab:focus-visible"),
+    );
   });
 
   it("holds the overview's selected option on the selection tokens", () => {

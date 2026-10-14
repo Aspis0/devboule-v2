@@ -2901,6 +2901,12 @@ describe("DesignSurface host capabilities", () => {
       "Document unavailable",
     );
     expect(container.querySelector(".design-toolbar")).toBeNull();
+    // No toolbar, but never no way out: the back button rides the failure
+    // section itself.
+    const back = container.querySelector<HTMLButtonElement>(
+      ".design-load-failure .design-back-button",
+    );
+    expect(back?.getAttribute("aria-label")).toBe("Back to workspace");
     await act(async () => root.unmount());
   });
 
@@ -4871,6 +4877,31 @@ describe("Design chrome, composer and folder attachment", () => {
     // The slot the mock document chip occupied now holds the real attachment control.
     expect(toolbar.querySelector('[data-design-folder-trigger="true"]')).not.toBeNull();
     await act(async () => root.unmount());
+  });
+
+  it("keeps a labelled, focusable way back to the workspace in the toolbar", async () => {
+    const selectSurface = vi.fn();
+    const realSelectSurface = useAppStore.getState().selectSurface;
+    useAppStore.setState({ selectSurface });
+    try {
+      const { container, root } = await renderDesign(createHost());
+      const back = container.querySelector<HTMLButtonElement>(
+        ".design-toolbar .design-back-button",
+      );
+      if (back === null) throw new Error("Back button missing");
+      expect(back.getAttribute("aria-label")).toBe("Back to workspace");
+      expect(back.getAttribute("type")).toBe("button");
+      // A native enabled button is the whole keyboard contract: Tab
+      // reaches it, Enter and Space press it.
+      back.focus();
+      expect(document.activeElement).toBe(back);
+      expect(back.disabled).toBe(false);
+      await act(async () => back.click());
+      expect(selectSurface).toHaveBeenCalledWith("workspace");
+      await act(async () => root.unmount());
+    } finally {
+      useAppStore.setState({ selectSurface: realSelectSurface });
+    }
   });
 
   it("tells the user what to do next on an empty canvas", async () => {

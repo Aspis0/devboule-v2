@@ -188,6 +188,24 @@ function cloneLayerList(layers: readonly DesignLayer[]): DesignLayer[] {
   }));
 }
 
+/** The visible way back to the workspace: the crescent band above the canvas
+ * is the only other route, and a 13 px hit strip is not a way out. Rendered
+ * in the toolbar and in the load-failure section, which has no toolbar. */
+function DesignBackButton() {
+  const selectSurface = useAppStore((state) => state.selectSurface);
+  return (
+    <button
+      className="design-back-button"
+      type="button"
+      title="Back to workspace"
+      aria-label="Back to workspace"
+      onClick={() => selectSurface("workspace")}
+    >
+      ←
+    </button>
+  );
+}
+
 // Exported for the modal-contract walking test in src/app/modals-over-crescent.test.tsx.
 export const DesignToolbar = memo(function DesignToolbar({
   folderControl,
@@ -216,8 +234,6 @@ export const DesignToolbar = memo(function DesignToolbar({
   const historyPopoverRef = useRef<HTMLDivElement>(null);
 
   useModalOpen(historyOpen);
-
-  const selectSurface = useAppStore((state) => state.selectSurface);
 
   const closeHistory = useCallback(() => {
     setHistoryOpen(false);
@@ -263,20 +279,7 @@ export const DesignToolbar = memo(function DesignToolbar({
 
   return (
     <header className="design-toolbar">
-      {/*
-        The way back to the workspace: the crescent band above the canvas is
-        the only other route, and a 13 px hit strip is not a way out. Same
-        ghost treatment as the history buttons beside it.
-      */}
-      <button
-        className="design-back-button"
-        type="button"
-        title="Back to workspace"
-        aria-label="Back to workspace"
-        onClick={() => selectSurface("workspace")}
-      >
-        ←
-      </button>
+      <DesignBackButton />
       {folderControl}
       <DesignArtifactSwitcher />
       {canSave ? (
@@ -459,7 +462,11 @@ export function DesignSurface({ host }: DesignSurfaceProps) {
 
   if (loadError !== null) {
     return (
-      <section className="surface-card design-surface" data-screen-label="Design">
+      <section
+        className="surface-card design-surface design-load-failure"
+        data-screen-label="Design"
+      >
+        <DesignBackButton />
         <div role="alert">Unable to load the design document: {loadError}</div>
       </section>
     );

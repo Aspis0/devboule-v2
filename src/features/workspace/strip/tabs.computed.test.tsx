@@ -66,7 +66,15 @@ describe("agent and tool tabs", () => {
       ".workspace-session-tab-selected:focus-visible",
     ]) {
       expect(css.rulesFor(hovered)).not.toContain("box-shadow");
+      // Hover and focus keep the panel ground: the merged tab must not
+      // repaint into a chip while the pointer or the keyboard is on it.
+      expect(css.rulesFor(hovered)).toContain(`background: ${css.token("--ground-center")}`);
     }
+    // The last forced-colors marker for the active tab, pinned inside the
+    // media block so it can never leak into the resting rule unnoticed.
+    expect(sheets[1]).toMatch(
+      /@media \(forced-colors: active\) \{\s*\.workspace-session-tab-selected \{\s*border-top: 2px solid Highlight;\s*\}\s*\}/,
+    );
   });
 
   it.each(["light", "dark"] as const)(

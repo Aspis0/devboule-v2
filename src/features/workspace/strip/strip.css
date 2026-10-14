@@ -20,6 +20,7 @@
 .workspace-session-tabs-scroll {
   display: flex;
   align-items: center;
+  align-self: flex-end;
   gap: var(--space-4);
   overflow-x: auto;
   overflow-y: hidden;
@@ -30,7 +31,7 @@
   display: none;
 }
 
-/* The 36 px fade to the pane ground, only on the side that still hides
+/* The 36 px fade into the band, only on the side that still hides
    chips — the strip sets data-fade-left/right from its scroll position. */
 .workspace-session-tabs-scroll[data-fade-right="true"] {
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
@@ -92,7 +93,9 @@
 }
 
 /* The tab in front paints the panel ground with top-only corners — the
-   folder mouth — so it merges with the pane header below the band. */
+   folder mouth. The tab lane sits on the strip's bottom edge, so the
+   mouth's square bottom meets the pane header's ground with no band
+   between; the band shows above the tabs, where the air belongs. */
 .workspace-session-tab-selected {
   background: var(--ground-center);
   border-radius: var(--radius-6) var(--radius-6) 0 0;
@@ -258,6 +261,7 @@
    button; the strip itself keeps its fixed height. */
 .workspace-session-add-wrap {
   display: flex;
+  align-self: flex-end;
 }
 
 /* The + menu and the provider picker no longer open inside the strip: they
@@ -394,7 +398,8 @@ button.workspace-rate:focus-visible:hover {
   background: var(--fill-hover);
 }
 
-/* The active tab keeps the strip's selected fill under hover and focus. */
+/* The active session's option in the overview menu keeps the selected
+   fill under hover and focus. */
 .workspace-overview-option[aria-selected="true"],
 .workspace-overview-option[aria-selected="true"]:hover,
 .workspace-overview-option[aria-selected="true"]:focus-visible {
@@ -482,7 +487,6 @@ button.workspace-rate:focus-visible:hover {
   flex: 0 1 auto;
   align-items: center;
   min-width: 96px;
-  border-radius: var(--radius-6);
 }
 
 /* The trailing close chip: an overlay about 48 px wide on the row's

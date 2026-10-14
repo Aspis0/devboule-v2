@@ -177,6 +177,10 @@ describe("the session strip", () => {
     const hoverScrim = rulesFor(".workspace-session-row:hover .workspace-session-chip::before");
     expect(hoverScrim).toContain("linear-gradient");
     expect(hoverScrim).toContain("transparent");
+    // The unrevealed scrim paints the band the strip itself paints, so a
+    // focused × never sits on a block of another colour.
+    const baseScrim = rulesFor(".workspace-session-chip::before");
+    expect(baseScrim).toContain("background: var(--surface-muted);");
     const selectedScrim = rulesFor(
       ".workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before",
     );

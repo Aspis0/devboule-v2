@@ -386,6 +386,12 @@
   background: var(--selection);
 }
 
+/* The failure section has no toolbar; the button keeps the toolbar's
+   insets so it sits where the toolbar's own would. */
+.design-load-failure .design-back-button {
+  margin: 8px 0 0 14px;
+}
+
 .design-history-menu {
   position: relative;
   flex: none;

@@ -160,7 +160,7 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   {
     file: "src/features/workspace/strip/strip.css",
     match: "button.workspace-rate:focus-visible",
-    ground: "--ground-app",
+    ground: side,
   },
   {
     file: "src/features/workspace/strip/strip.css",
