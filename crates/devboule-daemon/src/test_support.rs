@@ -27,6 +27,33 @@ pub(crate) fn fixture_path(relative: &str) -> std::path::PathBuf {
         })
 }
 
+/// Sets a process variable for the length of a test and puts it back on drop.
+///
+/// The process environment is state every other test reads, so a test that
+/// overrides one keeps the window to its own assertions — that is what makes
+/// this acceptable at all.
+pub(crate) struct EnvGuard {
+    name: &'static str,
+    before: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    pub(crate) fn set(name: &'static str, value: &str) -> Self {
+        let before = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, before }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.before {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,

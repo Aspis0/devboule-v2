@@ -402,6 +402,10 @@ pub(crate) fn mcp_launch(
 /// A command carrying no session id keeps the inherited home: the home is
 /// keyed to the row (`thread/resume` reads the rollout out of it), and a
 /// directory nothing can name again is one nothing may ever delete.
+///
+/// A home without `auth.json` answers every turn with a 401, so the credential
+/// is imported from `resolve_home` — which resolves the profile the way the
+/// child does, and not from whatever `USERPROFILE` this process inherited.
 fn inject_managed_home(runtime_dir: &Path, command: &mut PtyCommand) -> Result<(), WireError> {
     let Some(session_id) = command
         .env
@@ -422,11 +426,7 @@ fn inject_managed_home(runtime_dir: &Path, command: &mut PtyCommand) -> Result<(
             format!("Could not prepare the session's Codex home: {error}"),
         )
     })?;
-    crate::agent_env::upsert_env(
-        &mut command.env,
-        "CODEX_HOME",
-        &home.to_string_lossy().into_owned(),
-    );
+    crate::agent_env::upsert_env(&mut command.env, "CODEX_HOME", &home.to_string_lossy());
     Ok(())
 }
 

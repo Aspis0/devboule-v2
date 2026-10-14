@@ -154,9 +154,12 @@ libc = "=0.2.189"
 signal-hook = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-# Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile
-# transitively through Tauri and portable-pty, so this direct dependency uses
-# the same bindings without introducing another windows-sys version.
+# Named pipe, DACL, and LockFileEx. `Win32_UI_Shell`/`Win32_System_Com` are
+# `SHGetKnownFolderPath`, which is how this daemon finds the profile its Codex
+# child will actually read (an overridden `USERPROFILE` does not move the
+# child). Version 0.61.2 is already in the lockfile transitively through Tauri
+# and portable-pty, so this direct dependency uses the same bindings without
+# introducing another windows-sys version.
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
@@ -173,6 +176,8 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
     "Wdk_System_SystemServices",
 ] }
 

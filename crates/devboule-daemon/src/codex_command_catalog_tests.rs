@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{command_table, front_matter, views};
+use super::{command_table, front_matter, os_profile_dir, resolve_home, views};
+use crate::test_support::EnvGuard;
 
 /// A temp dir removed when the test ends, so a run leaves no prompt files
 /// behind for the next one to find.
@@ -306,4 +307,55 @@ fn front_matter_needs_both_fences_and_the_body_starts_after_them() {
     assert_eq!(matter.get("a").map(String::as_str), Some("x"));
     assert_eq!(matter.get("b").map(String::as_str), Some("x"));
     assert_eq!(matter.get("c").map(String::as_str), Some("x"));
+}
+
+#[test]
+fn the_codex_home_follows_the_profile_the_child_reads_not_the_env_variable() {
+    // The child resolves its profile through the OS, so a launcher, service
+    // account or scheduled task that overrides `USERPROFILE` does not move it:
+    // a credential copied from the overridden variable is one the child never
+    // opens, and every turn then answers 401. The variable here names a
+    // directory holding its own `.codex`, so an env-only resolution has a wrong
+    // answer to give rather than none.
+    let Some(profile) = os_profile_dir() else {
+        eprintln!("the OS answered no profile; only the variable fallback is left here");
+        return;
+    };
+    let overridden = crate::test_dirs::test_temp_dir("devboule-codex-overridden-profile");
+    std::fs::create_dir_all(overridden.join(".codex")).expect("a profile directory");
+    std::fs::write(
+        overridden.join(".codex").join("auth.json"),
+        "{\"token\":\"not-the-childs\"}",
+    )
+    .expect("a credential only the override has");
+    let _restore = EnvGuard::set("USERPROFILE", &overridden.to_string_lossy());
+    // Empty is how `resolve_home` spells "no answer here", so an ambient
+    // `CODEX_HOME` on the machine running this cannot answer instead.
+    let _cleared = EnvGuard::set("CODEX_HOME", "");
+
+    let resolved = resolve_home();
+    assert_ne!(
+        resolved,
+        overridden.join(".codex"),
+        "the overridden USERPROFILE is the source of the credential again"
+    );
+    assert_eq!(
+        resolved,
+        profile.join(".codex"),
+        "the credential comes from the profile the child will open"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn off_windows_the_home_variable_is_the_only_answer() {
+    let home = crate::test_dirs::test_temp_dir("devboule-codex-home-var");
+    let _restore = EnvGuard::set("HOME", &home.to_string_lossy());
+    let _cleared = EnvGuard::set("CODEX_HOME", "");
+    assert_eq!(resolve_home(), home.join(".codex"));
+    assert_eq!(
+        os_profile_dir(),
+        None,
+        "there is no OS answer to prefer on this platform"
+    );
 }

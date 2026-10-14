@@ -8,6 +8,7 @@ use super::{
     is_branch_name, CommandRunner, GhClient, ProcessRunner, RepoRef, GH_ENV, TOOL_GH_TIMEOUT,
 };
 use crate::ci_test_support::{branch_head, check_run, check_run_pages, fail, ok, ScriptedRunner};
+use crate::test_support::EnvGuard;
 
 fn repo() -> RepoRef {
     RepoRef {
@@ -75,29 +76,6 @@ fn shell_expansion(name: &str) -> String {
 #[cfg(not(windows))]
 fn shell_expansion(name: &str) -> String {
     format!("[${{{name}-unset}}]")
-}
-
-/// Sets a variable for the length of a test and puts it back.
-struct EnvGuard {
-    name: &'static str,
-    before: Option<std::ffi::OsString>,
-}
-
-impl EnvGuard {
-    fn set(name: &'static str, value: &str) -> Self {
-        let before = std::env::var_os(name);
-        std::env::set_var(name, value);
-        Self { name, before }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.before {
-            Some(value) => std::env::set_var(self.name, value),
-            None => std::env::remove_var(self.name),
-        }
-    }
 }
 
 #[test]

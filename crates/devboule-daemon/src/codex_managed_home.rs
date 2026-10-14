@@ -42,9 +42,10 @@ const HOME_PREFIX: &str = "codex-home-";
 /// taking a real home — or any other directory — with it.
 const MARKER_NAME: &str = "devboule-managed-home";
 
-/// Where the credentials live in a Codex home. Copied at every spawn: the
-/// daemon never caches them, so a re-login under the real home reaches the
-/// next child without this process holding a copy of its own.
+/// Where the credentials live in a Codex home. Copied at every spawn from the
+/// profile the child itself resolves (an overridden `USERPROFILE` is not that
+/// profile — see `codex_command_catalog::home_dir`), so a home without one is
+/// the profile's own state, not a copy that missed it.
 const AUTH_NAME: &str = "auth.json";
 
 /// Windows releases a handle late — antivirus, the search indexer, a child that
@@ -203,12 +204,13 @@ fn is_transient_lock(error: &io::Error) -> bool {
 
 /// Copy `auth.json` from the human's home into the managed one, atomically.
 ///
-/// An absent source is not a failure: a host that authenticates through
-/// `OPENAI_API_KEY` has no credentials file to copy, and refusing the spawn
-/// there would break the one case where the child was never going to read it.
-/// Anything else — a locked or unreadable source — is an error, because that
-/// error is what a human reads as "no credentials here, run codex login" when
-/// they have already logged in.
+/// The source is the profile the child resolves for itself, so this misses the
+/// credential only when the profile has none — and then an absent source is not
+/// a failure: a host that authenticates through `OPENAI_API_KEY` has no file to
+/// copy, and refusing the spawn there would break the one case where the child
+/// was never going to read it. Anything else — a locked or unreadable source —
+/// is an error, because that error is what a human reads as "no credentials
+/// here, run codex login" when they have already logged in.
 fn import_auth(credentials_from: &Path, managed_home: &Path) -> io::Result<()> {
     let bytes = match fs::read(credentials_from.join(AUTH_NAME)) {
         Ok(bytes) => bytes,

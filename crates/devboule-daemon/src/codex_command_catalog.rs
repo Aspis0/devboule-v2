@@ -244,15 +244,71 @@ pub(crate) fn resolve_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".codex"))
 }
 
-/// The two variables that name a home: `USERPROFILE` on Windows, `HOME`
-/// elsewhere. There is no `dirs` crate in this workspace and no third guess:
-/// a machine with neither answers a relative `.codex`, which reads nothing —
-/// the skip, not a guess about where the home might be.
+/// The profile whose `.codex` this child will actually open.
+///
+/// The OS answer comes first, because the child reads its profile through the
+/// OS rather than through the environment: a launcher, service account or
+/// scheduled task that overrides `USERPROFILE` does not move the child off the
+/// real profile, and a credential copied out of the overridden variable is one
+/// the child never opens. The variable is what remains for a machine the OS
+/// cannot answer for, and on a platform where `HOME` *is* the child's own
+/// answer it is the only source there is. No `dirs` crate in this workspace
+/// and no third guess: a machine with neither answers a relative `.codex`,
+/// which reads nothing — the skip, not a guess about where the home might be.
 fn home_dir() -> Option<PathBuf> {
+    os_profile_dir().or_else(env_profile_dir)
+}
+
+fn env_profile_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// The profile directory the OS reports for this user. `None` leaves the
+/// question to `env_profile_dir`, which is also the whole answer off Windows.
+#[cfg(windows)]
+fn os_profile_dir() -> Option<PathBuf> {
+    use windows_sys::core::PWSTR;
+    use windows_sys::Win32::Foundation::S_OK;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Profile, SHGetKnownFolderPath};
+
+    let mut path: PWSTR = std::ptr::null_mut();
+    // SAFETY: `path` is a live out-pointer, and the null token asks for this
+    // user's own profile — `SHGetKnownFolderPath` writes through the pointer
+    // only when it answers S_OK, and leaves it null otherwise.
+    let status =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_Profile, 0, std::ptr::null_mut(), &mut path) };
+    if status != S_OK || path.is_null() {
+        return None;
+    }
+    // SAFETY: an S_OK answer is a NUL-terminated UTF-16 string this process
+    // owns until the free below, which runs on every path out of here.
+    let profile = unsafe { os_string_from_wide(path) };
+    // SAFETY: the pointer came from the S_OK answer above and is freed once.
+    unsafe { CoTaskMemFree(path.cast()) };
+    (!profile.as_os_str().is_empty()).then_some(profile)
+}
+
+#[cfg(not(windows))]
+fn os_profile_dir() -> Option<PathBuf> {
+    None
+}
+
+/// The NUL-terminated UTF-16 string at `ptr` as a path.
+#[cfg(windows)]
+unsafe fn os_string_from_wide(ptr: *const u16) -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut length = 0usize;
+    while *ptr.add(length) != 0 {
+        length += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_wide(std::slice::from_raw_parts(
+        ptr, length,
+    )))
 }
 
 /// `workspaceGitService.resolveRepoRoot(cwd)`, answered the cheap way: the
