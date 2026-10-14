@@ -128,4 +128,142 @@ describe("the working line's Devboule sentence", () => {
     expect(container.querySelector(".workspace-working-line")).not.toBeNull();
     expect(sentence()).toBeNull();
   });
+
+  it("never says a creation started that the transcript reads as failed", async () => {
+    await mount();
+    await replayRunningTurn();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "c-1",
+        title: "mcp__devboule__devboule_create_agent",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "c-1",
+        status: "completed",
+        text: '{"displayName":"Kid","sessionId":"s.k.1"}',
+      });
+      channelHarness.active?.({
+        type: "session_notice",
+        text: "The agent creation did not start: the provider is required.",
+        severity: "info",
+      });
+    });
+
+    // The transcript draws the failure alone; the sentence must not contradict it.
+    expect(container.textContent).toContain("Couldn't start the agent");
+    expect(sentence()).toBeNull();
+  });
+
+  it("does not credit a subagent's call to the parent's working line", async () => {
+    await mount();
+    await replayRunningTurn();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "spawn-1",
+        title: "Task",
+        status: "completed",
+        kind: "think",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "child-1",
+        title: "devboule_send_message",
+        status: "running",
+        parentToolUseId: "spawn-1",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "child-1",
+        status: "completed",
+        text: '{"displayName":"Writer"}',
+      });
+    });
+
+    // The run is one folded line; its calls are not the parent turn's intent.
+    expect(container.textContent).toContain("Subagent");
+    expect(sentence()).toBeNull();
+  });
+
+  it("reads activity polls the way the transcript draws them: idle hidden, blocked shown", async () => {
+    await mount();
+    await replayRunningTurn();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "p-1",
+        title: "devboule_agent_activity",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "p-1",
+        status: "completed",
+        text: '{"displayName":"Watcher","activity":"idle"}',
+      });
+    });
+    expect(sentence()).toBeNull();
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "p-2",
+        title: "devboule_agent_activity",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "p-2",
+        status: "completed",
+        text: '{"displayName":"Watcher","activity":"blocked"}',
+      });
+    });
+    expect(sentence()?.textContent).toBe("Watcher is blocked");
+  });
+
+  it("does not ride a sentence from an earlier turn into a later one", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-1",
+        messageKind: "composer",
+        text: "Write to Writer",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "s-1",
+        title: "devboule_send_message",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "s-1",
+        status: "completed",
+        text: '{"displayName":"Writer"}',
+      });
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-2",
+        messageKind: "composer",
+        text: "Now something else",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "r-1",
+        title: "Read",
+        status: "completed",
+        kind: "read",
+      });
+    });
+
+    expect(container.querySelector(".workspace-working-line")).not.toBeNull();
+    expect(sentence()).toBeNull();
+  });
 });

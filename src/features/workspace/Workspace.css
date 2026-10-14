@@ -332,13 +332,12 @@
 
 /* The finish frame's tail: from its first field marker on, the daemon's note
    and the child's summary are not tellable apart, so the words render in a
-   block that claims neither voice — same shape as the child's quote, none of
-   its colour. */
+   block that claims neither voice — the child's quote's twin: a thin edge and
+   its own italic voice, no fill, none of its colour. */
 .workspace-chat-unattributed {
   margin: var(--space-6) 0 0;
   padding: var(--space-6) var(--space-10);
-  border-left: 3px solid var(--silence);
-  background: var(--surface-muted);
+  border-left: 2px solid var(--silence);
 }
 
 .workspace-chat-unattributed figcaption {
@@ -871,7 +870,8 @@
 
 /* Opened, the thought keeps the turn's flat rhythm — no box: its header is the
    trigger, its text sits below in muted ink, so it never reads as the
-   answer. */
+   answer. `is-expanded` remains the row's DOM and test hook, styled nowhere:
+   the open thought is flat by absence. */
 
 /* Descendant on purpose: `font: inherit` needs a nameable parent, and the
    trigger never renders outside `.workspace-chat-thought`. */

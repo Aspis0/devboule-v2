@@ -47,8 +47,10 @@ import type {
 import { acquire, release, peek } from "../../lib/agentSessionRegistry";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
 import type { AgentChatItem, AgentSessionState, AgentStatus } from "../../lib/agentSession";
+import { isToolCallGroup, type ToolCallGroup, type ToolChatItem } from "../../lib/toolCallGroups";
 import { devbouleToolLine } from "./devbouleToolLine";
 import { toolPhaseOf } from "./toolRowDisplay";
+import { useTranscriptEntries } from "./transcript/useTranscriptEntries";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
@@ -395,18 +397,38 @@ export const QUEUE_UNSUPPORTED =
   "The running agent does not keep queued messages for this session.";
 
 /**
- * The Devboule sentence the running turn is on: the last one the transcript
- * holds, whatever else the turn has said since — the sentence rides beside the
- * working line, so the person sees the turn's latest agent intent live. Null
- * when the turn has said nothing about an agent yet; a turn that never runs
- * never asks.
+ * The Devboule sentence the running turn is on: the last one among the entries
+ * the transcript actually draws — what a derivation pass drops or folds away is
+ * not the turn's intent. The walk stops at the turn's user bubble, the turn's
+ * first row: a previous turn's sentence is not this turn's. Null when the
+ * turn's rows hold no Devboule sentence.
  */
-export function latestDevbouleSentence(items: readonly AgentChatItem[]): string | null {
+function latestDevbouleSentence(
+  entries: readonly (AgentChatItem | ToolCallGroup)[],
+  transcriptEnded: boolean,
+): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined) continue;
+    if (isToolCallGroup(entry)) {
+      const sentence = lastSentenceIn(entry.items, transcriptEnded);
+      if (sentence !== null) return sentence;
+      continue;
+    }
+    if (entry.role === "user") return null;
+    if (entry.role !== "tool") continue;
+    const sentence = devbouleToolLine(entry, toolPhaseOf(entry, transcriptEnded));
+    if (sentence !== undefined) return sentence;
+  }
+  return null;
+}
+
+/** A group's rows are one turn's consecutive calls, so its last sentence is the run's. */
+function lastSentenceIn(items: readonly ToolChatItem[], transcriptEnded: boolean): string | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item?.role !== "tool") continue;
-    // The transcript is live: it cannot have ended under a running turn.
-    const sentence = devbouleToolLine(item, toolPhaseOf(item, false));
+    if (item === undefined) continue;
+    const sentence = devbouleToolLine(item, toolPhaseOf(item, transcriptEnded));
     if (sentence !== undefined) return sentence;
   }
   return null;
@@ -832,7 +854,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const lastItem = state.items[state.items.length - 1];
   const streamingThoughtId =
     state.streaming && !osGone && lastItem?.role === "thought" ? lastItem.id : null;
-  const devbouleIntent = useMemo(() => latestDevbouleSentence(state.items), [state.items]);
+  // The same entries the transcript draws: the sentence must mirror the rows
+  // the person reads, not the raw calls the passes in between hide or fold.
+  const intentEntries = useTranscriptEntries(state.items, recoveredAttach);
+  const devbouleIntent = useMemo(
+    () => latestDevbouleSentence(intentEntries, osGone),
+    [intentEntries, osGone],
+  );
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const resumesEnded = composerResumesEnded(
     observedState ?? null,
@@ -988,7 +1016,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               {/* The turn's Devboule sentence rides beside the status line,
                   outside its live region: the announced words never change. */}
               {devbouleIntent === null ? null : (
-                <span className="workspace-chat-tool-label is-sentence">{devbouleIntent}</span>
+                <span className="workspace-chat-tool-label is-sentence" title={devbouleIntent}>
+                  {devbouleIntent}
+                </span>
               )}
             </div>
           ) : null}

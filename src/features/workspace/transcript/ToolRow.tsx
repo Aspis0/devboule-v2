@@ -19,7 +19,6 @@ import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
   isInterruptedToolStatus,
-  isToolRunningStatus,
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
@@ -34,7 +33,6 @@ import {
   outputLines,
   REASON_WINDOW_CHARS,
 } from "./toolOutputView";
-import { isFailedToolCall } from "./toolFailure";
 
 export const ToolRow = memo(function ToolRow({
   item,
@@ -52,11 +50,10 @@ export const ToolRow = memo(function ToolRow({
 }) {
   const { className, style } = entryFrame(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
-  const running = isToolRunningStatus(item.status) && !interrupted;
-  const status = item.status.toLowerCase();
-  const cancelled = status === "cancelled" || status === "canceled";
-  const failed = item.kind !== "plan" && isFailedToolCall(item);
   const phase = toolPhaseOf(item, transcriptEnded);
+  const running = phase === "running";
+  const cancelled = phase === "cancelled";
+  const failed = phase === "failed";
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);

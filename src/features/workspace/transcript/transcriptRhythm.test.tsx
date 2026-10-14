@@ -143,16 +143,25 @@ describe("transcript rhythm", () => {
   });
 
   it("glues the working line to its turn", () => {
-    workspaceCss.inject([...RHYTHM_SELECTORS, ".workspace-working-line"]);
+    workspaceCss.inject([
+      ...RHYTHM_SELECTORS,
+      ".workspace-working-turn",
+      ".workspace-working-turn .workspace-working-line",
+    ]);
     const content = document.createElement("div");
     content.className = "workspace-conversation-content";
-    const typing = document.createElement("div");
-    typing.className = "workspace-working-line";
-    typing.textContent = "Working…";
-    content.append(row("div", "workspace-chat-entry workspace-chat-assistant"), typing);
+    const turn = document.createElement("div");
+    turn.className = "workspace-working-turn";
+    const line = document.createElement("div");
+    line.className = "workspace-working-line";
+    line.textContent = "Working…";
+    turn.append(line);
+    content.append(row("div", "workspace-chat-entry workspace-chat-assistant"), turn);
     document.body.appendChild(content);
 
-    expect(getComputedStyle(typing).marginTop).toBe("4px");
+    // The wrapper carries the turn's 4 px glue; the line inside adds none of its own.
+    expect(getComputedStyle(turn).marginTop).toBe("4px");
+    expect(getComputedStyle(line).marginTop).toBe("0px");
     content.remove();
   });
 });
