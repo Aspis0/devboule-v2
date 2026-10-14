@@ -104,7 +104,7 @@ serde_json = { version = "1", optional = true }
 # unifies with devboule-daemon: Cargo allows only one `links = "sqlite3"` in
 # the lockfile. See workspace Cargo.lock rusqlite 0.40.2 / libsqlite3-sys 0.38.2.
 rusqlite = { version = "=0.40.2", features = ["bundled"], optional = true }
-blake2 = { version = "0.10", optional = true }
+blake2 = { version = "0.11", optional = true }
 regex = { version = "1", optional = true }
 chrono = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
