@@ -66,6 +66,19 @@ pub(crate) fn broker_tool_name(name: &str) -> &str {
 /// rename there fails here rather than quietly matching nothing.
 const MCP_SERVER_NAME: &str = "devboule";
 
+/// Whether a provider named the tool through this daemon's MCP server
+/// (`mcp__devboule__browser_click`) — the form a provider that speaks MCP
+/// sends.
+///
+/// A decision that grants something (a browser act without the person's card)
+/// matches on this and not on [`broker_tool_name`], which also takes off the
+/// bare `devboule_` prefix: that second, laxer prefix is a display convenience,
+/// and a consent decision built on it would widen with any future provider
+/// that prefixes its own tools the same way.
+pub(crate) fn is_broker_mcp_tool(name: &str) -> bool {
+    name.starts_with(&format!("mcp__{MCP_SERVER_NAME}__"))
+}
+
 /// Case-insensitive tool name to display kind: the union of the Claude table
 /// (`Read`, `Edit`/`Write`/`NotebookEdit`, `Bash`/`PowerShell`, `Glob`/`Grep`,
 /// `WebFetch`, `WebSearch`, `Agent`/`Task`, `Skill`/other) and the Pi table

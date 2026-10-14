@@ -37,6 +37,7 @@ use super::browser_args::parse;
 use super::browser_commands::spec_for;
 use super::browser_consent::ensure_browser_allowed;
 use super::browser_ports::ports_for_call;
+use super::first_use::Approval;
 use crate::mcp_broker::McpBroker;
 
 /// Answer one `tools/call` for any of the browser tools.
@@ -84,10 +85,13 @@ pub(in crate::mcp_broker) fn call(
     };
     // Whether this session may act on a browser at all — one question for the
     // whole session, asked before anything else this call would ask.
-    if let Err(sentence) = ensure_browser_allowed(state, broker, registration, tool) {
-        audit("denied");
-        return Ok(Some(tool_error(&id, &sentence)));
-    }
+    let approval = match ensure_browser_allowed(state, broker, registration, tool) {
+        Ok(approval) => approval,
+        Err(sentence) => {
+            audit("denied");
+            return Ok(Some(tool_error(&id, &sentence)));
+        }
+    };
     // The local ports this agent may open, decided here by the daemon and
     // enforced by the host. A navigation to a port it does not own asks the
     // person in the chat first.
@@ -113,7 +117,7 @@ pub(in crate::mcp_broker) fn call(
         call.timeout,
     ) {
         Ok(result) => {
-            audit("ok");
+            audit(approved(approval));
             note_page_read(state, registration, Some(&result));
             Ok(Some(browser_reply(&id, spec.command, result)))
         }
@@ -125,6 +129,17 @@ pub(in crate::mcp_broker) fn call(
                 &format!("{}: {}", error.code.as_str(), error.message),
             )))
         }
+    }
+}
+
+/// The row's outcome word for a call the gate approved: the approver named
+/// whenever one decided, and a bare `ok` for a tool the gate never stood in
+/// front of, which is the `ci_watch` vocabulary.
+fn approved(approval: Option<Approval>) -> &'static str {
+    match approval {
+        None => "ok",
+        Some(Approval::Mode) => "ok; approved by automatic mode",
+        Some(Approval::Person) => "ok; approved by person",
     }
 }
 

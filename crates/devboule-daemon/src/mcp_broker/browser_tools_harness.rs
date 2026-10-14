@@ -148,6 +148,86 @@ impl Drop for Panel {
     }
 }
 
+/// One registered caller of this broker: its session, the owner its cards
+/// are looked up by, and its bearer.
+///
+/// The panel's own session is one of these, and [`Panel::join_caller`] hands
+/// out a second, so a test that is about what belongs to whom can hold two
+/// gates and read each one's cards apart.
+pub(super) struct Caller {
+    session: String,
+    owner: OwnerId,
+    token: String,
+}
+
+impl Caller {
+    /// The cards this caller is holding right now: what a call must not leave
+    /// behind, and what it must raise exactly one of.
+    pub(super) fn pending_cards(&self, state: &ServerState) -> Vec<String> {
+        self.runtime(state)
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids()
+    }
+
+    /// The card a call of this caller's raised, waited for, with the request
+    /// behind it.
+    pub(super) fn wait_for_card(&self, state: &ServerState) -> (String, SessionEvent) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(card) = self.pending_cards(state).pop() {
+                let request = self
+                    .runtime(state)
+                    .permission_broker()
+                    .expect("test broker")
+                    .test_pending_request(&card)
+                    .expect("the pending card");
+                return (card, request);
+            }
+            assert!(Instant::now() < deadline, "the browser gate raised no card");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Answer one of this caller's cards the way a person would.
+    pub(super) fn answer(
+        &self,
+        state: &ServerState,
+        card: &str,
+        outcome: PermissionOutcome,
+        option: &str,
+    ) {
+        self.runtime(state)
+            .permission_broker()
+            .expect("test broker")
+            .test_answer(card, outcome, option)
+            .expect("answer the browser card");
+    }
+
+    /// A `tools/call` on its own thread, so a card can be answered while it
+    /// waits. `id` is the caller's own request id: the broker refuses a second
+    /// request that reuses one already waiting.
+    pub(super) fn in_background(
+        &self,
+        state: &ServerState,
+        id: u64,
+        tool: &str,
+        arguments: Value,
+    ) -> std::thread::JoinHandle<Value> {
+        let url = state.mcp.url().to_string();
+        let bearer = format!("Bearer {}", self.token);
+        let body = tools_call_as(id, tool, arguments);
+        std::thread::spawn(move || response_json(&http_request(&url, Some(&bearer), &body)))
+    }
+
+    fn runtime(&self, state: &ServerState) -> Arc<crate::session::SessionRuntime> {
+        state
+            .sessions
+            .live_runtime(&self.session, &self.owner)
+            .expect("live session")
+    }
+}
+
 impl Panel {
     pub(super) fn token(&self) -> &str {
         &self.token
@@ -169,6 +249,17 @@ impl Panel {
         token
     }
 
+    /// A second session of this broker as a caller of its own: its gate, its
+    /// cards and its bearer, none of them the panel's.
+    pub(super) fn join_caller(&mut self, tag: &str, workspace_id: &str) -> Caller {
+        let token = self.join_workspace(tag, workspace_id);
+        Caller {
+            session: format!("{SESSION}-{tag}"),
+            owner: owner(&format!("browser-user-{tag}"), "browser-client"),
+            token,
+        }
+    }
+
     /// The call the broker is left waiting on, so a test can watch what it
     /// refuses before it answers.
     pub(super) fn in_background(
@@ -188,10 +279,8 @@ impl Panel {
         tool: &str,
         arguments: Value,
     ) -> std::thread::JoinHandle<Value> {
-        let url = self.state.mcp.url().to_string();
-        let bearer = format!("Bearer {}", self.token);
-        let body = tools_call_as(id, tool, arguments);
-        std::thread::spawn(move || response_json(&http_request(&url, Some(&bearer), &body)))
+        self.caller()
+            .in_background(&self.state, id, tool, arguments)
     }
 
     /// One whole call: the host receives it, answers `result`, and the reply
@@ -207,6 +296,15 @@ impl Panel {
         let request = host.next();
         host.answer_ok(&self.state, &request, result);
         (reply.join().expect("tool call"), request)
+    }
+
+    /// The panel's own caller: the session its cards belong to.
+    pub(super) fn caller(&self) -> Caller {
+        Caller {
+            session: SESSION.to_string(),
+            owner: self.owner.clone(),
+            token: self.token.clone(),
+        }
     }
 
     /// The panel's own session, for a test whose subject is the gate rather
@@ -227,40 +325,19 @@ impl Panel {
             .open_first_use_gate_for_test(SESSION, BROWSER_GROUP);
     }
 
-    /// The cards the session is holding right now: what a call must not leave
-    /// behind, and what it must raise exactly one of.
+    /// The cards the panel's own session is holding right now.
     pub(super) fn pending_cards(&self) -> Vec<String> {
-        self.runtime()
-            .permission_broker()
-            .expect("test broker")
-            .test_pending_ids()
+        self.caller().pending_cards(&self.state)
     }
 
-    /// The card a call raised, waited for, with the request behind it.
+    /// The card the panel's own session raised, waited for.
     pub(super) fn wait_for_card(&self) -> (String, SessionEvent) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(card) = self.pending_cards().pop() {
-                let request = self
-                    .runtime()
-                    .permission_broker()
-                    .expect("test broker")
-                    .test_pending_request(&card)
-                    .expect("the pending card");
-                return (card, request);
-            }
-            assert!(Instant::now() < deadline, "the browser gate raised no card");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.caller().wait_for_card(&self.state)
     }
 
-    /// Answer a card the way a person would.
+    /// Answer one of the panel's own session's cards.
     pub(super) fn answer(&self, card: &str, outcome: PermissionOutcome, option: &str) {
-        self.runtime()
-            .permission_broker()
-            .expect("test broker")
-            .test_answer(card, outcome, option)
-            .expect("answer the browser card");
+        self.caller().answer(&self.state, card, outcome, option)
     }
 }
 

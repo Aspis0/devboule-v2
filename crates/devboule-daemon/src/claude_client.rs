@@ -3570,11 +3570,14 @@ impl ClaudeReader {
         // The browser lane is asked once per session by the daemon's own gate
         // behind `tools/call`, so the CLI's question is the same one a second
         // time. Answered here and never carded, open gate or shut: with the
-        // gate shut the person still gets that one card, from the gate. The
-        // name arrives qualified with this daemon's MCP server.
-        if crate::provider_catalog::browser_action_tool(crate::wire_json::broker_tool_name(
-            tool_name,
-        )) {
+        // gate shut the person still gets that one card, from the gate. Only
+        // this daemon's own MCP server's tool may be answered here — a name
+        // merely prefixed `devboule_` is somebody else's tool.
+        if crate::wire_json::is_broker_mcp_tool(tool_name)
+            && crate::provider_catalog::browser_action_tool(crate::wire_json::broker_tool_name(
+                tool_name,
+            ))
+        {
             let _ = self.permission_broker.respond(
                 tool_call_id,
                 devboule_protocol::PermissionOutcome::AllowOnce,

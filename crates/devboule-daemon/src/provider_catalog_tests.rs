@@ -2317,6 +2317,54 @@ fn every_served_tool_is_classified_and_the_classes_decide_approval_and_waiting()
     assert!(super::tool_consent("devboule_not_a_tool").is_none());
 }
 
+/// The browser lane is classified where its cards are: the acts ask once per
+/// session behind their own card, the reads never ask, and the saved-login
+/// fill asks on every call of its own — a row moved out of the lane and the
+/// self-consistency walk above would still pass, so it is pinned here.
+#[test]
+fn the_browser_lane_is_classified_where_its_cards_are() {
+    assert_eq!(
+        super::BROWSER_ACTION_TOOLS.len(),
+        14,
+        "the driving lane is the fourteen acts; a new act tool belongs in the lane"
+    );
+    for name in super::BROWSER_ACTION_TOOLS {
+        assert_eq!(
+            super::tool_consent(name),
+            Some(super::ToolConsent::GatesItself),
+            "{name} acts, so its own card is the one consent"
+        );
+        assert!(
+            super::mcp_tool_waits_on_card(name),
+            "{name} parks on that card, so a client must not time it out"
+        );
+    }
+    for name in [
+        super::MCP_BROWSER_LIST_TABS_TOOL,
+        super::MCP_BROWSER_SNAPSHOT_TOOL,
+        super::MCP_BROWSER_FIND_TOOL,
+        super::MCP_BROWSER_SCREENSHOT_TOOL,
+        super::MCP_BROWSER_READ_TEXT_TOOL,
+        super::MCP_BROWSER_CONSOLE_LOGS_TOOL,
+        super::MCP_BROWSER_WAIT_FOR_TOOL,
+    ] {
+        assert_eq!(
+            super::tool_consent(name),
+            Some(super::ToolConsent::ReadOnly),
+            "{name} reads, so nothing is ever asked about it"
+        );
+    }
+    assert_eq!(
+        super::tool_consent(super::MCP_BROWSER_FILL_LOGIN_TOOL),
+        Some(super::ToolConsent::GatesItself),
+        "the saved-login fill asks about a password on every call of its own"
+    );
+    assert!(
+        !super::BROWSER_ACTION_TOOLS.contains(&super::MCP_BROWSER_FILL_LOGIN_TOOL),
+        "the fill is not one of the acts the session grant covers"
+    );
+}
+
 /// The initial instructions route design work to a Devboule child and teach
 /// the asynchronous wait: a child is not a provider subagent, so the creator
 /// ends its turn and is woken by the finish instead of waiting natively.

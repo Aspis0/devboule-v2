@@ -454,8 +454,13 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
 pub(crate) enum ToolConsent {
     /// Reads only. The provider approves it by name; nothing is asked.
     ReadOnly,
-    /// Acts, and raises its own Devboule card on every call in a mode that
-    /// asks. The provider approves it by name, so the card is the one consent.
+    /// Acts, and raises its own Devboule card in a mode that asks, so the
+    /// card is the one consent. The provider approves it by name.
+    ///
+    /// The card is per call for some tools — a saved login, which asks about a
+    /// password every time — and per session for the browser driving lane,
+    /// which asks once behind a first-use mark. Nothing reads that difference
+    /// off this class; each tool's own gate decides its own lifetime.
     GatesItself,
     /// Acts, and raises its own card on some calls only. The provider keeps its
     /// question for every call, and the card is a second consent on those calls.

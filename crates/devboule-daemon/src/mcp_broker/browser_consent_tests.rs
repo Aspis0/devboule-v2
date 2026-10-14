@@ -10,19 +10,28 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::browser_tools_harness::{panel, tool_text, FakeHost};
+use super::browser_tools_harness::{audit_rows, panel, tool_text, FakeHost};
+use super::{AgentLineage, ServerState};
+use crate::mcp_broker::tools::first_use::{GateMark, BROWSER_GROUP};
 use crate::provider_catalog::{
     MCP_BROWSER_ACT_TOOL, MCP_BROWSER_CLICK_TOOL, MCP_BROWSER_FILL_TOOL, MCP_BROWSER_NEW_TAB_TOOL,
     MCP_BROWSER_SNAPSHOT_TOOL,
 };
-use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
+use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent, SessionKind};
 
+/// The session the panel's own caller registers under.
+const SESSION: &str = "session";
 /// A page no local-port rule has an opinion about.
 const PAGE: &str = "https://example.test/start";
 
 /// A `browser_new_tab` call as an agent writes it.
 fn open_tab() -> serde_json::Value {
     json!({ "url": PAGE })
+}
+
+/// A click as an agent writes it.
+fn click(ref_name: &str) -> serde_json::Value {
+    json!({ "browserId": "tab-1", "ref": ref_name })
 }
 
 /// The mode the gate reads at call time, recorded the way a provider
@@ -50,7 +59,7 @@ fn one_card_opens_the_gate_for_every_later_action() {
     let first = panel.in_background(MCP_BROWSER_NEW_TAB_TOOL, open_tab());
     let (card, request) = panel.wait_for_card();
 
-    // The card names the session asking, and says what allowing buys.
+    // The card names the session asking, and says exactly what an allow buys.
     let SessionEvent::PermissionRequest {
         title,
         description,
@@ -60,14 +69,18 @@ fn one_card_opens_the_gate_for_every_later_action() {
     else {
         panic!("the browser gate raises a permission request");
     };
-    assert!(
-        title.ends_with(" wants to use the browser"),
-        "the card names who is asking: {title}"
+    assert_eq!(
+        title, "Agent wants to use the browser",
+        "the card names the session itself, not an agent: {title}"
     );
     let description = description.as_deref().unwrap_or_default();
-    assert!(
-        description.contains("for the rest of this session without asking again"),
-        "the card says what an allow buys: {description}"
+    let expected = "Allowing lets Agent drive the browser — open tabs, go to pages, click, type — \
+         for the rest of this session without asking again to drive it. You will still be \
+         asked about saved logins and about ports this session does not own. Denying \
+         refuses this call; the next browser action asks again.";
+    assert_eq!(
+        description, expected,
+        "the card prices the grant and names the two questions it keeps"
     );
     assert_eq!(
         options
@@ -98,13 +111,7 @@ fn one_card_opens_the_gate_for_every_later_action() {
                 json!({"browserId": "tab-1", "steps": [{"command": "click", "ref": "e3"}]}),
             ),
         ),
-        (
-            3,
-            (
-                MCP_BROWSER_CLICK_TOOL,
-                json!({"browserId": "tab-1", "ref": "e3"}),
-            ),
-        ),
+        (3, (MCP_BROWSER_CLICK_TOOL, click("e3"))),
         (
             4,
             (
@@ -126,10 +133,17 @@ fn one_card_opens_the_gate_for_every_later_action() {
             "{tool} asked again on an open gate"
         );
     }
+    assert!(
+        audit_rows(&panel.state).contains(&(
+            MCP_BROWSER_NEW_TAB_TOOL.to_string(),
+            "ok; approved by person".to_string()
+        )),
+        "the row names the person who opened the gate"
+    );
 }
 
-/// Denying refuses that call and nothing else: the agent reads a tool error,
-/// the host never sees the command, and the next browser intent asks again.
+/// Denying answers one call and not the lane: the agent reads a tool error,
+/// the host never sees that command, and a different browser act asks again.
 #[test]
 fn a_refusal_answers_this_call_only() {
     let panel = panel("browser-gate-deny");
@@ -152,18 +166,19 @@ fn a_refusal_answers_this_call_only() {
         "the refused command never reached the host"
     );
 
-    // The next intent asks again: a refusal is not an answer about the next one.
-    let again = panel.in_background(MCP_BROWSER_NEW_TAB_TOOL, open_tab());
+    // Another tool of the lane, not the one that was refused: the lane asks
+    // again, because a refusal answered a call and not the browser.
+    let again = panel.in_background(MCP_BROWSER_CLICK_TOOL, click("e3"));
     let (card, _) = panel.wait_for_card();
     panel.answer(&card, PermissionOutcome::AllowOnce, "session");
-    let request = host.next();
-    host.answer_ok(&panel.state, &request, json!({"browserId": "tab-1"}));
+    host.answer_ok(&panel.state, &host.next(), json!({"clicked": true}));
     assert_eq!(
         again
             .join()
             .expect("second call")
             .pointer("/result/isError"),
-        Some(&json!(false))
+        Some(&json!(false)),
+        "the other act asked, was allowed, and ran"
     );
 }
 
@@ -176,11 +191,7 @@ fn a_second_call_finds_the_same_card_rather_than_raising_one() {
     let first = panel.in_background(MCP_BROWSER_NEW_TAB_TOOL, open_tab());
     let (card, _) = panel.wait_for_card();
 
-    let second = panel.in_background_as(
-        2,
-        MCP_BROWSER_CLICK_TOOL,
-        json!({"browserId": "tab-1", "ref": "e3"}),
-    );
+    let second = panel.in_background_as(2, MCP_BROWSER_CLICK_TOOL, click("e3"));
     let second_reply = second.join().expect("second call");
     assert_eq!(
         tool_text(&second_reply),
@@ -219,12 +230,18 @@ fn the_read_lane_never_asks() {
         panel.pending_cards().is_empty(),
         "a read is not the browser gate's business"
     );
+    assert!(
+        audit_rows(&panel.state)
+            .contains(&(MCP_BROWSER_SNAPSHOT_TOOL.to_string(), "ok".to_string())),
+        "a read's row names no approver, because nobody was asked"
+    );
 }
 
-/// An automatic mode opens the gate without a card, and remembers it, so the
-/// rest of the session is the same one lookup.
+/// An automatic mode asks nothing and stores nothing: the mode is read at
+/// every call, so a session switched back to an asking one is asked again
+/// rather than keeping a browser a mode it left lent it.
 #[test]
-fn an_automatic_mode_asks_nothing_and_still_opens_the_gate() {
+fn an_automatic_mode_asks_nothing_and_stores_nothing() {
     let panel = panel("browser-gate-auto");
     let host = FakeHost::register(&panel.state, 8);
     panel.runtime().set_agent_kind(SessionKind::Acp);
@@ -244,4 +261,127 @@ fn an_automatic_mode_asks_nothing_and_still_opens_the_gate() {
             "an automatic mode raises no card"
         );
     }
+    assert_eq!(
+        panel.state.mcp.first_use_mark(SESSION, BROWSER_GROUP),
+        None,
+        "an automatic mode stores no grant of its own"
+    );
+    assert!(
+        audit_rows(&panel.state).contains(&(
+            MCP_BROWSER_NEW_TAB_TOOL.to_string(),
+            "ok; approved by automatic mode".to_string()
+        )),
+        "the row names the mode that approved the act"
+    );
+
+    // The switch is a real road, and the next act asks again.
+    set_mode(&panel.runtime(), "auto_accept_off");
+    let asking = panel.in_background(MCP_BROWSER_CLICK_TOOL, click("e3"));
+    let (card, _) = panel.wait_for_card();
+    panel.answer(&card, PermissionOutcome::AllowOnce, "session");
+    host.answer_ok(&panel.state, &host.next(), json!({"clicked": true}));
+    assert_eq!(
+        asking
+            .join()
+            .expect("the asking call")
+            .pointer("/result/isError"),
+        Some(&json!(false)),
+        "an asking mode asked again after the switch"
+    );
+}
+
+/// A mode that does not act refuses before any card: the call never reaches a
+/// person, and the sentence names the mode the session is in.
+#[test]
+fn a_plan_mode_refuses_a_browser_act_without_a_card() {
+    let panel = panel("browser-gate-plan");
+    let host = FakeHost::register(&panel.state, 9);
+    panel.runtime().set_agent_kind(SessionKind::Claude);
+    set_mode(&panel.runtime(), "plan");
+
+    let call = panel.in_background(MCP_BROWSER_NEW_TAB_TOOL, open_tab());
+    let reply = call.join().expect("the refused call");
+    assert_eq!(reply.pointer("/result/isError"), Some(&json!(true)));
+    assert!(
+        tool_text(&reply).contains("plan mode"),
+        "the refusal names the mode: {reply}"
+    );
+    assert!(
+        panel.pending_cards().is_empty() && host.pending().is_empty(),
+        "a mode that does not act spends no card and never reaches the host"
+    );
+}
+
+/// The gate belongs to the session that was asked: one session's answer opens
+/// nothing for another, and the two keep their cards apart.
+#[test]
+fn two_sessions_hold_two_gates() {
+    let mut panel = panel("browser-gate-scopes");
+    let host = FakeHost::register(&panel.state, 10);
+    let second = panel.join_caller("other", "w-other");
+    let first = panel.caller();
+
+    let allowed = first.in_background(&panel.state, 1, MCP_BROWSER_NEW_TAB_TOOL, open_tab());
+    let (card, _) = first.wait_for_card(&panel.state);
+    first.answer(&panel.state, &card, PermissionOutcome::AllowOnce, "session");
+    host.answer_ok(&panel.state, &host.next(), json!({"browserId": "tab-1"}));
+    assert_eq!(
+        allowed
+            .join()
+            .expect("the allowed call")
+            .pointer("/result/isError"),
+        Some(&json!(false))
+    );
+
+    let asked = second.in_background(&panel.state, 1, MCP_BROWSER_NEW_TAB_TOOL, open_tab());
+    let (card, _) = second.wait_for_card(&panel.state);
+    second.answer(&panel.state, &card, PermissionOutcome::Deny, "deny");
+    assert_eq!(
+        asked
+            .join()
+            .expect("the refused call")
+            .pointer("/result/isError"),
+        Some(&json!(true)),
+        "one session's answer granted nothing to the other"
+    );
+    assert!(
+        first.pending_cards(&panel.state).is_empty()
+            && second.pending_cards(&panel.state).is_empty(),
+        "each session answered its own card and holds none"
+    );
+}
+
+/// The grant is the session's, so it goes when the session goes: a later
+/// session never inherits a browser nobody asked it for.
+#[test]
+fn ending_a_session_forgets_its_grant() {
+    let state = ServerState::new("browser-gate-teardown".to_string());
+    let owner = OwnerId::new("browser-user-teardown", "browser-client").expect("owner");
+    let guard = state
+        .mcp
+        .register_with_provider(
+            "teardown-session",
+            &owner,
+            &SessionKind::Acp,
+            None,
+            AgentLineage::root(),
+        )
+        .expect("registration")
+        .expect("MCP guard");
+    state
+        .mcp
+        .open_first_use_gate_for_test("teardown-session", BROWSER_GROUP);
+    assert_eq!(
+        state.mcp.first_use_mark("teardown-session", BROWSER_GROUP),
+        Some(GateMark::Open),
+        "the grant is there while the session lives"
+    );
+
+    drop(guard);
+
+    assert_eq!(
+        state.mcp.first_use_mark("teardown-session", BROWSER_GROUP),
+        None,
+        "the session ended, so its browser grant went with it"
+    );
 }

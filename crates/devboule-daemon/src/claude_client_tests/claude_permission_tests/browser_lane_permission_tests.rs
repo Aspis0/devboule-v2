@@ -143,3 +143,21 @@ fn a_tool_outside_the_browser_lane_is_still_carded() {
         "nothing goes back to the CLI before a person answers: {frames:?}"
     );
 }
+
+/// Only this daemon's own MCP server hands out the lane's answer. A name that
+/// merely carries the bare `devboule_` prefix normalises to the same tool for a
+/// transcript row, and that laxity must not reach a decision: it is somebody
+/// else's tool, so the person is asked.
+#[test]
+fn a_bare_qualified_name_is_not_the_lane() {
+    let (events, frames) = answer_to_person("devboule_browser_click", true);
+    assert_eq!(
+        cards(&events).len(),
+        1,
+        "a name that is not this server's tool keeps its card: {events:?}"
+    );
+    assert!(
+        frames.is_empty(),
+        "nothing goes back to the CLI before a person answers: {frames:?}"
+    );
+}
