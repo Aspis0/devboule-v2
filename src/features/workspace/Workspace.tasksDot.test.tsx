@@ -1,7 +1,8 @@
 // The Tasks tab's dot through the real road: the chat surface's own controller
 // asks for the list on attach, a snapshot arrives on its channel, and the dot
 // shows on the narrow panel while another tab is shown. A switch to a sibling
-// session unmounts the chat, so the cases after it cover a remount.
+// session unmounts the chat, so the cases after it cover a remount. The last
+// case holds the dot beside the bell's count, the row's two news marks.
 // @vitest-environment happy-dom
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -72,6 +73,7 @@ import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { recordAttentionRaise, resetNotificationsForTests } from "./notificationCenter";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 
@@ -142,6 +144,7 @@ beforeEach(() => {
   localStorage.removeItem("devboule.openSessionTabs");
   resetRegistry();
   resetSharedSessionControllerForTests();
+  resetNotificationsForTests();
   resetTabMemoryForTests();
   // A once-queued reply a test never reached must not answer the next test's attach.
   vi.mocked(sessionTasks).mockReset();
@@ -360,5 +363,26 @@ describe("the Tasks tab's dot across a switch that unmounts the chat", () => {
     await act(async () => undefined);
 
     expect(dot()).toBeNull();
+  });
+});
+
+describe("the row's two news marks together", () => {
+  it("holds the Tasks dot and the bell's count beside each other", async () => {
+    vi.mocked(sessionTasks).mockResolvedValue({ tasks: [childTask()], omitted: 0 });
+    await renderWorkspace();
+    await act(async () => undefined);
+    pushSnapshot(EPOCH, 1, [childTask({ state: "failed", endedAtMs: 4_000 })]);
+    expect(dot()).not.toBeNull();
+
+    act(() => {
+      recordAttentionRaise(parent, { reason: "error", atMs: 9_000 }, "agent a");
+      recordAttentionRaise(parent, { reason: "finished", atMs: 9_500 }, "agent a");
+    });
+
+    // The dot stays a dot and the count stays a number; neither crowds the
+    // other off its tab.
+    expect(tab("tasks").querySelector(".workspace-panel-tab-count")).toBeNull();
+    expect(tab("notifications").querySelector(".workspace-panel-tab-dot")).toBeNull();
+    expect(tab("notifications").querySelector(".workspace-panel-tab-count")?.textContent).toBe("2");
   });
 });

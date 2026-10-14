@@ -105,6 +105,7 @@ import { SIDE_PANEL_REGISTRY } from "./sidePanelRegistry";
 import { MIN_RIGHT_WIDTH, writeStoredPanelFrame } from "./workspaceResize";
 import { PANEL_TAB_LABEL_MIN_WIDTH } from "./panel/panelTabLabels";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { recordAttentionRaise, resetNotificationsForTests } from "./notificationCenter";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { assembleCssProof, removeCssProof } from "./cssProof";
@@ -180,6 +181,7 @@ describe("the right panel's tabs", () => {
 
   beforeEach(() => {
     resetSharedSessionControllerForTests();
+    resetNotificationsForTests();
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
     // The stored frame is app-lifetime: a test that narrowed the panel would
@@ -261,8 +263,10 @@ describe("the right panel's tabs", () => {
     return [...tablist().querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   }
 
-  /** The panel at the narrowest width that still draws the four labels. */
+  /** The panel at the narrowest width that still draws the five labels: the
+   *  budget plus the left pane and the centre's floor need a 1280 window. */
   function widenPanelToLabels(): void {
+    window.resizeTo(1280, 800);
     writeStoredPanelFrame(localStorage, {
       left: 248,
       right: PANEL_TAB_LABEL_MIN_WIDTH,
@@ -371,6 +375,48 @@ describe("the right panel's tabs", () => {
     });
     expect(tabByName("Files").getAttribute("aria-selected")).toBe("true");
     expect(document.activeElement).toBe(tabByName("Files"));
+
+    // The row wraps: past its last tab to the first, and before its first to
+    // the last.
+    await act(async () => {
+      tabByName("Files").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
+    });
+    expect(tabByName("Notifications").getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => {
+      tabByName("Notifications").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    expect(tabByName("Files").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows the bell's unread count on its tab, capped at nine-plus", async () => {
+    const raise = (sessionId: string, atMs: number): void => {
+      recordAttentionRaise(
+        { id: sessionId, workspaceId: "workspace-1" } as unknown as Session,
+        { reason: "finished", atMs },
+        sessionId,
+      );
+    };
+    raise("s1", 1_000);
+    raise("s1", 2_000);
+    raise("s2", 3_000);
+    await renderWorkspace();
+
+    const bell = tabByName("Notifications");
+    expect(bell.querySelector(".workspace-panel-tab-count")?.textContent).toBe("3");
+    expect(bell.getAttribute("aria-label")).toBe("Notifications, 3 new");
+    // The count is the bell's alone: the tasks tab keeps its dot word.
+    expect(tabByName("Tasks").querySelector(".workspace-panel-tab-count")).toBeNull();
+
+    await act(async () => {
+      for (let index = 4; index <= 13; index += 1) raise("s1", index * 1_000);
+    });
+    expect(bell.querySelector(".workspace-panel-tab-count")?.textContent).toBe("9+");
+    expect(bell.getAttribute("aria-label")).toBe("Notifications, 9+ new");
   });
 
   it("paints the active tab from the real sheets: h36 row, 13px label, ink text, 2px accent underline", async () => {
@@ -494,8 +540,8 @@ describe("the right panel's tabs", () => {
   });
 
   it("paints icon tabs, each carrying its panel's name, when the panel is too narrow", async () => {
-    // 240 px is the panel's own minimum: the three labels need 258 px beside
-    // the kebab, so the row keeps its glyphs and hands every tab its name.
+    // 240 px is the panel's own minimum: the labelled tabs need far more
+    // beside the kebab, so the row keeps its glyphs and hands every tab its name.
     writeStoredPanelFrame(localStorage, {
       left: 248,
       right: MIN_RIGHT_WIDTH,

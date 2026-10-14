@@ -1,12 +1,18 @@
 /**
- * The in-app notification feed: every attention raise the roster offers the
- * app-lifetime observer, kept for the app run and no longer. One row per raise,
- * keyed the way the toast's dedupe reads a raise — the timestamp plus the
- * reason — and offered through the same `attentionRaised` judgement, so the
- * bell never lists a raise the toast would call old news. Marking the feed
- * read goes through `markAttentionSeen`, the same record the toast gate
- * consults: the bell and the toast clear together, and opening the panel also
- * settles a raise the gate was still holding for a later toast.
+ * The in-app notification feed: a history of the attention raises the roster
+ * offered the app-lifetime observer, one row per raise identity — session,
+ * timestamp, reason — kept for the app run and the last NOTIFICATION_LIMIT
+ * raises, nothing older. It is a history, not a delivery log: a row exists
+ * whenever the raise was offered, which is a weaker claim than the OS toast's
+ * own offerability. Three known divergences: a second permission raise while
+ * one stands is a row the toast collapses into the first; a raise that
+ * arrives while the Notifications master switch is off is a row the toast
+ * consumes silently; a raise the toast policy says no to (a child's finish
+ * under a busy parent) is still a row. The coupling the other way is
+ * deliberate: reading the feed claims the raises in the toast's own dedupe
+ * record (`markAttentionSeen`), so opening the panel also settles a raise the
+ * gate was still holding for a later toast — the bell and the toast clear
+ * together.
  */
 
 import { useSyncExternalStore } from "react";
@@ -61,7 +67,18 @@ export function recordAttentionRaise(
   attention: Attention,
   sessionName: string,
 ): void {
-  if (!attentionRaised(lastRecorded.get(session.id), attention)) return;
+  const previous = lastRecorded.get(session.id);
+  // An identical tuple is the same raise even when `attentionRaised` calls an
+  // unknown reason news (it announces rather than treats stale): this store
+  // lists history, it does not announce.
+  if (
+    previous !== undefined &&
+    previous.atMs === attention.atMs &&
+    previous.reason === attention.reason
+  ) {
+    return;
+  }
+  if (!attentionRaised(previous, attention)) return;
   lastRecorded.set(session.id, attention);
   const row: NotificationRow = {
     key: rowKey(session.id, attention),
@@ -73,8 +90,35 @@ export function recordAttentionRaise(
     read: false,
   };
   const next = [...rows, row];
-  // Oldest leave first: the feed is history, newest last.
-  publish(next.length > NOTIFICATION_LIMIT ? next.slice(-NOTIFICATION_LIMIT) : next);
+  if (next.length <= NOTIFICATION_LIMIT) {
+    publish(next);
+    return;
+  }
+  // Oldest leave first, and the dedupe map follows the window: a session whose
+  // rows all left it takes its slot along, so the map cannot outlive the
+  // history it guards.
+  const kept = next.slice(-NOTIFICATION_LIMIT);
+  const keptSessions = new Set(kept.map((row) => row.sessionId));
+  for (const id of [...lastRecorded.keys()]) {
+    if (!keptSessions.has(id)) lastRecorded.delete(id);
+  }
+  publish(kept);
+}
+
+/**
+ * Claims the raises already standing when the app came up: old news the feed
+ * lists never, claimed in the same breath the toast path claims its own
+ * baseline. Without this, the next roster push re-offers the standing raise
+ * and mints a row for an event that predates the launch.
+ */
+export function seedNotificationBaseline(
+  entries: ReadonlyArray<{ sessionId: string; attention: Attention }>,
+): void {
+  for (const { sessionId, attention } of entries) {
+    if (attentionRaised(lastRecorded.get(sessionId), attention)) {
+      lastRecorded.set(sessionId, attention);
+    }
+  }
 }
 
 /** The feed's rows, newest last. */

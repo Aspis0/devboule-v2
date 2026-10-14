@@ -31,7 +31,7 @@ import {
   settleAttentionFor,
 } from "./attentionNotice";
 import { hasBusyDescendant } from "./attentionToastPolicy";
-import { recordAttentionRaise } from "./notificationCenter";
+import { recordAttentionRaise, seedNotificationBaseline } from "./notificationCenter";
 import { markSessionOpened } from "./openedSessions";
 import { isTopLevel } from "./sessionAncestry";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
@@ -745,8 +745,10 @@ export function createWorkspaceSessionController(
     for (const { session, attention } of offers) notifyAttention?.(session, attention, sessions);
     // Raises already standing when this app came up are old news: claimed
     // without a toast, so no later application announces them as if they were
-    // news the user never saw.
+    // news the user never saw — and claimed in the notification feed's own
+    // record the same way, so the bell never lists them either.
     markAttentionSeen(standing);
+    seedNotificationBaseline(standing);
     // A row with no attention has settled: its next raise is a new state to announce.
     settleAttentionFor(
       new Set(sessions.filter((row) => row.attention === undefined).map((row) => row.id)),

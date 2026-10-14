@@ -167,7 +167,7 @@ describe("persisted panel widths", () => {
 
   it("clamps a stored width that sits outside its side's bounds", () => {
     const storage = fakeStorage({
-      [RECORD]: JSON.stringify({ left: 180, right: 459 }),
+      [RECORD]: JSON.stringify({ left: 180, right: 540 }),
     });
     expect(readStoredPanelFrame(storage)).toEqual({
       left: 200,

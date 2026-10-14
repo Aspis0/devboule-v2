@@ -410,11 +410,12 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const tasksUnseen = useTasksAttention(paneAgent, tasksVisible);
   const { unreadCount: unreadNotifications } = useNotificationFeed();
   const notificationsVisible = activeSidePanel === "notifications" && !rightCollapsed;
-  // The tab row's dots: the tasks tab's own news, plus raises the notification
-  // center holds that its panel has not read yet.
+  const bellCounts = unreadNotifications > 0 && !notificationsVisible;
+  // The tab row's news marks: the tasks tab's own dot, plus the bell's unread
+  // count drawn as a number on its tab.
   const sidePanelAttentionIds = [
     ...(tasksUnseen && !tasksVisible ? ["tasks"] : []),
-    ...(unreadNotifications > 0 && !notificationsVisible ? ["notifications"] : []),
+    ...(bellCounts ? ["notifications"] : []),
   ];
   const [historyOpen, setHistoryOpen] = useState(false);
   // The message the sidebar's search opened a session at: the transcript scrolls
@@ -3148,6 +3149,9 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                 onCollapse={() => setRightCollapsed(true)}
                 panelWidth={rightWidth}
                 attentionIds={sidePanelAttentionIds.length > 0 ? sidePanelAttentionIds : undefined}
+                attentionCounts={
+                  bellCounts ? new Map([["notifications", unreadNotifications]]) : undefined
+                }
               />
 
               <div

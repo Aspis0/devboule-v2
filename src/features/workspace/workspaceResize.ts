@@ -21,7 +21,9 @@ export const MIN_LEFT_WIDTH = 200;
 export const MAX_LEFT_WIDTH = 360;
 export const INITIAL_LEFT_WIDTH = 248;
 export const MIN_RIGHT_WIDTH = 240;
-export const MAX_RIGHT_WIDTH = 420;
+/** Above the tab row's label budget (panelTabLabels.ts), so the widest the
+ *  panel goes still shows its tabs' labels. */
+export const MAX_RIGHT_WIDTH = 460;
 export const INITIAL_RIGHT_WIDTH = 300;
 
 /** The centre pane keeps at least this much of the window: at 1024px the rail

@@ -31,6 +31,9 @@ interface SidePanelTabsProps {
   panelWidth: number;
   /** Tabs with news the person has not seen: each draws a dot. */
   attentionIds?: readonly string[];
+  /** Tabs whose news is a count: each draws the number instead of a dot,
+   * capped at "9+" in the drawing and the name. */
+  attentionCounts?: ReadonlyMap<string, number>;
 }
 
 const NO_ATTENTION: readonly string[] = [];
@@ -47,6 +50,7 @@ export function SidePanelTabs({
   onCollapse,
   panelWidth,
   attentionIds = NO_ATTENTION,
+  attentionCounts,
 }: SidePanelTabsProps): ReactNode {
   const showLabels = panelTabsShowLabels(panelWidth);
   const tabs = useMemo(() => registry.filter((entry) => entry.placement === "tab"), [registry]);
@@ -147,7 +151,9 @@ export function SidePanelTabs({
         {tabs.map((entry) => {
           const selected = entry.id === selectedId;
           const painted = entry.id === paintedId;
-          const attention = attentionIds.includes(entry.id);
+          const count = attentionCounts?.get(entry.id) ?? 0;
+          const attention = attentionIds.includes(entry.id) || count > 0;
+          const news = count > 0 ? `${count > 9 ? "9+" : count} new` : "new activity";
           return (
             <button
               key={entry.id}
@@ -161,15 +167,21 @@ export function SidePanelTabs({
               className={`workspace-panel-tab${painted ? " workspace-panel-tab-active" : ""}`}
               title={entry.name}
               aria-label={
-                showLabels ? undefined : attention ? `${entry.name}, new activity` : entry.name
+                showLabels ? undefined : attention ? `${entry.name}, ${news}` : entry.name
               }
               onClick={() => onSelect(entry.id)}
               onKeyDown={(event) => onTabKeyDown(entry.id, event)}
             >
               <PanelIcon name={entry.icon} />
               {showLabels ? <span className="workspace-panel-tab-label">{entry.name}</span> : null}
-              {showLabels && attention ? <span className="sr-only">, new activity</span> : null}
-              {attention ? <span className="workspace-panel-tab-dot" aria-hidden="true" /> : null}
+              {showLabels && attention ? <span className="sr-only">, {news}</span> : null}
+              {count > 0 ? (
+                <span className="workspace-panel-tab-count" aria-hidden="true">
+                  {count > 9 ? "9+" : count}
+                </span>
+              ) : attention ? (
+                <span className="workspace-panel-tab-dot" aria-hidden="true" />
+              ) : null}
             </button>
           );
         })}

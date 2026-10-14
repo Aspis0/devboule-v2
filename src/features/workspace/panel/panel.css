@@ -92,6 +92,24 @@
   background: var(--accent);
 }
 
+/* The dot's counted form: the same accent corner, the number on the accent's
+ * own contrast ground, at the app's smallest type. Quiet by size — no motion,
+ * and past nine it only says "9+". */
+.workspace-panel-tab-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+  line-height: 15px;
+  text-align: center;
+}
+
 .workspace-panel-spacer {
   flex: 1;
 }

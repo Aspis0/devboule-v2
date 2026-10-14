@@ -27,6 +27,11 @@ import {
   workspacePickerProviders,
 } from "./workspaceSessions";
 import { fireAttentionToast, forgetAttentionFor, type ToastContent } from "./attentionNotice";
+import {
+  notificationRows,
+  recordAttentionRaise,
+  resetNotificationsForTests,
+} from "./notificationCenter";
 import { workspaceView } from "./workspaceProjects";
 import { chipDisplay } from "./strip/stripDisplay";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
@@ -1961,6 +1966,29 @@ describe("attention raises from the roster", () => {
     box.listener?.([snapshot("s1", 2000)]);
     await settleToast();
     expect(sends).toHaveLength(1);
+  });
+
+  it("keeps a raise standing at launch out of the notification feed", async () => {
+    resetNotificationsForTests();
+    forgetAttentionFor(new Set());
+    const box = watched();
+    // The observer the shared controller composes: the feed records what the
+    // roster offers it.
+    const controller = controllerWithWatcher(box, (session, attention) =>
+      recordAttentionRaise(session, attention, session.id),
+    );
+    controller.watch();
+    // The raise already stood at launch: the baseline claim keeps it out of
+    // the feed, not only now but on the re-publications the roster offers.
+    box.listener?.([snapshot("s1", 1000)]);
+    box.listener?.([snapshot("s1", 1000)]);
+    await settleToast();
+    expect(notificationRows()).toEqual([]);
+    // A genuinely newer raise is the feed's news, once.
+    box.listener?.([snapshot("s1", 2000)]);
+    box.listener?.([snapshot("s1", 2000)]);
+    await settleToast();
+    expect(notificationRows().map((row) => row.atMs)).toEqual([2000]);
   });
 
   it("re-announces a raise whose session left the roster and came back", async () => {

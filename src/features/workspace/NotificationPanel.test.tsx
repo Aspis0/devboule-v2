@@ -64,9 +64,9 @@ describe("the notifications panel", () => {
   it("declares its empty start while the feed holds nothing", () => {
     render(<NotificationPanel />);
 
-    expect(container.querySelector(".notifications-empty")?.textContent).toContain(
-      "starts empty each launch",
-    );
+    const empty = container.querySelector(".notifications-empty")?.textContent;
+    expect(empty).toContain("starts empty each launch");
+    expect(empty).toContain("keeps the last 50");
     expect(rows()).toHaveLength(0);
   });
 
@@ -132,5 +132,32 @@ describe("the notifications panel", () => {
 
     expect(notificationRows().every((row) => row.read)).toBe(true);
     expect(reads[reads.length - 1]).toBe(0);
+  });
+
+  it("reads a raise that lands while the panel is on screen, so no dot returns", () => {
+    act(() => {
+      recordAttentionRaise(session("s1", null), raise("finished", 1_000), "s1 title");
+    });
+    render(<NotificationPanel />);
+
+    act(() => {
+      recordAttentionRaise(session("s2", null), raise("error", 2_000), "s2 title");
+    });
+
+    // The user watched the row land in the open tab: every row is read, and
+    // unreadCount — what the bell's badge reads — stays zero after leaving.
+    expect(notificationRows().map((row) => row.sessionId)).toEqual(["s1", "s2"]);
+    expect(notificationRows().every((row) => row.read)).toBe(true);
+  });
+
+  it("says one polite word for a raise that lands while the panel is open", () => {
+    render(<NotificationPanel />);
+
+    act(() => {
+      recordAttentionRaise(session("s2", null), raise("error", 2_000), "s2 title");
+    });
+
+    const live = container.querySelector('[aria-live="polite"]');
+    expect(live?.textContent).toBe("New activity: s2 title, Failed");
   });
 });

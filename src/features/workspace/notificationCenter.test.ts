@@ -55,6 +55,19 @@ describe("the notification feed", () => {
     expect(notificationRows()).toHaveLength(1);
   });
 
+  it("lists a raise of an unknown reason once, however often it is offered", () => {
+    // `attentionRaised` calls an unknown reason new on every offer so the
+    // toast announces it; the feed lists history, so the identical tuple is
+    // the same raise here.
+    const foreign = raise("input_required" as AttentionReason, 5_000);
+    record("u1", foreign);
+    record("u1", foreign);
+    record("u1", foreign);
+
+    expect(notificationRows()).toHaveLength(1);
+    expect(notificationRows()[0].reason).toBe("input_required");
+  });
+
   it("lists an escalation at the same millisecond as its own row", () => {
     record("s1", raise("finished", 1_000));
     record("s1", raise("permission", 1_000));
@@ -69,6 +82,20 @@ describe("the notification feed", () => {
 
     expect(notificationRows()).toHaveLength(NOTIFICATION_LIMIT);
     expect(notificationRows()[0].atMs).toBe(5);
+  });
+
+  it("takes a session's dedupe slot with its last row when the cap evicts it", () => {
+    record("s1", raise("finished", 1));
+    for (let index = 0; index < NOTIFICATION_LIMIT; index += 1) {
+      record("s2", raise("finished", index));
+    }
+    expect(notificationRows().some((row) => row.sessionId === "s1")).toBe(false);
+
+    // The window is the dedupe's horizon: the evicted raise lists again, a
+    // row the window no longer holds.
+    record("s1", raise("finished", 1));
+
+    expect(notificationRows().filter((row) => row.sessionId === "s1")).toHaveLength(1);
   });
 
   it("marks rows read without losing them", () => {
