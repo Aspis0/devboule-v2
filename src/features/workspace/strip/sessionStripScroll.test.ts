@@ -125,7 +125,7 @@ describe("the session strip", () => {
     }
   });
 
-  it("resolves a hovered selected or multi-selected chip to the selection fill", () => {
+  it("orders the multi-selected hover before the selected hover", () => {
     // All three hover-capable chip rules share specificity (0,2,0), so
     // ties break by source order: the multi hover must sit before the
     // selected hover, or a both-classes chip on hover takes the hover
@@ -171,9 +171,9 @@ describe("the session strip", () => {
   it("fades the close scrim instead of painting an opaque block", () => {
     // The overlay's ground is a gradient to transparent on hover and
     // keyboard focus, so the fading label shows through it toward the ×.
-    // A selected chip's scrim stops on the selection fill instead: the
-    // hover gradient would paint a hard-edged block of the wrong colour
-    // across the selected chip, in both themes.
+    // A selected chip's scrim stops on the panel ground the selected
+    // tab paints instead: the hover gradient would paint a hard-edged
+    // block of the wrong colour across the selected chip, in both themes.
     const hoverScrim = rulesFor(".workspace-session-row:hover .workspace-session-chip::before");
     expect(hoverScrim).toContain("linear-gradient");
     expect(hoverScrim).toContain("transparent");
@@ -181,7 +181,7 @@ describe("the session strip", () => {
       ".workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before",
     );
     expect(selectedScrim).toContain("linear-gradient");
-    expect(selectedScrim).toContain("var(--selection)");
+    expect(selectedScrim).toContain("var(--ground-center)");
     // The selected fill has to win on both reveal paths, and the cascade
     // decides on specificity, not on the rule's text: the hover reveal is
     // (0,3,1) and the focus-visible reveal is (0,4,1), so each path needs
@@ -202,7 +202,7 @@ describe("the session strip", () => {
         return !stronger(revealSpec, spec) && (stronger(spec, revealSpec) || index > revealIndex);
       });
       expect(winner).toBeDefined();
-      expect(winner?.body).toContain("var(--selection)");
+      expect(winner?.body).toContain("var(--ground-center)");
     }
   });
 
@@ -293,6 +293,6 @@ describe("the session strip", () => {
     const active = ruleBody(".workspace-session-tab-selected");
     expect(multi).toContain("outline:");
     expect(multi).not.toBe(active);
-    expect(active).toContain("background: var(--selection);");
+    expect(active).toContain("background: var(--ground-center);");
   });
 });

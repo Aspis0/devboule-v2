@@ -2,7 +2,7 @@
 
 // The strip's two kinds of tab through the real stylesheets: agents in ink at
 // the full label size, tools muted at the smaller regular size and still above
-// the contrast floor, and the one marker on whichever tab is in front.
+// the contrast floor, and the tab in front merged with the panel ground.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -52,7 +52,7 @@ function tab(className: string): { button: HTMLElement; label: HTMLElement } {
 }
 
 describe("agent and tool tabs", () => {
-  it("keeps the marker clear of the close scrim, which starts under the tab's top edge", () => {
+  it("starts the close scrim under the tab's top edge, clear of the forced-colors border", () => {
     const css = assembleCssProof(sheets, "light");
     expect(css.rulesFor(".workspace-session-chip::before")).toContain("inset: 2px 0 0");
     // The reveal rules only repaint the scrim: none of them moves its edge back to the top.
@@ -110,7 +110,7 @@ describe("agent and tool tabs", () => {
   );
 
   it.each(["light", "dark"] as const)(
-    "marks the tab in front with a thin ochre edge over a neutral fill, of either kind, in the %s theme",
+    "merges the tab in front with the panel ground, of either kind, in the %s theme",
     (theme) => {
       const css = assembleCssProof(sheets, theme);
       css.inject([
@@ -120,12 +120,13 @@ describe("agent and tool tabs", () => {
       ]);
       const agent = tab("workspace-session-tab-agent workspace-session-tab-selected");
       const tool = tab("workspace-session-tab-quiet workspace-session-tab-selected");
+      const radius = css.token("--radius-6")!;
 
       for (const { button } of [agent, tool]) {
         const style = getComputedStyle(button);
-        expect(style.backgroundColor).toBe(css.token("--fill-selected"));
-        expect(style.backgroundColor).not.toBe(css.token("--accent"));
-        expect(style.boxShadow).toBe(`inset 0 2px 0 ${css.token("--accent")}`);
+        expect(style.backgroundColor).toBe(css.token("--ground-center"));
+        expect(style.boxShadow).toBe("");
+        expect(style.borderRadius).toBe(`${radius} ${radius} 0px 0px`);
         expect(style.color).toBe(css.token("--ink"));
       }
     },

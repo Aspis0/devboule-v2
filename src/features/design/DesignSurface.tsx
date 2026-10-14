@@ -217,6 +217,8 @@ export const DesignToolbar = memo(function DesignToolbar({
 
   useModalOpen(historyOpen);
 
+  const selectSurface = useAppStore((state) => state.selectSurface);
+
   const closeHistory = useCallback(() => {
     setHistoryOpen(false);
     queueMicrotask(() => historyTriggerRef.current?.focus());
@@ -261,6 +263,20 @@ export const DesignToolbar = memo(function DesignToolbar({
 
   return (
     <header className="design-toolbar">
+      {/*
+        The way back to the workspace: the crescent band above the canvas is
+        the only other route, and a 13 px hit strip is not a way out. Same
+        ghost treatment as the history buttons beside it.
+      */}
+      <button
+        className="design-back-button"
+        type="button"
+        title="Back to workspace"
+        aria-label="Back to workspace"
+        onClick={() => selectSurface("workspace")}
+      >
+        ←
+      </button>
       {folderControl}
       <DesignArtifactSwitcher />
       {canSave ? (

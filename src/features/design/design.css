@@ -35,6 +35,7 @@
 
 .design-grounding-toggle,
 .design-save-primary,
+.design-back-button,
 .design-history-button,
 .design-visual-check,
 .design-provider-button,
@@ -364,6 +365,25 @@
 .design-history-button:disabled {
   color: var(--silence);
   cursor: not-allowed;
+}
+
+/* The toolbar's way back to the workspace: the same ghost square the undo
+   and redo buttons are, first in the bar so it reads as "back". */
+.design-back-button {
+  display: grid;
+  flex: none;
+  width: 26px;
+  height: 24px;
+  place-items: center;
+  color: var(--ink-soft);
+  background: transparent;
+  border-radius: var(--radius-6);
+  font-size: 13px;
+}
+
+.design-back-button:hover,
+.design-back-button:focus-visible {
+  background: var(--selection);
 }
 
 .design-history-menu {

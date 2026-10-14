@@ -151,12 +151,12 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     const add = document.querySelector<HTMLElement>(".workspace-session-add");
     if (add === null) throw new Error("session add did not render");
     const style = getComputedStyle(add);
-    // The strip's own fill and ink: the shared base group must not
-    // override them, whatever the bundle order does. Expected values come
-    // from the sheets, so a theme retune moves the test with the tokens.
-    // (happy-dom reports the specified value, not a normalised rgb().)
-    expect(style.backgroundColor).toBe(token("--fill-plus"));
-    expect(style.color).toBe(token("--ink"));
+    // The + is a ghost of the strip band: transparent until hover or focus,
+    // glyph muted like an inactive tab. Expected values come from the
+    // sheets, so a theme retune moves the test with the tokens. (happy-dom
+    // reports the specified value, not a normalised rgb().)
+    expect(style.backgroundColor).toBe("transparent");
+    expect(style.color).toBe(token("--muted"));
     // The layout the shared group used to lend: the strip's rule carries
     // it all, so a second removal cannot silently uncentre the glyph.
     expect(style.display).toBe("grid");
