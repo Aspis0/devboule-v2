@@ -116,6 +116,7 @@ fn page_content_is_framed_with_its_address_and_cannot_close_the_frame() {
 #[test]
 fn a_thrown_page_exception_is_framed_and_cannot_close_the_frame() {
     let panel = panel("frame-error");
+    panel.allow_browser();
     let host = FakeHost::register(&panel.state, 5);
     let reply = panel.in_background("browser_click", json!({"browserId": "tab-1", "ref": "e9"}));
     let request = host.next();
@@ -240,6 +241,7 @@ fn attachment_and_terminal_text_marked_untrusted_on_the_capture_road() {
 #[test]
 fn browser_url_and_ci_job_origin_present() {
     let panel = panel("origin-page");
+    panel.allow_browser();
     let host = FakeHost::register(&panel.state, 5);
     let (body, _) = panel.call(
         &host,

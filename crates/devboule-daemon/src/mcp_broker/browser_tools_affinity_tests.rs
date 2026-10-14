@@ -17,6 +17,7 @@ use super::tools::browser_commands::TOOLS;
 #[test]
 fn a_tab_stays_with_the_host_that_opened_it_after_another_one_registered() {
     let panel = panel("learn");
+    panel.allow_browser();
     let first = FakeHost::register(&panel.state, 11);
     let (_, opened) = panel.call(
         &first,
@@ -49,6 +50,7 @@ fn a_tab_stays_with_the_host_that_opened_it_after_another_one_registered() {
 #[test]
 fn closing_a_tab_through_the_tool_forgets_it_and_a_later_call_reaches_the_newest_host() {
     let panel = panel("unlearn");
+    panel.allow_browser();
     let first = FakeHost::register(&panel.state, 21);
     panel.call(
         &first,
@@ -82,6 +84,7 @@ fn closing_a_tab_through_the_tool_forgets_it_and_a_later_call_reaches_the_newest
 #[test]
 fn a_close_that_failed_keeps_the_tab_with_its_owner() {
     let panel = panel("keep");
+    panel.allow_browser();
     let first = FakeHost::register(&panel.state, 31);
     panel.call(
         &first,
@@ -122,6 +125,7 @@ fn a_close_that_failed_keeps_the_tab_with_its_owner() {
 #[test]
 fn two_workspaces_use_one_browser_id_without_meeting() {
     let mut panel = panel_in("scopes", "w-one");
+    panel.allow_browser();
     let other_token = panel.join_workspace("other", "w-two");
     let first = FakeHost::register(&panel.state, 41);
     panel.call(

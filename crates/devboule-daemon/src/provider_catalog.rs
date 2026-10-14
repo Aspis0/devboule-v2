@@ -514,6 +514,10 @@ pub(crate) fn tool_consent(name: &str) -> Option<ToolConsent> {
         | MCP_KILL_TERMINAL_TOOL
         | MCP_CLEANUP_PROCESSES_TOOL
         | MCP_BROWSER_FILL_LOGIN_TOOL => GatesItself,
+        // The browser action lane, behind the one browser card per session
+        // (`mcp_broker::tools::browser_consent`) rather than behind the
+        // provider's own question for every act.
+        name if BROWSER_ACTION_TOOLS.contains(&name) => GatesItself,
         // A send to a paired device is carded on every call; a send to a local
         // child is not. A watch started with `retryInfra` waits on its card;
         // without it the call raises none.
@@ -522,23 +526,43 @@ pub(crate) fn tool_consent(name: &str) -> Option<ToolConsent> {
         | MCP_ANSWER_PERMISSION_TOOL
         | MCP_STOP_AGENT_TOOL
         | MCP_CLOSE_AGENT_TOOL
-        | MCP_CANCEL_AGENT_TOOL
-        | MCP_BROWSER_NEW_TAB_TOOL
-        | MCP_BROWSER_CLOSE_TAB_TOOL
-        | MCP_BROWSER_NAVIGATE_TOOL
-        | MCP_BROWSER_CLICK_TOOL
-        | MCP_BROWSER_FILL_TOOL
-        | MCP_BROWSER_TYPE_TOOL
-        | MCP_BROWSER_PRESS_TOOL
-        | MCP_BROWSER_SELECT_TOOL
-        | MCP_BROWSER_CHECK_TOOL
-        | MCP_BROWSER_HOVER_TOOL
-        | MCP_BROWSER_SCROLL_TOOL
-        | MCP_BROWSER_ACT_TOOL
-        | MCP_BROWSER_CLICK_AT_TOOL
-        | MCP_BROWSER_RESIZE_TOOL => ProviderAsks,
+        | MCP_CANCEL_AGENT_TOOL => ProviderAsks,
         _ => return None,
     })
+}
+
+/// The browser tools that act on a page: opening a tab, moving on it, and
+/// acting on what is there. The read lane is not one of them, and neither is
+/// [`MCP_BROWSER_FILL_LOGIN_TOOL`], whose own card is a question about a saved
+/// password on every call.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+const BROWSER_ACTION_TOOLS: &[&str] = &[
+    MCP_BROWSER_NEW_TAB_TOOL,
+    MCP_BROWSER_CLOSE_TAB_TOOL,
+    MCP_BROWSER_NAVIGATE_TOOL,
+    MCP_BROWSER_CLICK_TOOL,
+    MCP_BROWSER_FILL_TOOL,
+    MCP_BROWSER_TYPE_TOOL,
+    MCP_BROWSER_PRESS_TOOL,
+    MCP_BROWSER_SELECT_TOOL,
+    MCP_BROWSER_CHECK_TOOL,
+    MCP_BROWSER_HOVER_TOOL,
+    MCP_BROWSER_SCROLL_TOOL,
+    MCP_BROWSER_ACT_TOOL,
+    MCP_BROWSER_CLICK_AT_TOOL,
+    MCP_BROWSER_RESIZE_TOOL,
+];
+
+/// Whether `name` is one of [`BROWSER_ACTION_TOOLS`]. The name is the one the
+/// broker serves — a provider that qualified it with this daemon's MCP server
+/// (`mcp__devboule__browser_click`) takes that qualifier off first
+/// ([`crate::wire_json::broker_tool_name`]), which is the one rule about a
+/// name this catalog does not own. The gate behind `tools/call` and a
+/// provider's own permission question both read this answer, so they never
+/// disagree about which tool is the browser's.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn browser_action_tool(name: &str) -> bool {
+    BROWSER_ACTION_TOOLS.contains(&name)
 }
 
 /// The served tools the provider approves by name at launch: the reads and the

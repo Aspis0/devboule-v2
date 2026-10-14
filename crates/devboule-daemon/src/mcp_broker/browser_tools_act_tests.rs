@@ -47,6 +47,7 @@ fn the_steps_an_agent_reads_stay_small() {
 #[test]
 fn a_batch_reaches_the_host_as_written_and_answers_unchanged() {
     let panel = panel("act");
+    panel.allow_browser();
     let host = FakeHost::register(&panel.state, 5);
     let steps = json!([
         {"command": "click", "ref": "e3"},

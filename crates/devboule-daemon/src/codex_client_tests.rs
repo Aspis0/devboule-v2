@@ -1800,12 +1800,15 @@ fn codex_mcp_launch_approves_reads_and_self_gated_tools_only() {
         crate::provider_catalog::MCP_CREATE_TERMINAL_TOOL,
         crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL,
         crate::provider_catalog::MCP_BROWSER_SNAPSHOT_TOOL,
+        // The browser action lane is approved by name for the same reason the
+        // fill-login tool is: it raises its own card, and a second question
+        // from the CLI would be a second card.
+        crate::provider_catalog::MCP_BROWSER_CLICK_TOOL,
+        crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL,
     ] {
         assert!(approved.contains(&tool), "{tool} is approved by name");
     }
     for tool in [
-        crate::provider_catalog::MCP_BROWSER_CLICK_TOOL,
-        crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL,
         crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
         crate::provider_catalog::MCP_STOP_AGENT_TOOL,
         crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL,

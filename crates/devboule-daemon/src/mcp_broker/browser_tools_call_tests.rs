@@ -199,6 +199,7 @@ fn a_tab_id_is_ascii_so_the_schema_length_and_the_check_agree() {
 #[test]
 fn a_browser_call_is_audited_with_its_tool_and_how_it_ended() {
     let panel = panel("audit");
+    panel.allow_browser();
     let host = FakeHost::register(&panel.state, 11);
     let (body, _) = panel.call(&host, "browser_list_tabs", json!({}), json!({"tabs": []}));
     assert_eq!(body["result"]["isError"], json!(false), "{body}");
@@ -283,6 +284,7 @@ fn a_call_reaches_the_host_as_the_callers_own_command_and_answers_unchanged() {
 #[test]
 fn a_failed_command_is_a_tool_error_naming_the_code_and_the_reason() {
     let panel = panel("failure");
+    panel.allow_browser();
     let host = FakeHost::register(&panel.state, 3);
     let reply = panel.in_background("browser_click", json!({"browserId": "tab-1", "ref": "e9"}));
     let request = host.next();

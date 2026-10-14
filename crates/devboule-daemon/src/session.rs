@@ -1454,6 +1454,24 @@ impl SessionRegistry {
         }
     }
 
+    /// The name a person reads for one of their own live sessions: the
+    /// rename when one has landed, the title before that. `None` for a
+    /// session this daemon does not hold live, and for another account's.
+    pub(crate) fn display_name_of(&self, session_id: &str, owner: &OwnerId) -> Option<String> {
+        let map = self.inner.lock().ok()?;
+        let entry = map.get(session_id)?;
+        if entry.owner().user != owner.user {
+            return None;
+        }
+        let live = entry.as_peer_visible()?;
+        Some(
+            live.metadata
+                .display_name
+                .clone()
+                .unwrap_or_else(|| live.metadata.title.clone()),
+        )
+    }
+
     pub(crate) fn live_sessions_in_workspace(
         &self,
         workspace_id: &str,

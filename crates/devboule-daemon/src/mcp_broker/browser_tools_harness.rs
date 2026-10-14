@@ -12,12 +12,13 @@ use serde_json::{json, Value};
 
 use devboule_protocol::{
     BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome, DaemonMessage, OwnerId,
-    PermissionOutcome, SessionKind,
+    PermissionOutcome, SessionEvent, SessionKind,
 };
 
 use super::tests::{http_request, owner, response_json};
 use super::tools::browser_commands::TOOLS;
 use super::tools::browser_login::PREVIEW;
+use super::tools::first_use::BROWSER_GROUP;
 use super::{AgentLineage, McpServerHandle, McpSessionGuard, ServerState};
 use crate::outbound::ConnOut;
 use crate::provider_catalog::ToolOverlay;
@@ -175,9 +176,21 @@ impl Panel {
         tool: &str,
         arguments: Value,
     ) -> std::thread::JoinHandle<Value> {
+        self.in_background_as(1, tool, arguments)
+    }
+
+    /// As [`Panel::in_background`], for a test with two calls in flight at
+    /// once: the broker refuses a second request that reuses an id already
+    /// waiting, so a call that has to overlap another needs its own.
+    pub(super) fn in_background_as(
+        &self,
+        id: u64,
+        tool: &str,
+        arguments: Value,
+    ) -> std::thread::JoinHandle<Value> {
         let url = self.state.mcp.url().to_string();
         let bearer = format!("Bearer {}", self.token);
-        let body = tools_call(tool, arguments);
+        let body = tools_call_as(id, tool, arguments);
         std::thread::spawn(move || response_json(&http_request(&url, Some(&bearer), &body)))
     }
 
@@ -194,6 +207,60 @@ impl Panel {
         let request = host.next();
         host.answer_ok(&self.state, &request, result);
         (reply.join().expect("tool call"), request)
+    }
+
+    /// The panel's own session, for a test whose subject is the gate rather
+    /// than a call: the mode it runs in and the name its card carries.
+    pub(super) fn runtime(&self) -> Arc<crate::session::SessionRuntime> {
+        self.state
+            .sessions
+            .live_runtime(SESSION, &self.owner)
+            .expect("live session")
+    }
+
+    /// The browser gate as one "Allow" left it, for a test whose subject is a
+    /// call and not the consent — every action tool waits on that card, and a
+    /// test about arguments or hosts has no business answering it.
+    pub(super) fn allow_browser(&self) {
+        self.state
+            .mcp
+            .open_first_use_gate_for_test(SESSION, BROWSER_GROUP);
+    }
+
+    /// The cards the session is holding right now: what a call must not leave
+    /// behind, and what it must raise exactly one of.
+    pub(super) fn pending_cards(&self) -> Vec<String> {
+        self.runtime()
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids()
+    }
+
+    /// The card a call raised, waited for, with the request behind it.
+    pub(super) fn wait_for_card(&self) -> (String, SessionEvent) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(card) = self.pending_cards().pop() {
+                let request = self
+                    .runtime()
+                    .permission_broker()
+                    .expect("test broker")
+                    .test_pending_request(&card)
+                    .expect("the pending card");
+                return (card, request);
+            }
+            assert!(Instant::now() < deadline, "the browser gate raised no card");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Answer a card the way a person would.
+    pub(super) fn answer(&self, card: &str, outcome: PermissionOutcome, option: &str) {
+        self.runtime()
+            .permission_broker()
+            .expect("test broker")
+            .test_answer(card, outcome, option)
+            .expect("answer the browser card");
     }
 }
 
@@ -259,9 +326,14 @@ fn register_session(
 
 /// The `tools/call` body for one tool, as the agent writes it.
 pub(super) fn tools_call(tool: &str, arguments: Value) -> String {
+    tools_call_as(1, tool, arguments)
+}
+
+/// As [`tools_call`], with the request id the agent wrote.
+fn tools_call_as(id: u64, tool: &str, arguments: Value) -> String {
     json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": id,
         "method": "tools/call",
         "params": {"name": tool, "arguments": arguments},
     })

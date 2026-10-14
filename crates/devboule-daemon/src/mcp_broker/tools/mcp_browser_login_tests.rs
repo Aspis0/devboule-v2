@@ -492,3 +492,71 @@ fn the_frames_this_tool_sends_name_no_password() {
     assert!(!previewed.args.to_string().contains(SECRET));
     assert!(!filled.args.to_string().contains(SECRET));
 }
+
+/// The browser gate is one question about driving a browser; this card is a
+/// question about a saved password, and a session that has answered the first
+/// one answers this one again — twice, in a row, on the same page.
+#[test]
+fn an_open_browser_gate_answers_neither_saved_login_call() {
+    let tag = "fill-login-gated";
+    let panel = panel(tag);
+    let host = FakeHost::register(&panel.state, 18);
+
+    // The lane's own card, answered the way a person answers it.
+    let driving = panel.in_background(
+        crate::provider_catalog::MCP_BROWSER_CLICK_TOOL,
+        json!({"browserId": "tab-1", "ref": "e3"}),
+    );
+    let (gate_card, gate_request) = wait_for_card(&panel, tag);
+    assert!(
+        title_of(&gate_request).ends_with("wants to use the browser"),
+        "the lane's card is its own: {}",
+        title_of(&gate_request)
+    );
+    answer(
+        &panel,
+        tag,
+        &gate_card,
+        PermissionOutcome::AllowOnce,
+        "session",
+    );
+    host.answer_ok(&panel.state, &host.next(), json!({"clicked": true}));
+    assert_eq!(
+        driving
+            .join()
+            .expect("the click")
+            .pointer("/result/isError"),
+        Some(&json!(false))
+    );
+
+    for call in 1..=2 {
+        let fill = panel.in_background(
+            MCP_BROWSER_FILL_LOGIN_TOOL,
+            asking(json!({ "passwordRef": "e14" })),
+        );
+        host.answer_ok(&panel.state, &host.next(), preview(SITE, one_entry()));
+        let (card_id, card) = wait_for_card(&panel, tag);
+        assert!(
+            title_of(&card).contains(SITE),
+            "call {call} asks about the saved login, not the browser: {}",
+            title_of(&card)
+        );
+        answer(
+            &panel,
+            tag,
+            &card_id,
+            PermissionOutcome::AllowOnce,
+            &format!("once:{ENTRY}"),
+        );
+        host.answer_ok(
+            &panel.state,
+            &host.next(),
+            json!({"filled": ["passwordRef"]}),
+        );
+        assert_eq!(
+            fill.join().expect("the fill").pointer("/result/isError"),
+            Some(&json!(false)),
+            "call {call} filled after its own answer"
+        );
+    }
+}

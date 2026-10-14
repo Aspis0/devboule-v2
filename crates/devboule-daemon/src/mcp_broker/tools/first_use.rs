@@ -32,6 +32,11 @@ pub(in crate::mcp_broker) const PROCESS_CLEANUP_GROUP: &str = "process_cleanup";
 /// Re-running failed CI jobs once: a state-changing GitHub action, so a watch
 /// started with `retryInfra` asks the person before it is registered.
 pub(in crate::mcp_broker) const CI_RETRY_GROUP: &str = "ci_infra_retry";
+/// The browser: one grant covers every act on a page for the rest of the
+/// session, because opening a tab, clicking and typing are one power — the
+/// person decides whether this agent drives a browser at all, not once per
+/// click. Reading a page is not behind it, and neither is the saved-login card.
+pub(in crate::mcp_broker) const BROWSER_GROUP: &str = "browser_use";
 
 /// Every first-use group's label, one table for all of them: the approval
 /// card's button and its sentence both read from here, so a group id — the
@@ -46,6 +51,7 @@ const FIRST_USE_GROUP_LABELS: &[(&str, &str)] = &[
     (TERMINAL_KILL_GROUP, "closing terminals"),
     (PROCESS_CLEANUP_GROUP, "cleaning up processes"),
     (CI_RETRY_GROUP, "re-running failed CI jobs"),
+    (BROWSER_GROUP, "the browser"),
 ];
 
 /// The card choice that approves only the call it was raised for.
@@ -82,6 +88,18 @@ pub(in crate::mcp_broker) enum Claim {
     Raised,
 }
 
+/// What one session's mark for one group holds, read and claimed together.
+pub(in crate::mcp_broker) enum Gate {
+    /// Granted already: the call proceeds with no card.
+    Open,
+    /// A card for it is out and unanswered: the caller is told to come back
+    /// rather than spending the person's attention a second time.
+    Pending,
+    /// Nothing granted, nothing pending: the mark is claimed for the card this
+    /// call is about to raise.
+    Claimed,
+}
+
 impl McpBroker {
     /// Look at a set of groups for one session and, when none of them has a
     /// card out, mark all of them pending: one look and one write under one
@@ -115,6 +133,49 @@ impl McpBroker {
     ) {
         if let Ok(mut marks) = self.write_gates.marks.lock() {
             marks.insert((session_id.to_string(), group.to_string()), mark);
+        }
+    }
+
+    /// What one session's mark for one group holds, claiming it when it holds
+    /// nothing: the one read the gate that raises its own card needs, because a
+    /// claim alone cannot tell a granted group from an unasked one and would
+    /// spend the person's attention again on a grant already given.
+    ///
+    /// One look and one write under one lock, as [`Self::claim_gate_marks`]:
+    /// two calls racing the same question cannot both claim it.
+    pub(in crate::mcp_broker) fn claim_first_use(&self, session_id: &str, group: &str) -> Gate {
+        let key = (session_id.to_string(), group.to_string());
+        let Ok(mut marks) = self.write_gates.marks.lock() else {
+            return Gate::Pending;
+        };
+        match marks.get(&key) {
+            Some(GateMark::Open) => Gate::Open,
+            Some(GateMark::Pending) => Gate::Pending,
+            None | Some(GateMark::None) => {
+                marks.insert(key, GateMark::Pending);
+                Gate::Claimed
+            }
+        }
+    }
+
+    /// The mark an answered card leaves behind: `Open` for a session grant,
+    /// `None` for every other answer.
+    ///
+    /// Only a mark still holding this call's own claim moves. A card answered
+    /// after the gate forgot it — a re-registration cleared it — must neither
+    /// open the group nor clear a newer grant, which is the same rule
+    /// `ensure_write_approved` keeps for the write cards.
+    pub(in crate::mcp_broker) fn settle_first_use(
+        &self,
+        session_id: &str,
+        group: &str,
+        mark: GateMark,
+    ) {
+        let key = (session_id.to_string(), group.to_string());
+        if let Ok(mut marks) = self.write_gates.marks.lock() {
+            if marks.get(&key) == Some(&GateMark::Pending) {
+                marks.insert(key, mark);
+            }
         }
     }
 
@@ -154,6 +215,14 @@ impl McpBroker {
             .lock()
             .expect("first-use gate lock")
             .insert((session_id.to_string(), group.to_string()), GateMark::Open);
+    }
+
+    /// The browser gate as a person's "Allow" left it, for a test on the far
+    /// side of the daemon that has to name the state the gate is in without
+    /// driving a call through it — the Claude reader's browser answers.
+    #[cfg(test)]
+    pub(crate) fn open_browser_gate_for_test(&self, session_id: &str) {
+        self.open_first_use_gate_for_test(session_id, BROWSER_GROUP);
     }
 
     /// Forget every mark of one session: called when its bearer goes away,
@@ -473,7 +542,7 @@ fn group_label(group: &str) -> String {
 
 /// One line of card text with no surprises in it: every line break a
 /// renderer may honour becomes a space, so a fact stays one fact.
-fn oneline(value: &str) -> String {
+pub(in crate::mcp_broker) fn oneline(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
     while let Some(char) = chars.next() {

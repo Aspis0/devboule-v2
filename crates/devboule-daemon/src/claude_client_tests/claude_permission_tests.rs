@@ -5,6 +5,8 @@ use devboule_protocol::{PermissionOutcome, PermissionRequestKind, SessionEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[path = "claude_permission_tests/browser_lane_permission_tests.rs"]
+mod browser_lane_permission_tests;
 #[path = "plan_question_tests.rs"]
 mod plan_question_tests;
 

@@ -296,7 +296,7 @@ pub(super) fn handle_rpc(
             } else if tool_name == Some(crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL) {
                 tools::browser_login::call(state, broker, registration, caller, id, message)
             } else if tool_name.is_some_and(tools::browser_commands::serves) {
-                tools::browser_tools::call(state, registration, caller, id, message)
+                tools::browser_tools::call(state, broker, registration, caller, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {

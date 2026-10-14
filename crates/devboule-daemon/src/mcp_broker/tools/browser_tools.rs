@@ -35,7 +35,9 @@ use crate::visible_text::escape_for_model;
 
 use super::browser_args::parse;
 use super::browser_commands::spec_for;
+use super::browser_consent::ensure_browser_allowed;
 use super::browser_ports::ports_for_call;
+use crate::mcp_broker::McpBroker;
 
 /// Answer one `tools/call` for any of the browser tools.
 ///
@@ -44,6 +46,7 @@ use super::browser_ports::ports_for_call;
 /// to a host.
 pub(in crate::mcp_broker) fn call(
     state: &Arc<ServerState>,
+    broker: &McpBroker,
     registration: &RegisteredSession,
     caller: McpCaller,
     id: Value,
@@ -79,6 +82,12 @@ pub(in crate::mcp_broker) fn call(
             return Ok(Some(tool_error(&id, &sentence)));
         }
     };
+    // Whether this session may act on a browser at all — one question for the
+    // whole session, asked before anything else this call would ask.
+    if let Err(sentence) = ensure_browser_allowed(state, broker, registration, tool) {
+        audit("denied");
+        return Ok(Some(tool_error(&id, &sentence)));
+    }
     // The local ports this agent may open, decided here by the daemon and
     // enforced by the host. A navigation to a port it does not own asks the
     // person in the chat first.
