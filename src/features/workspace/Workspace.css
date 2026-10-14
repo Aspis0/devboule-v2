@@ -332,8 +332,9 @@
 
 /* The finish frame's tail: from its first field marker on, the daemon's note
    and the child's summary are not tellable apart, so the words render in a
-   block that claims neither voice — the child's quote's twin: a thin edge and
-   its own italic voice, no fill, none of its colour. */
+   block that claims neither voice — the child's quote's shape (thin edge, no
+   fill) in the silence colour, its body upright where the child's quote runs
+   italic. */
 .workspace-chat-unattributed {
   margin: var(--space-6) 0 0;
   padding: var(--space-6) var(--space-10);

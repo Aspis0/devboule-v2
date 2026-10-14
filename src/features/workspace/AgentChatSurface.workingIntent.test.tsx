@@ -59,6 +59,26 @@ async function replayRunningTurn(): Promise<void> {
   });
 }
 
+/** Sends a prompt through the composer, the one road that sets the turn's own start. */
+async function sendFromComposer(text: string): Promise<void> {
+  const textarea = container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Message the agent"]',
+  );
+  if (textarea === null) throw new Error("the composer did not render");
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  await act(async () => {
+    setValue?.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // Queried after the draft lands: a running turn shows the stop button until there is text to send.
+  const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+  if (send === null) throw new Error("the composer did not render a send action");
+  await act(async () => {
+    send.click();
+  });
+  await act(async () => undefined);
+}
+
 describe("the working line's Devboule sentence", () => {
   it("says the latest Devboule call, outside the region that announces Working", async () => {
     await mount();
@@ -264,6 +284,135 @@ describe("the working line's Devboule sentence", () => {
     });
 
     expect(container.querySelector(".workspace-working-line")).not.toBeNull();
+    expect(sentence()).toBeNull();
+  });
+
+  it("keeps the sentence through a steer that lands inside the turn", async () => {
+    await mount();
+    await sendFromComposer("Go");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-1",
+        messageKind: "composer",
+        text: "Go",
+        atMs: Date.now(),
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "s-1",
+        title: "devboule_send_message",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "s-1",
+        status: "completed",
+        text: '{"displayName":"Writer"}',
+      });
+    });
+    expect(sentence()?.textContent).toBe("Sent a message to Writer");
+
+    await sendFromComposer("Jump in");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-2",
+        messageKind: "composer",
+        text: "Jump in",
+        atMs: Date.now(),
+      });
+    });
+
+    // The steer's bubble sits inside the running turn, not at its start: the sentence stays.
+    expect(container.querySelector(".workspace-working-line")).not.toBeNull();
+    expect(sentence()?.textContent).toBe("Sent a message to Writer");
+  });
+
+  it("reads nothing from behind a send whose opening bubble has not arrived yet", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-1",
+        messageKind: "composer",
+        text: "Write to Writer",
+        atMs: 10_000,
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "s-1",
+        title: "devboule_send_message",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "s-1",
+        status: "completed",
+        text: '{"displayName":"Writer"}',
+      });
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    });
+    await sendFromComposer("Something else");
+
+    // The send opened a new turn; until its echo lands, the old turn's call is not its intent.
+    expect(container.querySelector(".workspace-working-line")).not.toBeNull();
+    expect(sentence()).toBeNull();
+  });
+
+  it("does not read a previous turn's grouped calls behind the turn's user row", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-1",
+        messageKind: "composer",
+        text: "First",
+        atMs: 10_000,
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "g-1",
+        title: "devboule_send_message",
+        status: "running",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "g-1",
+        status: "completed",
+        text: '{"displayName":"Writer"}',
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "g-2",
+        title: "Read",
+        status: "completed",
+        kind: "read",
+      });
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-2",
+        messageKind: "composer",
+        text: "Second",
+        atMs: 20_000,
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "r-1",
+        title: "Search",
+        status: "completed",
+        kind: "search",
+      });
+    });
+
+    // The earlier turn's two calls are one collapsed group behind this turn's bubble.
+    expect(container.querySelector(".workspace-chat-tool-group")).not.toBeNull();
     expect(sentence()).toBeNull();
   });
 });

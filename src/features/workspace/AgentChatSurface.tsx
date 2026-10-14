@@ -399,15 +399,20 @@ export const QUEUE_UNSUPPORTED =
 /**
  * The Devboule sentence the running turn is on: the last one among the entries
  * the transcript actually draws — what a derivation pass drops or folds away is
- * not the turn's intent. The walk stops at the turn's user bubble, the turn's
- * first row: a previous turn's sentence is not this turn's. Null when the
+ * not the turn's intent. The walk covers the running turn alone: to its own
+ * opening bubble when this view knows the turn's start (a steer lands inside
+ * the turn as a later bubble and does not end it), and to the newest user row
+ * for a turn whose start was never learned; a turn with neither may read the
+ * last sentence in the journal, the turn clock's own fallback. Null when the
  * turn's rows hold no Devboule sentence.
  */
 function latestDevbouleSentence(
   entries: readonly (AgentChatItem | ToolCallGroup)[],
   transcriptEnded: boolean,
+  turnStartedAtMs: number | null,
 ): string | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
+  const boundary = turnBoundary(entries, turnStartedAtMs);
+  for (let index = entries.length - 1; index > boundary; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) continue;
     if (isToolCallGroup(entry)) {
@@ -415,12 +420,38 @@ function latestDevbouleSentence(
       if (sentence !== null) return sentence;
       continue;
     }
-    if (entry.role === "user") return null;
     if (entry.role !== "tool") continue;
     const sentence = devbouleToolLine(entry, toolPhaseOf(entry, transcriptEnded));
     if (sentence !== undefined) return sentence;
   }
   return null;
+}
+
+/**
+ * The index the turn's walk stops at, reading only the entries after it: the
+ * opening bubble of the turn this view started, or the newest user row for a
+ * turn whose start was never learned — the same fallback the turn clock reads.
+ * A started turn whose opening bubble has not arrived yet stops at the end:
+ * nothing behind the send is the new turn's.
+ */
+function turnBoundary(
+  entries: readonly (AgentChatItem | ToolCallGroup)[],
+  turnStartedAtMs: number | null,
+): number {
+  if (turnStartedAtMs !== null) {
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry === undefined || isToolCallGroup(entry) || entry.role !== "user") continue;
+      if (entry.atMs !== undefined && entry.atMs >= turnStartedAtMs) return index;
+    }
+    return entries.length - 1;
+  }
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || isToolCallGroup(entry) || entry.role !== "user") continue;
+    return index;
+  }
+  return -1;
 }
 
 /** A group's rows are one turn's consecutive calls, so its last sentence is the run's. */
@@ -858,8 +889,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // the person reads, not the raw calls the passes in between hide or fold.
   const intentEntries = useTranscriptEntries(state.items, recoveredAttach);
   const devbouleIntent = useMemo(
-    () => latestDevbouleSentence(intentEntries, osGone),
-    [intentEntries, osGone],
+    () => latestDevbouleSentence(intentEntries, osGone, state.turnStartedAtMs ?? null),
+    [intentEntries, osGone, state.turnStartedAtMs],
   );
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const resumesEnded = composerResumesEnded(
