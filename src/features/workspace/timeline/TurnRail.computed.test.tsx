@@ -43,11 +43,12 @@ describe("turn rail computed styles", () => {
     conversation.remove();
   });
 
-  it("leaves the docked card on the composer lane and the field and track alone", () => {
+  it("shares the composer's lane with the dock, so the card lands on the field's edges", () => {
     railCss.inject([
       ".workspace-conversation",
       ".workspace-conversation.has-turn-rail",
       ".workspace-pending-cards",
+      ".workspace-pending-cards > .permission-card",
       ".workspace-composer-wrap",
       ".workspace-composer-track",
       ".workspace-agent-shell.has-turn-rail .workspace-composer-track",
@@ -58,6 +59,7 @@ describe("turn rail computed styles", () => {
     ): {
       shell: HTMLDivElement;
       dock: HTMLDivElement;
+      card: HTMLDivElement;
       wrap: HTMLDivElement;
       track: HTMLDivElement;
       composer: HTMLDivElement;
@@ -73,6 +75,9 @@ describe("turn rail computed styles", () => {
       conversation.appendChild(content);
       const dock = document.createElement("div");
       dock.className = "workspace-pending-cards";
+      const card = document.createElement("div");
+      card.className = "permission-card";
+      dock.appendChild(card);
       const wrap = document.createElement("div");
       wrap.className = "workspace-composer-wrap";
       const track = document.createElement("div");
@@ -85,7 +90,7 @@ describe("turn rail computed styles", () => {
       shell.appendChild(dock);
       shell.appendChild(wrap);
       document.body.appendChild(shell);
-      return { shell, dock, wrap, track, composer };
+      return { shell, dock, card, wrap, track, composer };
     };
 
     // happy-dom lays nothing out, so the edges are compared through the terms
@@ -98,14 +103,15 @@ describe("turn rail computed styles", () => {
       return `${style.width} ${style.maxWidth} ${style.marginLeft} ${style.marginRight}`;
     };
 
-    // Rail off: the dock takes the composer's lane, 14 px inside it.
+    // Rail off: the dock is the composer's wrap — same 24 px side inset, no width
+    // cap of its own — so the card inside lands on the track's box.
     const off = build(false);
-    expect(getComputedStyle(off.dock).maxWidth).toBe(railCss.token("--chat-lane"));
-    expect(getComputedStyle(off.dock).marginLeft).toBe("auto");
-    expect(getComputedStyle(off.dock).paddingLeft).toBe("14px");
-    // The wrap's 24 px is the whole inset between the pane edge and the
-    // track's box; the track declares no side padding of its own (the lane's
-    // 20 px is gone from it), so its content starts on its border edge.
+    expect(getComputedStyle(off.dock).paddingLeft).toBe("24px");
+    expect(getComputedStyle(off.dock).paddingRight).toBe("24px");
+    expect(laneBox(off.card)).toBe(laneBox(off.track));
+    expect(getComputedStyle(off.card).maxWidth).toBe(railCss.token("--chat-lane"));
+    // No gap of its own under the dock: the wrap opens with 8 px.
+    expect(railCss.rulesFor(".workspace-pending-cards")).not.toMatch(/margin-bottom|max-width/);
     expect(getComputedStyle(off.wrap).paddingLeft).toBe("24px");
     expect(getComputedStyle(off.wrap).paddingRight).toBe("24px");
     expect(railCss.rulesFor(".workspace-composer-track")).not.toMatch(/\bpadding/);
@@ -120,7 +126,7 @@ describe("turn rail computed styles", () => {
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
-    expect(getComputedStyle(on.dock).marginLeft).toBe("auto");
+    expect(laneBox(on.card)).toBe(laneBox(on.track));
     expect(railCss.rulesFor(".workspace-pending-cards")).not.toMatch(/turn-rail/);
     expect(railCss.rulesFor(".workspace-composer-track")).not.toMatch(/\bpadding/);
     expect(laneBox(on.track)).toBe(laneBox(on.composer));

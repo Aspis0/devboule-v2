@@ -752,21 +752,29 @@
   line-height: var(--leading-body);
 }
 
-/* The pending cards sit on the composer, so they take its lane rather than
-   the transcript's: the same width cap and auto margins, with the field's
-   own 14 px of side padding so the card's border lands on the field's. The
-   dock never scrolls — a pending card is the question of the moment. */
+/* The dock is the composer's wrap: full pane width, the wrap's own 24 px side
+   inset, no width cap of its own. The card inside takes the lane rule the
+   composer's track takes — the same cap and the same auto margins — so its
+   border lands on the field's in every pane, capped or not. The card's 640 px
+   cap was transcript-era, where it sat among rows behind the rail's gutter.
+   No gap under the dock: the wrap opens with 8 px of its own. The dock never
+   scrolls — a pending card is the question of the moment. */
 .workspace-pending-cards {
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  justify-content: center;
   gap: var(--space-8);
   width: 100%;
+  padding: 0 var(--space-24);
+}
+
+/* Dock-scoped, so the stacks that render the card with no dock of their own
+   (the remote surface, the design composer) keep their 640 px cap. */
+.workspace-pending-cards > .permission-card {
+  width: 100%;
   max-width: var(--chat-lane);
-  margin: 0 auto var(--space-8);
-  padding: 0 var(--space-14);
-  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .workspace-chat-entry {

@@ -2593,7 +2593,7 @@ describe("Workspace sessions", () => {
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
     expect(buttons.map((button) => button.textContent)).toEqual(["Deny"]);
-    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    expect(container.textContent).toContain("Allow is not offered for this request.");
 
     await act(async () => {
       resolveRespond(undefined);
@@ -2629,7 +2629,7 @@ describe("Workspace sessions", () => {
     expect(container.textContent).toContain("Deny is not offered for this request.");
     // Nothing to grant, so no grant door renders; the notice says which option
     // is missing rather than leaving a dead button on the card.
-    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    expect(container.textContent).toContain("Allow is not offered for this request.");
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
   });
 
@@ -2848,7 +2848,7 @@ describe("Workspace sessions", () => {
     // A reject-only request offers no grant door at all, and the notice names
     // the option that is missing rather than a control that never renders.
     expect(rejectOnlyAllow).toBeNull();
-    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    expect(container.textContent).toContain("Allow is not offered for this request.");
   });
 
   it("shows the command, args, and cwd that will be spawned", async () => {

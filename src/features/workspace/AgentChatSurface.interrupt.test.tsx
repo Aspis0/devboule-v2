@@ -3,14 +3,15 @@
 // too: the key refuses that card, and never stops the turn under it.
 // @vitest-environment happy-dom
 import { resetRegistry } from "../../lib/agentSessionRegistry";
-import { act } from "react";
+import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelHarness } from "./sessionChannelHarness";
 
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
 
-import { sessionInterrupt } from "../../lib/tauri";
+import { PermissionCard, type PermissionCardHandle } from "../../components/PermissionCard";
+import { sessionInterrupt, sessionPermissionRespond } from "../../lib/tauri";
 import { AgentChatSurface } from "./AgentChatSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -186,7 +187,7 @@ describe("Escape in the agent pane", () => {
     const overlay = document.createElement("div");
     overlay.setAttribute("role", "menu");
     overlay.setAttribute("data-test-overlay", "");
-    document.body.append(overlay);
+    document.body.appendChild(overlay);
     await press(composer());
     expect(deny).not.toHaveBeenCalled();
     overlay.remove();
@@ -194,6 +195,52 @@ describe("Escape in the agent pane", () => {
     await typeDraft("a half-written follow-up");
     await press(composer());
     expect(deny).not.toHaveBeenCalled();
+    expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
+  });
+
+  it("answers through the docked card itself, and only what that card offers", async () => {
+    // The real card in the real pane: the key reaches the card's own handle,
+    // so the card's gates are the ones that decide.
+    const card = createRef<PermissionCardHandle>();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="esc-card"
+          hasPendingPermission
+          onCardDeny={() => card.current?.deny()}
+          auxiliary={
+            <PermissionCard
+              ref={card}
+              sessionId="esc-card"
+              subscriptionId={41}
+              request={{
+                type: "permission_request",
+                toolCallId: "tool-a",
+                title: "Run command",
+                options: [
+                  { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                  { optionId: "deny", name: "Deny", kind: "reject_once" },
+                ],
+              }}
+              capabilities={["typed_permissions"]}
+            />
+          }
+        />,
+      );
+    });
+    await startTurn();
+
+    await press(composer());
+    expect(vi.mocked(sessionPermissionRespond)).toHaveBeenCalledWith(
+      "esc-card",
+      41,
+      "tool-a",
+      "deny",
+      undefined,
+      undefined,
+    );
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
   });
 

@@ -97,6 +97,15 @@ const menuItems = (card: Element) => [
   ...card.querySelectorAll<HTMLButtonElement>("[role=menuitem]"),
 ];
 
+/** Presses a key on whichever menu item holds focus, the way the browser does. */
+async function press(key: string): Promise<void> {
+  const active = document.activeElement;
+  if (active === null) throw new Error("nothing holds focus");
+  await act(async () => {
+    active.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+}
+
 describe("the grant door of a consent card", () => {
   it("renders one allow option as a plain button, with no chevron and no menu", async () => {
     const card = await renderCard(oneAllow);
@@ -163,18 +172,101 @@ describe("the grant door of a consent card", () => {
     const allow = actionButtons(card)[1];
     await act(async () => allow.click());
 
-    const menu = card.querySelector("[role=menu]");
-    const event = new KeyboardEvent("keydown", {
-      key: "Escape",
-      bubbles: true,
-      cancelable: true,
-    });
-    await act(async () => menu?.dispatchEvent(event));
+    await act(async () => press("Escape"));
 
     expect(card.querySelector("[role=menu]")).toBeNull();
     expect(document.activeElement).toBe(allow);
     // Escape closed the menu; it did not answer the card.
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+  });
+
+  it("walks the scopes with the arrows, wrapping at both ends", async () => {
+    const card = await renderCard(threeScopes);
+    await act(async () => actionButtons(card)[1].click());
+    const names = menuItems(card).map((item) => item.textContent);
+    const focused = () => document.activeElement?.textContent;
+
+    await act(async () => press("ArrowDown"));
+    expect(focused()).toBe(names[1]);
+    await act(async () => press("ArrowDown"));
+    expect(focused()).toBe(names[2]);
+    // Past the last scope comes the first again, not a dead end.
+    await act(async () => press("ArrowDown"));
+    expect(focused()).toBe(names[0]);
+    await act(async () => press("ArrowUp"));
+    expect(focused()).toBe(names[2]);
+
+    await act(async () => press("End"));
+    expect(focused()).toBe(names[2]);
+    await act(async () => press("Home"));
+    expect(focused()).toBe(names[0]);
+    expect(card.querySelector("[role=menu]")).not.toBeNull();
+  });
+
+  it("keeps the scopes out of the tab order, so Tab leaves the list and closes it", async () => {
+    const card = await renderCard(threeScopes);
+    const allow = actionButtons(card)[1];
+    await act(async () => allow.click());
+
+    const after = document.createElement("button");
+    after.textContent = "next control";
+    container.appendChild(after);
+    const items = menuItems(card);
+    // Menu semantics: the arrows walk the list, Tab's job is the rest of the page.
+    expect(items.every((item) => item.tabIndex === -1)).toBe(true);
+    expect(document.activeElement).toBe(items[0]);
+
+    // Tab is not intercepted here; the browser's own move off the list is what
+    // closes the menu, so nothing keeps focus on a control that is leaving.
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    await act(async () => {
+      items[0].dispatchEvent(tab);
+      after.focus();
+    });
+    expect(tab.defaultPrevented).toBe(false);
+
+    expect(card.querySelector("[role=menu]")).toBeNull();
+    expect(document.activeElement).toBe(after);
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+  });
+
+  it("closes on a press outside the menu and the button", async () => {
+    const card = await renderCard(threeScopes);
+    const allow = actionButtons(card)[1];
+    await act(async () => allow.click());
+
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    await act(async () => {
+      outside.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+
+    expect(card.querySelector("[role=menu]")).toBeNull();
+    outside.remove();
+  });
+
+  it("grants a request whose only scope is durable", async () => {
+    // No allow_once to lean on: the door answers the one grant the daemon did
+    // offer, named, which is what makes the durable scopes reachable at all.
+    const card = await renderCard({
+      ...threeScopes,
+      toolCallId: "tool-durable",
+      options: [{ optionId: "session", name: "For this session", kind: "allow_session" }],
+    });
+
+    const allow = actionButtons(card)[1];
+    expect(allow.textContent).toBe("For this session");
+    expect(allow.disabled).toBe(false);
+
+    await act(async () => allow.click());
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "tool-durable",
+      "allow_once",
+      "session",
+      undefined,
+    );
   });
 
   it("leaves a chooser with one button per option and no scope menu", async () => {

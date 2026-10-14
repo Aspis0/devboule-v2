@@ -305,6 +305,10 @@
   flex-direction: column;
   align-items: stretch;
   gap: var(--space-2);
+  /* In flow, so a daemon offering many scopes cannot grow the dock without
+     bound: the list scrolls once it is taller than six of its own rows. */
+  max-height: calc(var(--control-default) * 6);
+  overflow-y: auto;
   padding: var(--space-4);
   background: var(--surface-muted);
   border: 1px solid var(--line-strong);

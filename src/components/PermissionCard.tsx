@@ -510,7 +510,6 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
     const provenance = permissionOriginLabel(origin ?? request.origin, deviceNames);
     const commandLine = formatPermissionCommand(request);
     const daemonReachable = daemonState === "connected";
-    const allowSupported = request.options.some((option) => option.kind === "allow_once");
     const denySupported = request.options.some((option) => option.kind === "reject_once");
     // The daemon's chooser verdict, read and never re-derived here: a marked
     // request renders one control per option, an unmarked one the ordinary pair.
@@ -567,10 +566,11 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
       setPermission("submitting");
       setError(null);
       try {
-        // The ordinary pair posts no option id: its options are unambiguous,
-        // so the daemon's own pick is the right one. A chooser answer names the
-        // option it is answering with. A question's free text travels as the
-        // answer beside it. Either door goes through the one object above.
+        // A refusal posts no option id: there is nothing to pick between. Every grant
+        // names the option it picked, because the scope rides that id — the
+        // outcome stays `allow_once` and the daemon reads how long from the
+        // kind behind the id. A question's free text travels as the answer.
+        // Either door goes through the one object above.
         await (onRespond?.(response) ??
           sessionPermissionRespond(
             sessionId,
@@ -620,14 +620,6 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
         return false;
       }
     };
-    // Escape refuses the card from the pane's key handler. Rebuilt every
-    // render, so it always reaches the `respond` above that sees the live
-    // state — and runs that one's gates, so a stale, answered or already
-    // submitting card refuses nothing.
-    useImperativeHandle(ref, () => ({
-      deny: () => void respond({ outcome: "deny" }),
-    }));
-
     // A model's question renders its own form, never the chooser's buttons:
     // one group per asked item, radios or checkboxes per its multi-select
     // flag, an "Other" field per group, and one Submit for the whole card.
@@ -643,6 +635,21 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
       isChooser || isPlan || isQuestion
         ? []
         : request.options.filter((option) => option.kind.startsWith("allow"));
+    // Escape may answer only what the card renders. A question's Dismiss is a
+    // bare refusal the card always offers; a chooser's and a plan's own Deny
+    // exists only where the agent offered no reject control of its own; the
+    // ordinary pair's only where an exact reject_once was offered. A refusal
+    // the visible button refuses to send must not go out from behind it.
+    const denyByOptions = isChooser || isPlan ? !hasRejectOption : denySupported;
+    const denyEligible = daemonReachable && (isQuestion || denyByOptions);
+    // Rebuilt every render, so the refusal always meets the `respond` above
+    // that reads the live state — and that one's own gates.
+    useImperativeHandle(ref, () => ({
+      deny: () => {
+        if (!denyEligible) return;
+        void respond({ outcome: "deny" });
+      },
+    }));
 
     const questionOther = (index: number): string => otherTexts.get(index) ?? "";
     // The free-text door stands open when the question has no options to
@@ -810,10 +817,10 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
             The daemon is not reachable. Reconnect to answer this request.
           </div>
         ) : null}
-        {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
+        {!isQuestion && !isPlan && !isChooser && (allowOptions.length === 0 || !denySupported) ? (
           <div className="permission-card-unavailable" role="status">
-            {!allowSupported ? "Allow once is not offered for this request." : null}
-            {!allowSupported && !denySupported ? " " : null}
+            {allowOptions.length === 0 ? "Allow is not offered for this request." : null}
+            {allowOptions.length === 0 && !denySupported ? " " : null}
             {!denySupported ? "Deny is not offered for this request." : null}
           </div>
         ) : null}
@@ -940,6 +947,8 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
                 className="permission-card-secondary-action permission-card-deny-action"
                 onClick={() => void respond({ outcome: "deny" })}
                 disabled={permission !== "waiting" || !daemonReachable}
+                title="Dismiss (Esc)"
+                aria-keyshortcuts="Escape"
               >
                 Dismiss
               </button>
@@ -963,6 +972,8 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
                   // be refused.
                   onClick={() => void respond({ outcome: "deny" })}
                   disabled={permission !== "waiting" || !daemonReachable}
+                  title="Deny (Esc)"
+                  aria-keyshortcuts="Escape"
                 >
                   Deny
                 </button>
@@ -993,13 +1004,15 @@ export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardPro
                 className="permission-card-secondary-action permission-card-deny-action"
                 onClick={() => void respond({ outcome: "deny" })}
                 disabled={permission !== "waiting" || !daemonReachable || !denySupported}
+                title="Deny (Esc)"
+                aria-keyshortcuts="Escape"
               >
                 Deny
               </button>
               {allowOptions.length === 0 ? null : (
                 <PermissionScopeMenu
                   options={allowOptions}
-                  disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
+                  disabled={permission !== "waiting" || !daemonReachable}
                   onChoose={(option) =>
                     void respond({
                       outcome: optionOutcome(option.kind),

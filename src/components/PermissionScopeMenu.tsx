@@ -124,6 +124,9 @@ export function PermissionScopeMenu({ options, disabled, onChoose }: PermissionS
               type="button"
               role="menuitem"
               className="permission-card-scope-item"
+              // Out of the tab order: the arrows are how a menu is walked, and
+              // Tab's job is to leave it — which the blur below closes.
+              tabIndex={-1}
               disabled={disabled}
               onClick={() => {
                 close(false);

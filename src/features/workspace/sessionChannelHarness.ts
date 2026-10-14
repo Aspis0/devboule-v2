@@ -54,6 +54,9 @@ export const tauriMock = {
   }),
   sessionSend: vi.fn(async () => undefined),
   sessionInterrupt: vi.fn(async () => undefined),
+  // The docked card answers through this, so a pane that refuses one with the
+  // keyboard goes out of here.
+  sessionPermissionRespond: vi.fn(async () => undefined),
   sessionDeposit: vi.fn(async () => ({
     sessionId: "agent-1",
     digest: "a".repeat(64),

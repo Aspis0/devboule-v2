@@ -153,6 +153,20 @@ describe("PermissionCard computed styles", () => {
     allow.remove();
   });
 
+  it("caps the scope list so a many-option daemon cannot grow the dock without bound", () => {
+    cardCss.inject([".permission-card-scope-menu"]);
+    const menu = document.createElement("div");
+    menu.className = "permission-card-scope-menu";
+    document.body.appendChild(menu);
+
+    const style = getComputedStyle(menu);
+    // The list is in flow, so its own height is the only bound on the card —
+    // six of its own rows, off the same token the rows are sized from.
+    expect(style.maxHeight).toBe(`calc(${cardCss.token("--control-default")} * 6)`);
+    expect(style.overflowY).toBe("auto");
+    menu.remove();
+  });
+
   it("carries the shell, the command ground and the chosen accent into the dark theme", () => {
     cardCssDark.inject([
       ".permission-card",
