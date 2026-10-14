@@ -61,6 +61,13 @@
   color: var(--ink);
 }
 
+/* The tablist clips its overflow, so the app's outside-drawn ring survives on
+   the tab's left edge only. In bounds, the whole tab carries it. */
+.workspace-panel-tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 .workspace-panel-tab-active,
 .workspace-panel-tab-active:hover,
 .workspace-panel-tab-active:focus-visible {

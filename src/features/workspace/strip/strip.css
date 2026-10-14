@@ -562,9 +562,12 @@ button.workspace-rate:focus-visible:hover {
   cursor: pointer;
 }
 
+/* A border token filled here would be the brightest surface on the band; the
+   × answers with the strip's translucent-ink wash and the full-strength glyph. */
 .workspace-session-chip-close:hover,
 .workspace-session-chip-close:focus-visible {
-  background: var(--border-strong);
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {

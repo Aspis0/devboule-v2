@@ -1471,6 +1471,7 @@ button.workspace-chat-tool-summary {
   height: var(--control-default);
   border-radius: var(--radius-8);
   cursor: pointer;
+  font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 

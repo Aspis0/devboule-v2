@@ -153,6 +153,18 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     expect(selectedChip).toBe("");
   });
 
+  it("keeps the ×'s hover and focus on the band, not on a border-strength box", () => {
+    // Hover and focus answer alike, as they do on the strip's other ghost
+    // controls; the ring is what tells the two apart.
+    const hover = rulesFor(".workspace-session-chip-close:hover");
+    expect(hover).toBe(rulesFor(".workspace-session-chip-close:focus-visible"));
+    // The rate button's pair, read off the sheets so a theme retune moves the
+    // expectation with the token. A border token filled here would resolve to
+    // --line-strong and be the brightest surface on the band.
+    expect(hover).toBe(rulesFor("button.workspace-rate:hover"));
+    expect(hover).not.toContain(token("--line-strong")!);
+  });
+
   it("paints the add button from the strip's own rule on the assembled sheets", async () => {
     inject([".workspace-session-add"]);
     await renderWorkspace();
