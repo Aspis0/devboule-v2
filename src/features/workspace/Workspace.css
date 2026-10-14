@@ -692,12 +692,6 @@
   gap: 0;
 }
 
-/* The rail's gutter is reserved in the content box; the permission card
-   takes the same 32 px as margin, so its box sits on the rows' axis. */
-.workspace-conversation.has-turn-rail > .permission-card {
-  margin-left: var(--space-32);
-}
-
 .workspace-agent-shell {
   display: flex;
   flex: 1;
@@ -758,10 +752,21 @@
   line-height: var(--leading-body);
 }
 
+/* The pending cards sit on the composer, so they take its lane rather than
+   the transcript's: the same width cap and auto margins, with the field's
+   own 14 px of side padding so the card's border lands on the field's. The
+   dock never scrolls — a pending card is the question of the moment. */
 .workspace-pending-cards {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-8);
+  width: 100%;
+  max-width: var(--chat-lane);
+  margin: 0 auto var(--space-8);
+  padding: 0 var(--space-14);
+  box-sizing: border-box;
 }
 
 .workspace-chat-entry {

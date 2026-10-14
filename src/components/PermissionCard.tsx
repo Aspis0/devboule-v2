@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { boundByGraphemes } from "../lib/graphemeBound";
 import { optionOutcome } from "../lib/optionOutcome";
 import { isStalePermissionError, STALE_PERMISSION_LINE } from "./permissionStale";
@@ -6,6 +6,7 @@ import { sessionPermissionRespond } from "../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
 import { MarkdownText } from "./MarkdownText";
+import { PermissionScopeMenu } from "./PermissionScopeMenu";
 import type {
   DaemonConnectionState,
   PermissionQuestion,
@@ -418,572 +419,604 @@ export interface PermissionAnswer {
 // rotation); the set keeps its one focus claim from repeating on each mount.
 const focusTakenBy = new Set<string>();
 
-export function PermissionCard({
-  sessionId,
-  subscriptionId,
-  request,
-  capabilities,
-  daemonState = "connected",
-  toolTitle = null,
-  origin,
-  deviceNames,
-  resolution = null,
-  creatorId = null,
-  stale: incomingStale = false,
-  onStale,
-  onRespond,
-  onResolved,
-}: PermissionCardProps) {
-  const [permission, setPermission] = useState<PermissionState>("waiting");
-  const [error, setError] = useState<ErrorSentence | null>(null);
-  // The daemon refused the answer because it no longer knows the request:
-  // the card is over, kept only so its Clear can dismiss it. Seeded from
-  // the queue item, which is the record that survives remounts and
-  // subscription rotations; the reset below never clears it.
-  const [stale, setStale] = useState(incomingStale);
-  // The option a chooser answer picked, under the agent's own option name:
-  // set when THIS card answers with an option id, so its resolved state says
-  // which choice it was. An outside answer's name arrives on `resolution`.
-  const [localChoice, setLocalChoice] = useState<string | null>(null);
-  // A question card's own answers: one picked-option set per question, and
-  // one "Other" text per question. Maps, not arrays, so answering one
-  // question never disturbs another's.
-  const [pickedOptions, setPickedOptions] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
-    () => new Map(),
-  );
-  const [otherTexts, setOtherTexts] = useState<ReadonlyMap<number, string>>(() => new Map());
-  const submittingRef = useRef(false);
-  // Set false on unmount so a late answer never stamps state (or fires
-  // onResolved) after the host closed the run and removed the card.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-  // A fresh subscription means the previous answer was sent over an attachment the
-  // daemon no longer owns. Reset the card so the re-delivered request is answerable,
-  // and bump the generation so the abandoned answer cannot overwrite this state.
-  const generationRef = useRef(0);
+/** What the pane's key handler reaches on the card it has docked. */
+export interface PermissionCardHandle {
+  /** Refuses the card. Goes through the same `respond` a button calls, so a
+   * stale, answered or already-submitting card refuses nothing. */
+  deny: () => void;
+}
 
-  useEffect(() => {
-    generationRef.current += 1;
-    submittingRef.current = false;
-    setPermission("waiting");
-    setError(null);
-    setLocalChoice(null);
-    setPickedOptions(new Map());
-    setOtherTexts(new Map());
-  }, [sessionId, request.toolCallId, subscriptionId]);
-  // The card takes focus once, on its first appearance, and only while it is
-  // still pending and the person is typing in the transcript or the composer
-  // (not in another card's answer field). Its approve control is never focused:
-  // Deny stays the first stop.
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const cardKey = `${sessionId}:${request.toolCallId}`;
-    if (focusTakenBy.has(cardKey)) return;
-    focusTakenBy.add(cardKey);
-    if (resolution !== null || incomingStale) return;
-    const active = document.activeElement;
-    const inOwnFlow =
-      active?.closest(".workspace-conversation, .workspace-composer") != null &&
-      active.closest(".permission-card") === null;
-    if (inOwnFlow) cardRef.current?.focus();
-  }, [sessionId, request.toolCallId, resolution, incomingStale]);
+export const PermissionCard = forwardRef<PermissionCardHandle, PermissionCardProps>(
+  function PermissionCard(
+    {
+      sessionId,
+      subscriptionId,
+      request,
+      capabilities,
+      daemonState = "connected",
+      toolTitle = null,
+      origin,
+      deviceNames,
+      resolution = null,
+      creatorId = null,
+      stale: incomingStale = false,
+      onStale,
+      onRespond,
+      onResolved,
+    }: PermissionCardProps,
+    ref,
+  ) {
+    const [permission, setPermission] = useState<PermissionState>("waiting");
+    const [error, setError] = useState<ErrorSentence | null>(null);
+    // The daemon refused the answer because it no longer knows the request:
+    // the card is over, kept only so its Clear can dismiss it. Seeded from
+    // the queue item, which is the record that survives remounts and
+    // subscription rotations; the reset below never clears it.
+    const [stale, setStale] = useState(incomingStale);
+    // The option a chooser answer picked, under the agent's own option name:
+    // set when THIS card answers with an option id, so its resolved state says
+    // which choice it was. An outside answer's name arrives on `resolution`.
+    const [localChoice, setLocalChoice] = useState<string | null>(null);
+    // A question card's own answers: one picked-option set per question, and
+    // one "Other" text per question. Maps, not arrays, so answering one
+    // question never disturbs another's.
+    const [pickedOptions, setPickedOptions] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
+      () => new Map(),
+    );
+    const [otherTexts, setOtherTexts] = useState<ReadonlyMap<number, string>>(() => new Map());
+    const submittingRef = useRef(false);
+    // Set false on unmount so a late answer never stamps state (or fires
+    // onResolved) after the host closed the run and removed the card.
+    const mountedRef = useRef(true);
+    useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
+    // A fresh subscription means the previous answer was sent over an attachment the
+    // daemon no longer owns. Reset the card so the re-delivered request is answerable,
+    // and bump the generation so the abandoned answer cannot overwrite this state.
+    const generationRef = useRef(0);
 
-  if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
-
-  const subject = permissionSubject(request, toolTitle);
-  const isPlan = request.kind === "plan";
-  const provenance = permissionOriginLabel(origin ?? request.origin, deviceNames);
-  const commandLine = formatPermissionCommand(request);
-  const daemonReachable = daemonState === "connected";
-  const allowSupported = request.options.some((option) => option.kind === "allow_once");
-  const denySupported = request.options.some((option) => option.kind === "reject_once");
-  // The daemon's chooser verdict, read and never re-derived here: a marked
-  // request renders one control per option, an unmarked one the ordinary pair.
-  const isChooser = request.isChooser === true;
-  // The agent refused by offering a reject option of its own; only when it
-  // did not does the card keep its plain Deny.
-  const hasRejectOption = request.options.some((option) => option.kind.startsWith("reject"));
-  // Which option the answer was, from whichever side said it: the daemon's
-  // name on an outside resolution, or the option this card clicked.
-  const chosenName = resolution?.selectedOptionName || localChoice;
-  // The creator answered elsewhere: the card resolves with the attribution
-  // on it, an answerer the label can name, and a way to clear it once read.
-  // The dot keeps the outcome's colour so the state is readable at the same
-  // glance as the words — except when no outcome was claimed, where the dot
-  // goes neutral: an answered card with no claimed decision is not a denial
-  // and must not wear one's colour.
-  const resolvedByCreator = resolution !== null;
-  const attribution: ResolutionAttribution =
-    resolution === null || resolution.answeredBy === null
-      ? "unnamed"
-      : creatorId !== null && resolution.answeredBy === creatorId
-        ? "creator"
-        : "other";
-  const answererHead =
-    resolution?.answeredBy === null || resolution?.answeredBy === undefined
-      ? null
-      : shortenAnswererId(resolution.answeredBy);
-  // A plan is approved or rejected: the words say that and nothing about who
-  // answered, so an outcome the daemon did not name claims no word at all.
-  const cardLabel = isPlan
-    ? stale
-      ? STALE_PERMISSION_LINE
-      : resolvedByCreator
-        ? planResolvedLabel(resolution.outcome)
-        : PLAN_LABELS[permission]
-    : resolvedByCreator
-      ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
-      : stale
-        ? STALE_PERMISSION_LINE
-        : PERMISSION_LABELS[permission];
-  // A stale card wears the neutral dot: it is over, but nothing was denied.
-  const cardTone = resolvedByCreator
-    ? (resolution.outcome ?? "unclaimed")
-    : stale
-      ? "unclaimed"
-      : permission;
-
-  const respond = async (response: PermissionAnswer): Promise<boolean> => {
-    if (stale || resolvedByCreator || submittingRef.current || permission !== "waiting")
-      return false;
-    const { outcome, optionId, answer } = response;
-    const generation = generationRef.current;
-    submittingRef.current = true;
-    setPermission("submitting");
-    setError(null);
-    try {
-      // The ordinary pair posts no option id: its options are unambiguous,
-      // so the daemon's own pick is the right one. A chooser answer names the
-      // option it is answering with. A question's free text travels as the
-      // answer beside it. Either door goes through the one object above.
-      await (onRespond?.(response) ??
-        sessionPermissionRespond(
-          sessionId,
-          subscriptionId,
-          request.toolCallId,
-          outcome,
-          optionId,
-          answer,
-        ));
-      if (!mountedRef.current || generationRef.current !== generation) return false;
-      const chosen =
-        optionId === undefined
-          ? undefined
-          : request.options.find((option) => option.optionId === optionId);
-      // The granted kind is what the label claims: a durable grant the
-      // person named reads as durable, never as a one-shot — the same rule
-      // the journal keeps (review A2a #2). `allow_session` is the
-      // first-use gate's session word: durable for the session, not forever.
-      setPermission(
-        outcome === "deny"
-          ? "denied"
-          : chosen?.kind === "allow_always"
-            ? "allowed_always"
-            : chosen?.kind === "allow_session"
-              ? "allowed_session"
-              : "allowed",
-      );
-      if (chosen !== undefined) {
-        setLocalChoice(chosen.name);
-      }
-      onResolved?.(sessionId, request.toolCallId);
-      return true;
-    } catch (cause) {
-      if (!mountedRef.current || generationRef.current !== generation) return false;
+    useEffect(() => {
+      generationRef.current += 1;
       submittingRef.current = false;
-      if (isStalePermissionError(cause)) {
-        // The same answer can never succeed, so the card ends here instead
-        // of offering it again; the label is the one announcement (the
-        // root is aria-live), only Clear remains, and the host records it
-        // so a remount starts terminal too.
-        setStale(true);
-        onStale?.(sessionId, request.toolCallId);
+      setPermission("waiting");
+      setError(null);
+      setLocalChoice(null);
+      setPickedOptions(new Map());
+      setOtherTexts(new Map());
+    }, [sessionId, request.toolCallId, subscriptionId]);
+    // The card takes focus once, on its first appearance, and only while it is
+    // still pending and the person is typing in the transcript or the composer
+    // (not in another card's answer field). Its approve control is never focused:
+    // Deny stays the first stop.
+    const cardRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+      const cardKey = `${sessionId}:${request.toolCallId}`;
+      if (focusTakenBy.has(cardKey)) return;
+      focusTakenBy.add(cardKey);
+      if (resolution !== null || incomingStale) return;
+      const active = document.activeElement;
+      const inOwnFlow =
+        active?.closest(".workspace-conversation, .workspace-composer") != null &&
+        active.closest(".permission-card") === null;
+      if (inOwnFlow) cardRef.current?.focus();
+    }, [sessionId, request.toolCallId, resolution, incomingStale]);
+
+    const subject = permissionSubject(request, toolTitle);
+    const isPlan = request.kind === "plan";
+    const provenance = permissionOriginLabel(origin ?? request.origin, deviceNames);
+    const commandLine = formatPermissionCommand(request);
+    const daemonReachable = daemonState === "connected";
+    const allowSupported = request.options.some((option) => option.kind === "allow_once");
+    const denySupported = request.options.some((option) => option.kind === "reject_once");
+    // The daemon's chooser verdict, read and never re-derived here: a marked
+    // request renders one control per option, an unmarked one the ordinary pair.
+    const isChooser = request.isChooser === true;
+    // The agent refused by offering a reject option of its own; only when it
+    // did not does the card keep its plain Deny.
+    const hasRejectOption = request.options.some((option) => option.kind.startsWith("reject"));
+    // Which option the answer was, from whichever side said it: the daemon's
+    // name on an outside resolution, or the option this card clicked.
+    const chosenName = resolution?.selectedOptionName || localChoice;
+    // The creator answered elsewhere: the card resolves with the attribution
+    // on it, an answerer the label can name, and a way to clear it once read.
+    // The dot keeps the outcome's colour so the state is readable at the same
+    // glance as the words — except when no outcome was claimed, where the dot
+    // goes neutral: an answered card with no claimed decision is not a denial
+    // and must not wear one's colour.
+    const resolvedByCreator = resolution !== null;
+    const attribution: ResolutionAttribution =
+      resolution === null || resolution.answeredBy === null
+        ? "unnamed"
+        : creatorId !== null && resolution.answeredBy === creatorId
+          ? "creator"
+          : "other";
+    const answererHead =
+      resolution?.answeredBy === null || resolution?.answeredBy === undefined
+        ? null
+        : shortenAnswererId(resolution.answeredBy);
+    // A plan is approved or rejected: the words say that and nothing about who
+    // answered, so an outcome the daemon did not name claims no word at all.
+    const cardLabel = isPlan
+      ? stale
+        ? STALE_PERMISSION_LINE
+        : resolvedByCreator
+          ? planResolvedLabel(resolution.outcome)
+          : PLAN_LABELS[permission]
+      : resolvedByCreator
+        ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
+        : stale
+          ? STALE_PERMISSION_LINE
+          : PERMISSION_LABELS[permission];
+    // A stale card wears the neutral dot: it is over, but nothing was denied.
+    const cardTone = resolvedByCreator
+      ? (resolution.outcome ?? "unclaimed")
+      : stale
+        ? "unclaimed"
+        : permission;
+
+    const respond = async (response: PermissionAnswer): Promise<boolean> => {
+      if (stale || resolvedByCreator || submittingRef.current || permission !== "waiting")
+        return false;
+      const { outcome, optionId, answer } = response;
+      const generation = generationRef.current;
+      submittingRef.current = true;
+      setPermission("submitting");
+      setError(null);
+      try {
+        // The ordinary pair posts no option id: its options are unambiguous,
+        // so the daemon's own pick is the right one. A chooser answer names the
+        // option it is answering with. A question's free text travels as the
+        // answer beside it. Either door goes through the one object above.
+        await (onRespond?.(response) ??
+          sessionPermissionRespond(
+            sessionId,
+            subscriptionId,
+            request.toolCallId,
+            outcome,
+            optionId,
+            answer,
+          ));
+        if (!mountedRef.current || generationRef.current !== generation) return false;
+        const chosen =
+          optionId === undefined
+            ? undefined
+            : request.options.find((option) => option.optionId === optionId);
+        // The granted kind is what the label claims: a durable grant the
+        // person named reads as durable, never as a one-shot — the same rule
+        // the journal keeps (review A2a #2). `allow_session` is the
+        // first-use gate's session word: durable for the session, not forever.
+        setPermission(
+          outcome === "deny"
+            ? "denied"
+            : chosen?.kind === "allow_always"
+              ? "allowed_always"
+              : chosen?.kind === "allow_session"
+                ? "allowed_session"
+                : "allowed",
+        );
+        if (chosen !== undefined) {
+          setLocalChoice(chosen.name);
+        }
+        onResolved?.(sessionId, request.toolCallId);
+        return true;
+      } catch (cause) {
+        if (!mountedRef.current || generationRef.current !== generation) return false;
+        submittingRef.current = false;
+        if (isStalePermissionError(cause)) {
+          // The same answer can never succeed, so the card ends here instead
+          // of offering it again; the label is the one announcement (the
+          // root is aria-live), only Clear remains, and the host records it
+          // so a remount starts terminal too.
+          setStale(true);
+          onStale?.(sessionId, request.toolCallId);
+          return false;
+        }
+        setPermission("waiting");
+        setError(errorSentence(cause));
         return false;
       }
-      setPermission("waiting");
-      setError(errorSentence(cause));
-      return false;
-    }
-  };
+    };
+    // Escape refuses the card from the pane's key handler. Rebuilt every
+    // render, so it always reaches the `respond` above that sees the live
+    // state — and runs that one's gates, so a stale, answered or already
+    // submitting card refuses nothing.
+    useImperativeHandle(ref, () => ({
+      deny: () => void respond({ outcome: "deny" }),
+    }));
 
-  // A model's question renders its own form, never the chooser's buttons:
-  // one group per asked item, radios or checkboxes per its multi-select
-  // flag, an "Other" field per group, and one Submit for the whole card.
-  // `questions` absent or empty falls through to the branches below, so a
-  // question mark the daemon stamped without items stays answerable.
-  const askedQuestions: readonly PermissionQuestion[] =
-    request.kind === "question" && Array.isArray(request.questions) ? request.questions : [];
-  const isQuestion = askedQuestions.length > 0;
+    // A model's question renders its own form, never the chooser's buttons:
+    // one group per asked item, radios or checkboxes per its multi-select
+    // flag, an "Other" field per group, and one Submit for the whole card.
+    // `questions` absent or empty falls through to the branches below, so a
+    // question mark the daemon stamped without items stays answerable.
+    const askedQuestions: readonly PermissionQuestion[] =
+      request.kind === "question" && Array.isArray(request.questions) ? request.questions : [];
+    const isQuestion = askedQuestions.length > 0;
+    // The grant door's list: every allow option the request offered, in the
+    // order it offered them. A chooser, a plan and a question each name their
+    // options in their own words, so none of them collapses into a scope menu.
+    const allowOptions =
+      isChooser || isPlan || isQuestion
+        ? []
+        : request.options.filter((option) => option.kind.startsWith("allow"));
 
-  const questionOther = (index: number): string => otherTexts.get(index) ?? "";
-  // The free-text door stands open when the question has no options to
-  // pick, or the provider allowed it; an absent mark is an old daemon,
-  // which always offered it.
-  const questionTextAllowed = (question: PermissionQuestion): boolean =>
-    question.options.length === 0 || question.allowOther !== false;
-  const questionAnswered = (question: PermissionQuestion, index: number): boolean => {
-    if ((pickedOptions.get(index)?.size ?? 0) > 0) return true;
-    return questionTextAllowed(question) && questionOther(index).trim().length > 0;
-  };
-  const allQuestionsAnswered =
-    isQuestion && askedQuestions.every((question, index) => questionAnswered(question, index));
-  // The value one question contributes: typed text wins over picks, and
-  // several picks join the way the provider's own answers map reads them.
-  // Text counts only where the question allows it.
-  const questionValue = (question: PermissionQuestion, index: number): string => {
-    const other = questionOther(index).trim();
-    if (other.length > 0 && questionTextAllowed(question)) return other;
-    const picked = pickedOptions.get(index);
-    if (picked === undefined || picked.size === 0) return "";
-    return Array.from(picked)
-      .sort((left, right) => left - right)
-      .map((optionIndex) => question.options[optionIndex]?.label ?? "")
-      .filter((label) => label.length > 0)
-      .join(", ");
-  };
+    const questionOther = (index: number): string => otherTexts.get(index) ?? "";
+    // The free-text door stands open when the question has no options to
+    // pick, or the provider allowed it; an absent mark is an old daemon,
+    // which always offered it.
+    const questionTextAllowed = (question: PermissionQuestion): boolean =>
+      question.options.length === 0 || question.allowOther !== false;
+    const questionAnswered = (question: PermissionQuestion, index: number): boolean => {
+      if ((pickedOptions.get(index)?.size ?? 0) > 0) return true;
+      return questionTextAllowed(question) && questionOther(index).trim().length > 0;
+    };
+    const allQuestionsAnswered =
+      isQuestion && askedQuestions.every((question, index) => questionAnswered(question, index));
+    // The value one question contributes: typed text wins over picks, and
+    // several picks join the way the provider's own answers map reads them.
+    // Text counts only where the question allows it.
+    const questionValue = (question: PermissionQuestion, index: number): string => {
+      const other = questionOther(index).trim();
+      if (other.length > 0 && questionTextAllowed(question)) return other;
+      const picked = pickedOptions.get(index);
+      if (picked === undefined || picked.size === 0) return "";
+      return Array.from(picked)
+        .sort((left, right) => left - right)
+        .map((optionIndex) => question.options[optionIndex]?.label ?? "")
+        .filter((label) => label.length > 0)
+        .join(", ");
+    };
 
-  const toggleQuestionOption = (questionIndex: number, optionIndex: number) => {
-    if (permission !== "waiting" || resolvedByCreator) return;
-    const multi = askedQuestions[questionIndex]?.multiSelect === true;
-    setPickedOptions((previous) => {
-      const next = new Map(previous);
-      if (multi) {
-        const current = new Set(next.get(questionIndex) ?? []);
-        if (current.has(optionIndex)) current.delete(optionIndex);
-        else current.add(optionIndex);
-        if (current.size === 0) next.delete(questionIndex);
-        else next.set(questionIndex, current);
-      } else {
-        next.set(questionIndex, new Set([optionIndex]));
+    const toggleQuestionOption = (questionIndex: number, optionIndex: number) => {
+      if (permission !== "waiting" || resolvedByCreator) return;
+      const multi = askedQuestions[questionIndex]?.multiSelect === true;
+      setPickedOptions((previous) => {
+        const next = new Map(previous);
+        if (multi) {
+          const current = new Set(next.get(questionIndex) ?? []);
+          if (current.has(optionIndex)) current.delete(optionIndex);
+          else current.add(optionIndex);
+          if (current.size === 0) next.delete(questionIndex);
+          else next.set(questionIndex, current);
+        } else {
+          next.set(questionIndex, new Set([optionIndex]));
+        }
+        return next;
+      });
+    };
+
+    const setQuestionOther = (questionIndex: number, text: string) => {
+      if (permission !== "waiting" || resolvedByCreator) return;
+      setOtherTexts((previous) => {
+        const next = new Map(previous);
+        if (text.length === 0) next.delete(questionIndex);
+        else next.set(questionIndex, text);
+        return next;
+      });
+    };
+
+    const submitQuestions = () => {
+      if (!isQuestion || !allQuestionsAnswered) return;
+      const values = askedQuestions.map((question, index) => questionValue(question, index));
+      // A secret answer is never echoed back on screen: without this, the
+      // resolved line would print the very words the masked field just hid.
+      const hasSecret = askedQuestions.some((question) => question.secret === true);
+      // A lone single-select pick without typed text travels as the existing
+      // option id; everything else — multi-selects, typed text, several
+      // questions — travels as the answer the daemon maps into the provider's
+      // own answers. The flat position below repeats the daemon's own order
+      // (question-major, option-minor); a misaligned id list falls back to
+      // the answer door rather than naming the wrong option.
+      if (
+        askedQuestions.length === 1 &&
+        !askedQuestions[0].multiSelect &&
+        questionOther(0).trim().length === 0 &&
+        (pickedOptions.get(0)?.size ?? 0) === 1
+      ) {
+        const only = Array.from(pickedOptions.get(0) ?? [])[0];
+        const optionId = only === undefined ? undefined : request.options[only]?.optionId;
+        if (optionId !== undefined) {
+          void respond({ outcome: "allow_once", optionId });
+          return;
+        }
       }
-      return next;
-    });
-  };
+      const answer =
+        askedQuestions.length === 1
+          ? values[0]
+          : JSON.stringify(
+              Object.fromEntries(
+                askedQuestions.map((question, index) => [question.question, values[index]]),
+              ),
+            );
+      const choice = values.length === 1 ? values[0] : `${values.length} answers`;
+      // The name prints only once the answer is sent: `respond` reports
+      // success, so a rejection leaves the error without a "Chosen" line.
+      void respond({ outcome: "allow_once", answer }).then((sent) => {
+        if (sent && mountedRef.current && !hasSecret) setLocalChoice(choice);
+      });
+    };
 
-  const setQuestionOther = (questionIndex: number, text: string) => {
-    if (permission !== "waiting" || resolvedByCreator) return;
-    setOtherTexts((previous) => {
-      const next = new Map(previous);
-      if (text.length === 0) next.delete(questionIndex);
-      else next.set(questionIndex, text);
-      return next;
-    });
-  };
+    // Stands below the answer path so the imperative handle can reach `respond`
+    // directly; every hook is above it and nothing between them returns early.
+    if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 
-  const submitQuestions = () => {
-    if (!isQuestion || !allQuestionsAnswered) return;
-    const values = askedQuestions.map((question, index) => questionValue(question, index));
-    // A secret answer is never echoed back on screen: without this, the
-    // resolved line would print the very words the masked field just hid.
-    const hasSecret = askedQuestions.some((question) => question.secret === true);
-    // A lone single-select pick without typed text travels as the existing
-    // option id; everything else — multi-selects, typed text, several
-    // questions — travels as the answer the daemon maps into the provider's
-    // own answers. The flat position below repeats the daemon's own order
-    // (question-major, option-minor); a misaligned id list falls back to
-    // the answer door rather than naming the wrong option.
-    if (
-      askedQuestions.length === 1 &&
-      !askedQuestions[0].multiSelect &&
-      questionOther(0).trim().length === 0 &&
-      (pickedOptions.get(0)?.size ?? 0) === 1
-    ) {
-      const only = Array.from(pickedOptions.get(0) ?? [])[0];
-      const optionId = only === undefined ? undefined : request.options[only]?.optionId;
-      if (optionId !== undefined) {
-        void respond({ outcome: "allow_once", optionId });
-        return;
-      }
-    }
-    const answer =
-      askedQuestions.length === 1
-        ? values[0]
-        : JSON.stringify(
-            Object.fromEntries(
-              askedQuestions.map((question, index) => [question.question, values[index]]),
-            ),
-          );
-    const choice = values.length === 1 ? values[0] : `${values.length} answers`;
-    // The name prints only once the answer is sent: `respond` reports
-    // success, so a rejection leaves the error without a "Chosen" line.
-    void respond({ outcome: "allow_once", answer }).then((sent) => {
-      if (sent && mountedRef.current && !hasSecret) setLocalChoice(choice);
-    });
-  };
-
-  return (
-    <div ref={cardRef} className="permission-card" aria-live="polite" tabIndex={-1}>
-      {/* The provenance line is the card's first child and its own element
+    return (
+      <div ref={cardRef} className="permission-card" aria-live="polite" tabIndex={-1}>
+        {/* The provenance line is the card's first child and its own element
           (A14): the request's text renders below it, so a remote turn cannot
           print something that reads as it. */}
-      {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
-      {/* The plan card keeps the head it has always had — slice C14 owns that
+        {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
+        {/* The plan card keeps the head it has always had — slice C14 owns that
           card's redesign. The question card has no head: the spec gives it
           none, and its help icon is its marker. Its working directory lives
           in the actions row instead. */}
-      {isQuestion ? null : (
-        <div className="permission-card-heading">
-          <span className={`permission-card-dot permission-card-${cardTone}`} />
-          {isPlan ? (
-            <span className="permission-card-action">Plan</span>
-          ) : (
-            <>
-              <svg
-                className="permission-card-icon permission-card-shield"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
-              </svg>
-            </>
-          )}
-          {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
-        </div>
-      )}
-      {/* The action sentence leaves the head and becomes the card's content
+        {isQuestion ? null : (
+          <div className="permission-card-heading">
+            <span className={`permission-card-dot permission-card-${cardTone}`} />
+            {isPlan ? (
+              <span className="permission-card-action">Plan</span>
+            ) : (
+              <>
+                <svg
+                  className="permission-card-icon permission-card-shield"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+                </svg>
+              </>
+            )}
+            {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
+          </div>
+        )}
+        {/* The action sentence leaves the head and becomes the card's content
           line: the head names the card type, this line says what is asked.
           A question card's action sentence would only repeat its question, so
           it stays off that card — named in the C4 report. */}
-      {!isQuestion && !isPlan ? (
-        <div className="permission-card-action">{subject.action}</div>
-      ) : null}
-      {subject.target ? (
-        <div className="permission-card-subject" title={subject.target}>
-          {shortenPermissionTarget(subject.target)}
-        </div>
-      ) : null}
-      {request.description ? (
-        <div className="permission-card-description">{request.description}</div>
-      ) : null}
-      {isPlan ? (
-        <div className="permission-card-description permission-card-plan">
-          <MarkdownText text={request.plan ?? "No plan text was provided."} />
-        </div>
-      ) : null}
-      {commandLine || (request.env && request.env.length > 0) ? (
-        <details className="permission-card-verbose">
-          <summary className="permission-card-verbose-trigger">Command and environment</summary>
-          {commandLine ? <div className="permission-card-command">{commandLine}</div> : null}
-          {request.env && request.env.length > 0 ? (
-            <div className="permission-card-env">
-              {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
-            </div>
-          ) : null}
-        </details>
-      ) : null}
-      {!daemonReachable ? (
-        <div className="permission-card-unavailable" role="status">
-          The daemon is not reachable. Reconnect to answer this request.
-        </div>
-      ) : null}
-      {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
-        <div className="permission-card-unavailable" role="status">
-          {!allowSupported ? "Allow once is not offered for this request." : null}
-          {!allowSupported && !denySupported ? " " : null}
-          {!denySupported ? "Deny is not offered for this request." : null}
-        </div>
-      ) : null}
-      {isQuestion && !resolvedByCreator && !stale ? (
-        <div className="permission-card-questions">
-          {askedQuestions.map((question, questionIndex) => (
-            <fieldset key={questionIndex} className="permission-card-question">
-              <legend className="permission-card-question-text">
-                <span className="permission-card-question-row">
-                  <svg
-                    className="permission-card-icon permission-card-help"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
-                    focusable="false"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-                    <path d="M12 17h.01" />
-                  </svg>
-                  {question.question}
-                </span>
-              </legend>
-              <div className="permission-card-question-options">
-                {question.options.map((option, optionIndex) => {
-                  const checked = pickedOptions.get(questionIndex)?.has(optionIndex) ?? false;
-                  return (
-                    <label
-                      key={optionIndex}
-                      className={
-                        checked
-                          ? "permission-card-question-option permission-card-question-option-chosen"
-                          : "permission-card-question-option"
-                      }
+        {!isQuestion && !isPlan ? (
+          <div className="permission-card-action">{subject.action}</div>
+        ) : null}
+        {subject.target ? (
+          <div className="permission-card-subject" title={subject.target}>
+            {shortenPermissionTarget(subject.target)}
+          </div>
+        ) : null}
+        {request.description ? (
+          <div className="permission-card-description">{request.description}</div>
+        ) : null}
+        {isPlan ? (
+          <div className="permission-card-description permission-card-plan">
+            <MarkdownText text={request.plan ?? "No plan text was provided."} />
+          </div>
+        ) : null}
+        {commandLine || (request.env && request.env.length > 0) ? (
+          <details className="permission-card-verbose">
+            <summary className="permission-card-verbose-trigger">Command and environment</summary>
+            {commandLine ? <div className="permission-card-command">{commandLine}</div> : null}
+            {request.env && request.env.length > 0 ? (
+              <div className="permission-card-env">
+                {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
+              </div>
+            ) : null}
+          </details>
+        ) : null}
+        {!daemonReachable ? (
+          <div className="permission-card-unavailable" role="status">
+            The daemon is not reachable. Reconnect to answer this request.
+          </div>
+        ) : null}
+        {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
+          <div className="permission-card-unavailable" role="status">
+            {!allowSupported ? "Allow once is not offered for this request." : null}
+            {!allowSupported && !denySupported ? " " : null}
+            {!denySupported ? "Deny is not offered for this request." : null}
+          </div>
+        ) : null}
+        {isQuestion && !resolvedByCreator && !stale ? (
+          <div className="permission-card-questions">
+            {askedQuestions.map((question, questionIndex) => (
+              <fieldset key={questionIndex} className="permission-card-question">
+                <legend className="permission-card-question-text">
+                  <span className="permission-card-question-row">
+                    <svg
+                      className="permission-card-icon permission-card-help"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
                     >
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                      <path d="M12 17h.01" />
+                    </svg>
+                    {question.question}
+                  </span>
+                </legend>
+                <div className="permission-card-question-options">
+                  {question.options.map((option, optionIndex) => {
+                    const checked = pickedOptions.get(questionIndex)?.has(optionIndex) ?? false;
+                    return (
+                      <label
+                        key={optionIndex}
+                        className={
+                          checked
+                            ? "permission-card-question-option permission-card-question-option-chosen"
+                            : "permission-card-question-option"
+                        }
+                      >
+                        <input
+                          type={question.multiSelect ? "checkbox" : "radio"}
+                          className="permission-card-question-input"
+                          // Scoped to this card's own session, subscription and
+                          // tool call: a provider-chosen id alone could repeat
+                          // across two visible cards and merge their groups.
+                          name={`permission-question-${sessionId}-${subscriptionId}-${request.toolCallId}-${questionIndex}`}
+                          checked={checked}
+                          onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
+                          disabled={permission !== "waiting" || !daemonReachable}
+                        />
+                        {checked ? (
+                          <svg
+                            className="permission-card-icon permission-card-check"
+                            viewBox="0 0 24 24"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        ) : null}
+                        <span className="permission-card-question-label">{option.label}</span>
+                        {option.description ? (
+                          <span className="permission-card-question-description">
+                            {option.description}
+                          </span>
+                        ) : null}
+                      </label>
+                    );
+                  })}
+                  {questionTextAllowed(question) ? (
+                    <label className="permission-card-question-option permission-card-question-other">
+                      <span className="permission-card-question-label">Other…</span>
                       <input
-                        type={question.multiSelect ? "checkbox" : "radio"}
-                        className="permission-card-question-input"
-                        // Scoped to this card's own session, subscription and
-                        // tool call: a provider-chosen id alone could repeat
-                        // across two visible cards and merge their groups.
-                        name={`permission-question-${sessionId}-${subscriptionId}-${request.toolCallId}-${questionIndex}`}
-                        checked={checked}
-                        onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
+                        type={question.secret === true ? "password" : "text"}
+                        className="permission-card-question-other-input"
+                        value={questionOther(questionIndex)}
+                        onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
+                        placeholder="Type another answer…"
                         disabled={permission !== "waiting" || !daemonReachable}
                       />
-                      {checked ? (
-                        <svg
-                          className="permission-card-icon permission-card-check"
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                          focusable="false"
-                        >
-                          <path d="M20 6 9 17l-5-5" />
-                        </svg>
-                      ) : null}
-                      <span className="permission-card-question-label">{option.label}</span>
-                      {option.description ? (
-                        <span className="permission-card-question-description">
-                          {option.description}
-                        </span>
-                      ) : null}
                     </label>
-                  );
-                })}
-                {questionTextAllowed(question) ? (
-                  <label className="permission-card-question-option permission-card-question-other">
-                    <span className="permission-card-question-label">Other…</span>
-                    <input
-                      type={question.secret === true ? "password" : "text"}
-                      className="permission-card-question-other-input"
-                      value={questionOther(questionIndex)}
-                      onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
-                      placeholder="Type another answer…"
-                      disabled={permission !== "waiting" || !daemonReachable}
-                    />
-                  </label>
-                ) : null}
-              </div>
-            </fieldset>
-          ))}
-        </div>
-      ) : null}
-      {chosenName && !isPlan ? (
-        <div className="permission-card-choice">Chosen: {chosenName}</div>
-      ) : null}
-      <div className="permission-card-actions">
-        {/* The question card's working directory: a meta line in the actions
+                  ) : null}
+                </div>
+              </fieldset>
+            ))}
+          </div>
+        ) : null}
+        {chosenName && !isPlan ? (
+          <div className="permission-card-choice">Chosen: {chosenName}</div>
+        ) : null}
+        <div className="permission-card-actions">
+          {/* The question card's working directory: a meta line in the actions
             row, in the UI font — it is not code. The head is gone from this
             card, so the directory lives here, left of the buttons. */}
-        {isQuestion && request.cwd ? (
-          <span className="permission-card-cwd" title={request.cwd}>
-            {request.cwd}
-          </span>
-        ) : null}
-        <span
-          className="permission-card-label"
-          title={resolution?.answeredBy != null ? resolution.answeredBy : undefined}
-        >
-          {cardLabel}
-        </span>
-        {/* A stale card answers nothing further: like an outside answer it
-            keeps only Clear, and unlike one it says the request is gone. */}
-        {resolvedByCreator || stale ? (
-          <button
-            type="button"
-            className="permission-card-secondary-action permission-card-dismiss-action"
-            // The one control a resolved card keeps: without it, an outside
-            // answer sits in the queue for the life of the app — nothing else
-            // can remove it, and two hundred answered cards are two hundred
-            // permanent fixtures.
-            // A stale card was never answered, so its Clear must not claim
-            // otherwise; the resolved card keeps its own label.
-            aria-label={resolvedByCreator ? "Clear this answered card" : "Clear this request"}
-            onClick={() => onResolved?.(sessionId, request.toolCallId)}
+          {isQuestion && request.cwd ? (
+            <span className="permission-card-cwd" title={request.cwd}>
+              {request.cwd}
+            </span>
+          ) : null}
+          <span
+            className="permission-card-label"
+            title={resolution?.answeredBy != null ? resolution.answeredBy : undefined}
           >
-            Clear
-          </button>
-        ) : isQuestion ? (
-          // A question is submitted whole, or dismissed: one Submit for
-          // every group, and a Dismiss that refuses without naming anything.
-          <>
+            {cardLabel}
+          </span>
+          {/* A stale card answers nothing further: like an outside answer it
+            keeps only Clear, and unlike one it says the request is gone. */}
+          {resolvedByCreator || stale ? (
             <button
               type="button"
-              className="permission-card-secondary-action permission-card-deny-action"
-              onClick={() => void respond({ outcome: "deny" })}
-              disabled={permission !== "waiting" || !daemonReachable}
+              className="permission-card-secondary-action permission-card-dismiss-action"
+              // The one control a resolved card keeps: without it, an outside
+              // answer sits in the queue for the life of the app — nothing else
+              // can remove it, and two hundred answered cards are two hundred
+              // permanent fixtures.
+              // A stale card was never answered, so its Clear must not claim
+              // otherwise; the resolved card keeps its own label.
+              aria-label={resolvedByCreator ? "Clear this answered card" : "Clear this request"}
+              onClick={() => onResolved?.(sessionId, request.toolCallId)}
             >
-              Dismiss
+              Clear
             </button>
-            <button
-              type="button"
-              className="permission-card-primary-action"
-              onClick={submitQuestions}
-              disabled={permission !== "waiting" || !daemonReachable || !allQuestionsAnswered}
-            >
-              Submit
-            </button>
-          </>
-        ) : isChooser || isPlan ? (
-          <>
-            {!hasRejectOption ? (
+          ) : isQuestion ? (
+            // A question is submitted whole, or dismissed: one Submit for
+            // every group, and a Dismiss that refuses without naming anything.
+            <>
               <button
                 type="button"
                 className="permission-card-secondary-action permission-card-deny-action"
-                // The agent offered no way to refuse, so the card keeps its
-                // own Deny: a question the person will not answer can still
-                // be refused.
                 onClick={() => void respond({ outcome: "deny" })}
                 disabled={permission !== "waiting" || !daemonReachable}
               >
-                Deny
+                Dismiss
               </button>
-            ) : null}
-            {request.options.map((option) => {
-              const outcome = optionOutcome(option.kind);
-              return (
+              <button
+                type="button"
+                className="permission-card-primary-action"
+                onClick={submitQuestions}
+                disabled={permission !== "waiting" || !daemonReachable || !allQuestionsAnswered}
+              >
+                Submit
+              </button>
+            </>
+          ) : isChooser || isPlan ? (
+            <>
+              {!hasRejectOption ? (
                 <button
-                  key={option.optionId}
                   type="button"
-                  className={
-                    outcome === "deny"
-                      ? "permission-card-secondary-action permission-card-deny-action"
-                      : "permission-card-primary-action"
-                  }
-                  onClick={() => void respond({ outcome, optionId: option.optionId })}
+                  className="permission-card-secondary-action permission-card-deny-action"
+                  // The agent offered no way to refuse, so the card keeps its
+                  // own Deny: a question the person will not answer can still
+                  // be refused.
+                  onClick={() => void respond({ outcome: "deny" })}
                   disabled={permission !== "waiting" || !daemonReachable}
                 >
-                  {option.name}
+                  Deny
                 </button>
-              );
-            })}
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              className="permission-card-secondary-action permission-card-deny-action"
-              onClick={() => void respond({ outcome: "deny" })}
-              disabled={permission !== "waiting" || !daemonReachable || !denySupported}
-            >
-              Deny
-            </button>
-            <button
-              type="button"
-              className="permission-card-primary-action"
-              onClick={() => void respond({ outcome: "allow_once" })}
-              disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
-            >
-              Allow once
-            </button>
-          </>
-        )}
-      </div>
-      {error ? (
-        <div role="alert">
-          <ErrorText sentence={error.sentence} detail={error.detail} id="permission-error" />
+              ) : null}
+              {request.options.map((option) => {
+                const outcome = optionOutcome(option.kind);
+                return (
+                  <button
+                    key={option.optionId}
+                    type="button"
+                    className={
+                      outcome === "deny"
+                        ? "permission-card-secondary-action permission-card-deny-action"
+                        : "permission-card-primary-action"
+                    }
+                    onClick={() => void respond({ outcome, optionId: option.optionId })}
+                    disabled={permission !== "waiting" || !daemonReachable}
+                  >
+                    {option.name}
+                  </button>
+                );
+              })}
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="permission-card-secondary-action permission-card-deny-action"
+                onClick={() => void respond({ outcome: "deny" })}
+                disabled={permission !== "waiting" || !daemonReachable || !denySupported}
+              >
+                Deny
+              </button>
+              {allowOptions.length === 0 ? null : (
+                <PermissionScopeMenu
+                  options={allowOptions}
+                  disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
+                  onChoose={(option) =>
+                    void respond({
+                      outcome: optionOutcome(option.kind),
+                      optionId: option.optionId,
+                    })
+                  }
+                />
+              )}
+            </>
+          )}
         </div>
-      ) : null}
-    </div>
-  );
-}
+        {error ? (
+          <div role="alert">
+            <ErrorText sentence={error.sentence} detail={error.detail} id="permission-error" />
+          </div>
+        ) : null}
+      </div>
+    );
+  },
+);

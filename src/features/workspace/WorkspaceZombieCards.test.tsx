@@ -403,7 +403,7 @@ describe("closing a session and its permission cards", () => {
       41,
       "hidden-ask",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
     await act(async () => sharedSessionController().closeTabs([child.id]));

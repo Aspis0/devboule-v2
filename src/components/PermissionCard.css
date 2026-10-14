@@ -285,6 +285,53 @@
   margin-top: var(--space-8);
 }
 
+/* The grant door and its option list stack rather than float: the card's
+   `overflow: hidden` (which the focus ring leans on) would clip a popover. */
+.permission-card-scope {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-6);
+}
+
+.permission-card-scope-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.permission-card-scope-menu {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface-muted);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-6);
+}
+
+.permission-card-scope-item {
+  padding: var(--space-6) var(--space-8);
+  color: var(--ink);
+  border-radius: var(--radius-4);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
+  text-align: start;
+  cursor: pointer;
+}
+
+.permission-card-scope-item:hover,
+.permission-card-scope-item:focus-visible {
+  background: var(--fill-hover);
+}
+
+.permission-card-scope-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* The option the answer picked, under the daemon's own name: the label says
    whether it was allowed or denied — this says which choice that was. */
 .permission-card-choice {

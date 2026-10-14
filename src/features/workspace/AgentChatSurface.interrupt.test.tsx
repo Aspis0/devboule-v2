@@ -1,5 +1,6 @@
 // Escape in the agent pane stops the turn that is running — once, never on a
-// held key, and never when a card is waiting or something else owns the key.
+// held key, and never when something else owns the key. A waiting card owns it
+// too: the key refuses that card, and never stops the turn under it.
 // @vitest-environment happy-dom
 import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
@@ -36,7 +37,11 @@ afterEach(async () => {
 });
 
 async function mount(
-  props: { hasPendingPermission?: boolean; activity?: "working" | "idle" } = {},
+  props: {
+    hasPendingPermission?: boolean;
+    onCardDeny?: () => void;
+    activity?: "working" | "idle";
+  } = {},
 ): Promise<void> {
   root = createRoot(container);
   await act(async () => {
@@ -146,12 +151,49 @@ describe("Escape in the agent pane", () => {
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
   });
 
-  it("does nothing while a permission or question card is waiting", async () => {
+  it("refuses the waiting card instead of stopping the turn", async () => {
+    const deny = vi.fn();
+    await mount({ hasPendingPermission: true, onCardDeny: deny });
+    await startTurn();
+
+    const event = await press(composer());
+
+    expect(deny).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+
+    // A second card is still refusable: the per-turn latch belongs to the
+    // interrupt, and a refusal never spends it.
+    await press(transcript());
+    expect(deny).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the key alone when a waiting card has no refusal wired", async () => {
     await mount({ hasPendingPermission: true });
     await startTurn();
 
     await press(composer());
 
+    // Stopping the turn would answer a question nobody answered.
+    expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
+  });
+
+  it("leaves the key to a menu or a draft even while a card is waiting", async () => {
+    const deny = vi.fn();
+    await mount({ hasPendingPermission: true, onCardDeny: deny });
+    await startTurn();
+
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "menu");
+    overlay.setAttribute("data-test-overlay", "");
+    document.body.append(overlay);
+    await press(composer());
+    expect(deny).not.toHaveBeenCalled();
+    overlay.remove();
+
+    await typeDraft("a half-written follow-up");
+    await press(composer());
+    expect(deny).not.toHaveBeenCalled();
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
   });
 

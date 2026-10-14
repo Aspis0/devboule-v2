@@ -236,6 +236,10 @@ interface AgentChatSurfaceProps {
   /** An unanswered permission card parks this session's turn; Enter's queue
    * action becomes steer while one is open (queueing would strand the message). */
   hasPendingPermission?: boolean;
+  /** Refuses the docked permission card, for Escape. The card itself runs the
+   * answer, so this only says the key reaches it. Absent, Escape leaves the
+   * card alone rather than stopping the turn instead. */
+  onCardDeny?: () => void;
   /** The one plan timeline row that may stand down: the id of the permission
    * card actually rendered in this pane, while it waits unanswered. Null,
    * every plan row renders. */
@@ -489,6 +493,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   sessionRoster,
   deviceNames,
   hasPendingPermission = false,
+  onCardDeny,
   pendingPlanToolCallId = null,
   queueSupported = false,
   gifWebpSupported = false,
@@ -905,6 +910,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     running: turnRunning,
     cardWaiting: hasPendingPermission,
     interrupt: () => void sessionRef.current?.interrupt(),
+    onCardDeny,
   });
   // The step the agent is on, for the status bar.
   const currentTask = useMemo(() => {
@@ -1054,7 +1060,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             </div>
           ) : null}
         </div>
-        <div className="workspace-pending-cards">{auxiliary}</div>
       </div>
       {state.journalLoss !== null ? (
         <div
@@ -1080,6 +1085,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           <MarkdownText text={latestPlan.output} />
         </section>
       ) : null}
+      {/* Docked on the composer, not in the transcript: a pending card is
+          what the person is being asked right now, so it stays put while the
+          transcript scrolls under it. The row renders only when there is one,
+          since an empty dock would keep its gap over the field forever. */}
+      {auxiliary === undefined ? null : <div className="workspace-pending-cards">{auxiliary}</div>}
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
         turnActive={turnActive}

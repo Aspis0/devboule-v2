@@ -38,6 +38,12 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     ground: card,
   },
   {
+    file: "src/components/PermissionCard.css",
+    match: ".permission-card-scope-item:focus-visible",
+    // The scope list paints on the muted surface, not on the card it sits in.
+    ground: side,
+  },
+  {
     file: "src/components/PickerChip.css",
     match: ".workspace-mode-chip-trigger:focus-visible",
     ground: composer,

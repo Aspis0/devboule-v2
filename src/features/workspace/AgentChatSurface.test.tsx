@@ -3306,7 +3306,7 @@ describe("AgentChatSurface", () => {
     expect(vi.mocked(sessionSend).mock.calls[0]?.[2]).toBe("Turn left");
   });
 
-  it("renders auxiliary last in the conversation, before the composer", async () => {
+  it("docks auxiliary on the composer, outside the transcript's scrollport", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -3326,12 +3326,26 @@ describe("AgentChatSurface", () => {
     const aux = container.querySelector('[data-testid="aux-node"]');
     if (conversation === null || aux === null) throw new Error("auxiliary did not render");
     expect(conversation.textContent).toContain("hello");
-    expect(aux.parentElement?.className).toBe("workspace-pending-cards");
-    expect(aux.parentElement?.parentElement).toBe(conversation);
-    expect(conversation.lastElementChild).toBe(aux.parentElement);
+    const dock = aux.parentElement;
+    expect(dock?.className).toBe("workspace-pending-cards");
+    // The dock is the shell's own row, so the transcript scrolls under it
+    // instead of carrying it away.
+    expect(dock?.parentElement?.className).toContain("workspace-agent-shell");
+    expect(conversation.contains(dock)).toBe(false);
     const composer = container.querySelector(".workspace-composer-wrap");
     if (composer === null) throw new Error("composer did not render");
-    expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(dock?.nextElementSibling).toBe(composer);
+  });
+
+  it("renders no dock at all without an auxiliary, so the field keeps its place", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="aux-none" />);
+    });
+    await act(async () => undefined);
+
+    // An empty dock would keep its gap over the field for the life of the pane.
+    expect(container.querySelector(".workspace-pending-cards")).toBeNull();
   });
 
   it("nests the conversation directly in the agent shell the rail toggles", async () => {

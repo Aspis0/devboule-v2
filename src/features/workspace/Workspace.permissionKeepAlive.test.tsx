@@ -204,7 +204,7 @@ it("restores an approval received while Workspace is unmounted and answers it on
     41,
     "approve-hidden",
     "allow_once",
-    undefined,
+    "allow",
     undefined,
   );
   await away();

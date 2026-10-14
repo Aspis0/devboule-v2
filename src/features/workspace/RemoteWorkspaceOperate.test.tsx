@@ -465,6 +465,7 @@ describe("the remote operate surface", () => {
       subscriptionId: subscription,
       requestId: "card-1",
       outcome: "allow_once",
+      optionId: "allow",
       idempotencyKey: expect.any(String),
     });
 
@@ -554,6 +555,7 @@ describe("the remote operate surface", () => {
       subscriptionId: second,
       requestId: "card-9",
       outcome: "allow_once",
+      optionId: "allow",
       idempotencyKey: expect.any(String),
     });
   });

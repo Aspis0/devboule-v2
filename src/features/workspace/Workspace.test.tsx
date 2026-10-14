@@ -197,7 +197,8 @@ vi.mock("./AgentChatSurface", () => ({
           data-testid="pending-permission"
           data-pending={String(hasPendingPermission === true)}
         />
-        <div className="workspace-conversation">{auxiliary}</div>
+        <div className="workspace-conversation" />
+        <div className="workspace-pending-cards">{auxiliary}</div>
         <div data-testid="mock-composer" />
         <button
           type="button"
@@ -2437,12 +2438,12 @@ describe("Workspace sessions", () => {
       41,
       "tool-test",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
   });
 
-  it("renders the deny and allow-once controls with their kind classes", async () => {
+  it("collapses the allow options into one scope menu beside the deny control", async () => {
     const optionsRequest: PermissionRequest = {
       type: "permission_request",
       toolCallId: "tool-a",
@@ -2469,21 +2470,30 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow"]);
     expect(buttons[0].className).toContain("permission-card-secondary-action");
     expect(buttons[0].className).toContain("permission-card-deny-action");
     expect(buttons[1].className).toContain("permission-card-primary-action");
     expect(buttons[1].className).not.toContain("permission-card-deny-action");
+    expect(buttons[1].getAttribute("aria-haspopup")).toBe("menu");
+    expect(container.querySelector("[role=menu]")).toBeNull();
 
     await act(async () => {
       buttons[1].click();
+    });
+    const items = [...container.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];
+    // Each option keeps the name the daemon gave it; only the door collapsed.
+    expect(items.map((item) => item.textContent)).toEqual(["Allow once", "Allow for this session"]);
+
+    await act(async () => {
+      items[1].click();
     });
     expect(sessionPermissionRespond).toHaveBeenCalledWith(
       "session-2",
       41,
       "tool-a",
       "allow_once",
-      undefined,
+      "always",
       undefined,
     );
   });
@@ -2582,8 +2592,8 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
-    expect(buttons[1].disabled).toBe(true);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny"]);
+    expect(container.textContent).toContain("Allow once is not offered for this request.");
 
     await act(async () => {
       resolveRespond(undefined);
@@ -2614,15 +2624,16 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny"]);
     expect(buttons.every((button) => button.disabled)).toBe(true);
     expect(container.textContent).toContain("Deny is not offered for this request.");
-    // The notice names the control the button shows, so the two stay consistent.
+    // Nothing to grant, so no grant door renders; the notice says which option
+    // is missing rather than leaving a dead button on the card.
     expect(container.textContent).toContain("Allow once is not offered for this request.");
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
   });
 
-  it("renders the permission card inside the conversation, above the composer", async () => {
+  it("hands the permission card to the surface as its dock, not into the transcript", async () => {
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
@@ -2645,12 +2656,14 @@ describe("Workspace sessions", () => {
     const surface = container.querySelector('[data-testid="agent-chat-surface"]');
     if (surface === null) throw new Error("agent chat surface did not render");
     expect(surface.contains(card)).toBe(true);
-    const conversation = card.closest(".workspace-conversation");
-    expect(conversation).not.toBeNull();
-    expect(conversation?.lastElementChild).toBe(card);
+    // The dock is the shell's own row above the field: the transcript scrolls
+    // under the card instead of carrying it away.
+    const dock = card.closest(".workspace-pending-cards");
+    expect(dock).not.toBeNull();
+    expect(container.querySelector(".workspace-conversation .permission-card")).toBeNull();
     const composer = container.querySelector('[data-testid="mock-composer"]');
     if (composer === null) throw new Error("composer did not render");
-    expect(conversation?.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(dock?.nextElementSibling).toBe(composer);
   });
 
   it("marks the chat surface permission-pending only while a card is unanswered", async () => {
@@ -2832,9 +2845,9 @@ describe("Workspace sessions", () => {
     const rejectOnlyAllow = container.querySelector<HTMLButtonElement>(
       ".permission-card-primary-action",
     );
-    if (rejectOnlyAllow === null) throw new Error("permission allow control did not render");
-    expect(rejectOnlyAllow.disabled).toBe(true);
-    // The notice names the control the button shows, so the two stay consistent.
+    // A reject-only request offers no grant door at all, and the notice names
+    // the option that is missing rather than a control that never renders.
+    expect(rejectOnlyAllow).toBeNull();
     expect(container.textContent).toContain("Allow once is not offered for this request.");
   });
 
@@ -2900,7 +2913,7 @@ describe("Workspace sessions", () => {
       41,
       "tool-a",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
   });
@@ -2941,7 +2954,7 @@ describe("Workspace sessions", () => {
       42,
       "tool-a",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
   });
@@ -3244,7 +3257,7 @@ describe("Workspace sessions", () => {
       41,
       "shared-tool",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
 

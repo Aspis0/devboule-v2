@@ -58,7 +58,7 @@ describe("user-opened workspace tabs", () => {
       41,
       "child-ask",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
     await pushSnapshots([

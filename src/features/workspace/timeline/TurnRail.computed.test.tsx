@@ -43,10 +43,11 @@ describe("turn rail computed styles", () => {
     conversation.remove();
   });
 
-  it("insets the permission card with the rail and leaves the field and the track alone", () => {
+  it("leaves the docked card on the composer lane and the field and track alone", () => {
     railCss.inject([
       ".workspace-conversation",
-      ".workspace-conversation.has-turn-rail > .permission-card",
+      ".workspace-conversation.has-turn-rail",
+      ".workspace-pending-cards",
       ".workspace-composer-wrap",
       ".workspace-composer-track",
       ".workspace-agent-shell.has-turn-rail .workspace-composer-track",
@@ -56,7 +57,7 @@ describe("turn rail computed styles", () => {
       withRail: boolean,
     ): {
       shell: HTMLDivElement;
-      aux: HTMLDivElement;
+      dock: HTMLDivElement;
       wrap: HTMLDivElement;
       track: HTMLDivElement;
       composer: HTMLDivElement;
@@ -69,11 +70,9 @@ describe("turn rail computed styles", () => {
         : "workspace-conversation";
       const content = document.createElement("div");
       content.className = "workspace-conversation-content";
-      const aux = document.createElement("div");
-      aux.className = "permission-card";
-      aux.setAttribute("data-testid", "aux-node");
       conversation.appendChild(content);
-      conversation.appendChild(aux);
+      const dock = document.createElement("div");
+      dock.className = "workspace-pending-cards";
       const wrap = document.createElement("div");
       wrap.className = "workspace-composer-wrap";
       const track = document.createElement("div");
@@ -83,14 +82,15 @@ describe("turn rail computed styles", () => {
       wrap.appendChild(track);
       wrap.appendChild(composer);
       shell.appendChild(conversation);
+      shell.appendChild(dock);
       shell.appendChild(wrap);
       document.body.appendChild(shell);
-      return { shell, aux, wrap, track, composer };
+      return { shell, dock, wrap, track, composer };
     };
 
-    // happy-dom lays nothing out, so the two edges are compared through the
-    // terms that place them: the wrap pads 24 px for both children, the track
-    // adds no padding of its own, and the field adds its own 14 px inside its
+    // happy-dom lays nothing out, so the edges are compared through the terms
+    // that place them: the wrap pads 24 px for both children, the track adds
+    // no padding of its own, and the field adds its own 14 px inside its
     // border — the same width cap and auto margins, so the border boxes land
     // on the same lines.
     const laneBox = (element: HTMLElement): string => {
@@ -98,9 +98,11 @@ describe("turn rail computed styles", () => {
       return `${style.width} ${style.maxWidth} ${style.marginLeft} ${style.marginRight}`;
     };
 
-    // Rail off: no sibling takes an inset.
+    // Rail off: the dock takes the composer's lane, 14 px inside it.
     const off = build(false);
-    expect(getComputedStyle(off.aux).marginLeft).toBe("");
+    expect(getComputedStyle(off.dock).maxWidth).toBe(railCss.token("--chat-lane"));
+    expect(getComputedStyle(off.dock).marginLeft).toBe("auto");
+    expect(getComputedStyle(off.dock).paddingLeft).toBe("14px");
     // The wrap's 24 px is the whole inset between the pane edge and the
     // track's box; the track declares no side padding of its own (the lane's
     // 20 px is gone from it), so its content starts on its border edge.
@@ -111,13 +113,15 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(off.composer).paddingLeft).toBe("14px");
     off.shell.remove();
 
-    // The card takes the gutter as margin; the track and the field keep the
-    // same box rule and their own padding with the rail open, so the track's
-    // edges still land on the field's border edges.
+    // Rail on: the gutter is reserved in the content box, and the dock is the
+    // composer's neighbour rather than a row of the transcript — so no rule
+    // reaches it, and the track and the field keep their own box rule and
+    // padding with the rail open.
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
-    expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
+    expect(getComputedStyle(on.dock).marginLeft).toBe("auto");
+    expect(railCss.rulesFor(".workspace-pending-cards")).not.toMatch(/turn-rail/);
     expect(railCss.rulesFor(".workspace-composer-track")).not.toMatch(/\bpadding/);
     expect(laneBox(on.track)).toBe(laneBox(on.composer));
     expect(getComputedStyle(on.composer).paddingLeft).toBe("14px");

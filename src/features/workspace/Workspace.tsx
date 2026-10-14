@@ -144,6 +144,7 @@ import {
   PermissionCard as WorkspacePermissionCard,
   formatPermissionCommand,
   resolutionOutcome,
+  type PermissionCardHandle,
 } from "../../components/PermissionCard";
 import {
   peerDeviceNames,
@@ -2453,6 +2454,10 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   // action into a steer while one is open (queueing would strand the message).
   const hasPendingPermission =
     selectedPermission !== null && selectedPermission.resolution === undefined;
+  // Escape refuses the docked card through the card's own handle, so the key
+  // lands on the same `respond` its Deny button calls, gates included.
+  const dockedCardRef = useRef<PermissionCardHandle>(null);
+  const denyDockedCard = useCallback(() => dockedCardRef.current?.deny(), []);
   // The one plan row that may stand down: the id of the card this pane
   // actually renders, while it waits unanswered. A plan whose card waits
   // behind another card keeps its row — a hidden plan with no card on screen
@@ -2698,6 +2703,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             onAgentChange={reportPaneAgentWithFirstMessage}
             deviceNames={peerNames}
             hasPendingPermission={hasPendingPermission}
+            onCardDeny={denyDockedCard}
             pendingPlanToolCallId={pendingPlanToolCallId}
             // The daemon owns this session's follow-up queue (see
             // `queueSupported`): the surface renders its snapshots, and
@@ -2708,6 +2714,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             auxiliary={
               selectedPermission !== null ? (
                 <WorkspacePermissionCard
+                  ref={dockedCardRef}
                   // Session and tool call: a new identity mounts a new
                   // card, so its terminal flag starts from the queue item.
                   key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}

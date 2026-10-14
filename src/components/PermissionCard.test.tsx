@@ -446,7 +446,7 @@ describe("PermissionCard", () => {
       41,
       "tool-a",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
     expect(allowButton().disabled).toBe(true);
@@ -475,7 +475,7 @@ describe("PermissionCard", () => {
       42,
       "tool-a",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
 
@@ -534,7 +534,7 @@ describe("PermissionCard", () => {
       42,
       "tool-a",
       "allow_once",
-      undefined,
+      "allow",
       undefined,
     );
 

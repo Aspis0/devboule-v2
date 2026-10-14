@@ -673,7 +673,10 @@ describe("DesignSurface host capabilities", () => {
       "Permission request is no longer waiting; it was answered elsewhere or it expired.",
     );
 
-    expect(respondPermission).toHaveBeenNthCalledWith(1, { outcome: "allow_once" });
+    expect(respondPermission).toHaveBeenNthCalledWith(1, {
+      outcome: "allow_once",
+      optionId: "allow",
+    });
     expect(respondPermission).toHaveBeenNthCalledWith(2, { outcome: "deny" });
     await act(async () => root.unmount());
   });
@@ -893,7 +896,7 @@ describe("DesignSurface host capabilities", () => {
     );
     expect(container.querySelector(".permission-card")).not.toBeNull();
     expect(allow.disabled).toBe(false);
-    expect(respondPermission).toHaveBeenCalledWith({ outcome: "allow_once" });
+    expect(respondPermission).toHaveBeenCalledWith({ outcome: "allow_once", optionId: "allow" });
     await act(async () => root.unmount());
   });
 
