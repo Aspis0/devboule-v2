@@ -871,12 +871,13 @@ mod pi_tests {
     }
 
     /// Before the snapshot lands the models axis stays `absent` and the
-    /// features axis says `probing` — the combination the form polls on —
-    /// and neither answer is TTL-cached: a second ask after the snapshot
-    /// records must serve the present axes, not the absence.
+    /// features axis reports the read — `probing`, or `absent` once it has
+    /// failed — the combination the form polls on; and neither answer is
+    /// TTL-cached: a second ask after the snapshot records must serve the
+    /// present axes, not the absence.
     #[test]
     fn stale_snapshot_serves_stale_axes_while_a_refresh_runs() {
-        use crate::pi_models_probe::{PiModelsKey, PiModelsProbe};
+        use crate::pi_models_probe::PiModelsKey;
         let state = state();
         let key = PiModelsKey::new("pi");
         state
@@ -886,8 +887,8 @@ mod pi_tests {
             .pi_models
             .age_for_test(&key, std::time::Duration::from_secs(11 * 60));
         // The editor's next open: the stale axes serve at once, and a
-        // refresh runs behind them — the features axis says probing, which
-        // is what the form polls on until the fresh snapshot lands.
+        // refresh runs behind them — the features axis reports that read,
+        // which is what the form polls on until the fresh snapshot lands.
         let reply = provider_vocabulary_reply(&state, 7, "pi", None, false);
         let DaemonMessage::ProviderVocabulary {
             models, features, ..
@@ -898,8 +899,19 @@ mod pi_tests {
         assert_eq!(models.state, VocabularyState::Present);
         assert_eq!(models.items.len(), 1);
         let features = features.expect("pi answers features");
-        assert!(features.probing);
-        assert_eq!(state.pi_models.peek(&key), Some(PiModelsProbe::Running));
+        // The worker can settle `unavailable_axis()` before this read, so both
+        // shapes count: the refresh ran. Only an answered `pi_axis()` would not.
+        assert!(
+            features.probing
+                || (features.state == VocabularyState::Absent && features.items.is_empty())
+        );
+        // The claim happens synchronously before the reply returns, so the slot
+        // is post-claim by now: `Running`, `Unavailable` (the refresh started
+        // and failed fast because pi is absent — an accepted outcome, not a bug)
+        // and a fresh `Answered` all read not-stale. Only an un-claimed aged
+        // snapshot reads stale, and that claim→Running transition is pinned
+        // deterministically at pi_models_probe.rs:328.
+        assert!(!state.pi_models.stale(&key));
     }
 
     #[test]
@@ -914,7 +926,13 @@ mod pi_tests {
         };
         assert_eq!(models.state, VocabularyState::Absent);
         let features = features.expect("pi answers features");
-        assert!(features.probing);
+        // The worker this ask started can settle `unavailable_axis()` before
+        // the read: both shapes mean the refresh ran, only an answered one
+        // would not.
+        assert!(
+            features.probing
+                || (features.state == VocabularyState::Absent && features.items.is_empty())
+        );
         // The worker the first ask started may still be running against a
         // pi that is not installed: settle the slot deterministically for
         // the assertion below.
