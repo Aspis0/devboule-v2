@@ -84,6 +84,10 @@ pub(crate) struct TurnWatch {
     /// The open-tool grace in milliseconds: atomic because the tick reads
     /// it and only a test ever writes it.
     tool_grace_ms: AtomicU64,
+    /// Whether the live tick thread was spawned: read only by the tests
+    /// that pin the production constructors to spawning it.
+    #[cfg_attr(not(test), expect(dead_code))]
+    ticker: bool,
 }
 
 impl TurnWatch {
@@ -118,6 +122,7 @@ impl TurnWatch {
                     .try_into()
                     .unwrap_or(u64::MAX),
             ),
+            ticker: spawn_ticker,
         });
         if spawn_ticker {
             let thread_watch = Arc::downgrade(&watch);
@@ -290,6 +295,13 @@ impl TurnWatch {
     #[cfg(test)]
     pub(crate) fn tick_for_test(&self) {
         self.tick();
+    }
+
+    /// Whether this watch owns its live tick thread. Tests only — the pin
+    /// that a production constructor still spawns and a harness one does not.
+    #[cfg(test)]
+    pub(crate) fn has_ticker_for_test(&self) -> bool {
+        self.ticker
     }
 
     /// Abandon the live prompt without expiring. Tests only.

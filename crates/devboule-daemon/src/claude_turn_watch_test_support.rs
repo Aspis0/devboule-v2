@@ -52,7 +52,7 @@ fn build(
     cancelled: bool,
 ) -> WatchHarness {
     let abort_gate: ClaudeAbortGateRef = Arc::new(crate::claude_abort::ClaudeAbortGate::default());
-    let watch = claude_turn_watch(
+    let watch = claude_turn_watch_for_test(
         Duration::from_millis(300),
         Arc::clone(&stdin),
         Arc::clone(&next_id),

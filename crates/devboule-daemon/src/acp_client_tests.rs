@@ -486,6 +486,20 @@ fn silent_prompt_abandonment_publishes_error_and_finishes_the_turn() {
     assert!(!runtime.is_turn_active(turn_id));
 }
 
+/// A flipped constructor argument would pass every behavioural test — the
+/// reader never notices who owns the tick — so pin the for-test reader to
+/// the watch with no live ticker.
+#[test]
+fn the_for_test_reader_has_no_live_ticker() {
+    let (broker, _) = test_broker();
+    let reader = AcpReader::for_test(
+        Arc::new(Mutex::new(HashSet::new())),
+        "stub-session".to_string(),
+        broker,
+    );
+    assert!(!reader.turn.has_ticker_for_test());
+}
+
 #[test]
 fn skipped_user_echo_does_not_burn_a_stream_sequence() {
     let (broker, _) = test_broker();

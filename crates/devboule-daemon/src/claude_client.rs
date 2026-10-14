@@ -26,7 +26,7 @@ use serde_json::Value;
 use super::claude_steer_latch::{ClaudeSteerLatch, STEER_SUPERSEDED_MESSAGE};
 use super::claude_task_seed::{envelope_may_carry_tasks, seed_claude_task_state};
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
-use super::turn_watch::{silence_from_env, watchdog_message, TurnWatch};
+use super::turn_watch::{silence_from_env, watchdog_message, Expire, TurnWatch};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -123,31 +123,61 @@ fn claude_turn_watch(
 ) -> Arc<TurnWatch> {
     TurnWatch::new(
         silence,
-        Arc::new(move |runtime, _prompt, silence| {
-            interrupt_claude_turn(
-                &stdin,
-                &next_id,
-                &broker,
-                &abort_gate,
-                &cancelled,
-                &steer_latch,
-            );
-            // Past a kill the interrupt above is a no-op and so is the
-            // rest: settling and publishing on a gone child would write
-            // an expiry for a turn the kill already ended.
-            if cancelled.load(Ordering::Acquire) {
-                return;
-            }
-            let _ = runtime.settle_turn_finish(|| false);
-            let _ = runtime.publish_agent_error(watchdog_message("Claude", silence));
-            let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
-                at_ms: None,
-                stop_reason: "error".to_string(),
-                model_id: None,
-                usage: None,
-            });
-        }),
+        claude_expire(stdin, next_id, broker, abort_gate, cancelled, steer_latch),
     )
+}
+
+/// The harness construction: no live tick thread, so a backdated activity
+/// is judged only by the test's own `tick_for_test` and `drain` never races
+/// a thread-owned expiry.
+#[cfg(test)]
+fn claude_turn_watch_for_test(
+    silence: Duration,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    broker: Arc<PermissionBroker>,
+    abort_gate: ClaudeAbortGateRef,
+    cancelled: Arc<AtomicBool>,
+    steer_latch: Arc<ClaudeSteerLatch>,
+) -> Arc<TurnWatch> {
+    TurnWatch::new_without_ticker(
+        silence,
+        claude_expire(stdin, next_id, broker, abort_gate, cancelled, steer_latch),
+    )
+}
+
+fn claude_expire(
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    broker: Arc<PermissionBroker>,
+    abort_gate: ClaudeAbortGateRef,
+    cancelled: Arc<AtomicBool>,
+    steer_latch: Arc<ClaudeSteerLatch>,
+) -> Expire {
+    Arc::new(move |runtime, _prompt, silence| {
+        interrupt_claude_turn(
+            &stdin,
+            &next_id,
+            &broker,
+            &abort_gate,
+            &cancelled,
+            &steer_latch,
+        );
+        // Past a kill the interrupt above is a no-op and so is the
+        // rest: settling and publishing on a gone child would write
+        // an expiry for a turn the kill already ended.
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let _ = runtime.settle_turn_finish(|| false);
+        let _ = runtime.publish_agent_error(watchdog_message("Claude", silence));
+        let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
+            at_ms: None,
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        });
+    })
 }
 
 type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>>>;

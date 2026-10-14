@@ -3156,7 +3156,11 @@ impl AcpReader {
             session_id,
             permission_broker,
             host,
-            TurnWatch::new(turn_silence(), Arc::new(turn_expired)),
+            // No live tick thread: the watchdog tests drive their own
+            // `tick_for_test`, so a backdated activity is judged on the
+            // test thread and the assertions cannot race a thread-owned
+            // expiry. The transport harness keeps the real watch.
+            TurnWatch::new_without_ticker(turn_silence(), Arc::new(turn_expired)),
             None,
             Vec::new(),
             None,

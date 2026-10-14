@@ -266,3 +266,31 @@ fn a_result_that_arrives_in_time_keeps_the_turn_its_own() {
     assert_eq!(runtime.activity(), AgentActivityState::Idle);
     finish(&mut harness, &runtime);
 }
+
+/// A flipped constructor argument would pass every behavioural test — the
+/// harness never notices who owns the tick — so pin the thread to the
+/// production constructor and its absence to the harness one.
+#[test]
+fn the_production_watch_spawns_its_ticker_and_the_harness_watch_does_not() {
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let production = claude_turn_watch(
+        Duration::from_secs(600),
+        Arc::new(Mutex::new(None)),
+        Arc::new(AtomicU64::new(1)),
+        Arc::clone(&broker),
+        Arc::new(crate::claude_abort::ClaudeAbortGate::default()),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(ClaudeSteerLatch::default()),
+    );
+    assert!(production.has_ticker_for_test());
+    let harness = claude_turn_watch_for_test(
+        Duration::from_millis(300),
+        Arc::new(Mutex::new(None)),
+        Arc::new(AtomicU64::new(1)),
+        broker,
+        Arc::new(crate::claude_abort::ClaudeAbortGate::default()),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(ClaudeSteerLatch::default()),
+    );
+    assert!(!harness.has_ticker_for_test());
+}

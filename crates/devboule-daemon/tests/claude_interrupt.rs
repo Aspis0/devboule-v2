@@ -103,10 +103,8 @@ fn wait_console_contains(console_file: &std::path::Path, needle: &str) {
 fn wait_console_line(console_file: &std::path::Path, needle: &str, noun: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
-        if std::fs::read_to_string(console_file)
-            .unwrap_or_default()
-            .contains(needle)
-        {
+        let read = std::fs::read_to_string(console_file).unwrap_or_default();
+        if read.lines().any(|line| line.trim() == needle) {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));

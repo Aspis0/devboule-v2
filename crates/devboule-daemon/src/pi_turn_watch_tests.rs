@@ -13,6 +13,8 @@ use crate::session::turn_watch::watchdog_message;
 use crate::test_support::{is_any_finish, is_error_finish, is_watchdog_error};
 use devboule_protocol::{AgentActivityState, SessionEvent};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[test]
@@ -264,6 +266,37 @@ fn a_turn_end_in_time_finishes_once_and_disarms_the_watch() {
         "an ended turn is not expired again: {after:?}"
     );
     finish(&mut harness, &runtime);
+}
+
+/// A flipped constructor argument would pass every behavioural test — the
+/// harness never notices who owns the tick — so pin the thread to the
+/// production constructor and its absence to the harness one.
+#[test]
+fn the_production_watch_spawns_its_ticker_and_the_harness_watch_does_not() {
+    let broker = broker();
+    let next_id = Arc::new(AtomicU64::new(1));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let owed = Arc::new(super::OwedTurnEnd::default());
+    let production = super::pi_turn_watch(
+        Duration::from_secs(600),
+        Arc::new(Mutex::new(None)),
+        Arc::clone(&next_id),
+        Arc::clone(&broker),
+        Arc::clone(&cancelled),
+        Arc::clone(&owed),
+        None,
+    );
+    assert!(production.has_ticker_for_test());
+    let harness = super::pi_turn_watch_for_test(
+        Duration::from_secs(30),
+        Arc::new(Mutex::new(None)),
+        next_id,
+        broker,
+        cancelled,
+        owed,
+        None,
+    );
+    assert!(!harness.has_ticker_for_test());
 }
 
 /// The recorded `turn_end` of `pi_view.rs`'s own fixture.
