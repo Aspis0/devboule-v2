@@ -5,6 +5,7 @@ import type { AgentToolEdit } from "../../types/ipc";
 import { linkTarget } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
 import { browserVerb, terminalToolVerb } from "./daemonToolVerb";
+import { isInterruptedToolStatus, isToolRunningStatus } from "./interruptedTool";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 
@@ -199,6 +200,21 @@ export function toolPathText(path: string): string {
 }
 
 export type ToolPhase = "done" | "running" | "cancelled" | "failed";
+
+/**
+ * The phase a tool row reads its call in: running while it runs (unless the
+ * transcript's end cut it off), its own word when cancelled, the provider's
+ * "failed" verdict when it says so, and done otherwise. A plan row never
+ * reads as failed: its decision is its own verdict.
+ */
+export function toolPhaseOf(item: ToolItem, transcriptEnded: boolean): ToolPhase {
+  const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
+  const running = isToolRunningStatus(item.status) && !interrupted;
+  const status = item.status.toLowerCase();
+  const cancelled = status === "cancelled" || status === "canceled";
+  const failed = item.kind !== "plan" && status === "failed";
+  return running ? "running" : cancelled ? "cancelled" : failed ? "failed" : "done";
+}
 
 export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();

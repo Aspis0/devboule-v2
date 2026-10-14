@@ -46,7 +46,9 @@ import type {
 } from "../../types/ipc";
 import { acquire, release, peek } from "../../lib/agentSessionRegistry";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
-import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
+import type { AgentChatItem, AgentSessionState, AgentStatus } from "../../lib/agentSession";
+import { devbouleToolLine } from "./devbouleToolLine";
+import { toolPhaseOf } from "./toolRowDisplay";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
@@ -391,6 +393,24 @@ function pendingEffortSentence(manifest: SessionManifest | null, effortId: strin
  * and the surface's own copy must not drift. */
 export const QUEUE_UNSUPPORTED =
   "The running agent does not keep queued messages for this session.";
+
+/**
+ * The Devboule sentence the running turn is on: the last one the transcript
+ * holds, whatever else the turn has said since — the sentence rides beside the
+ * working line, so the person sees the turn's latest agent intent live. Null
+ * when the turn has said nothing about an agent yet; a turn that never runs
+ * never asks.
+ */
+export function latestDevbouleSentence(items: readonly AgentChatItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.role !== "tool") continue;
+    // The transcript is live: it cannot have ended under a running turn.
+    const sentence = devbouleToolLine(item, toolPhaseOf(item, false));
+    if (sentence !== undefined) return sentence;
+  }
+  return null;
+}
 
 export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
@@ -812,6 +832,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const lastItem = state.items[state.items.length - 1];
   const streamingThoughtId =
     state.streaming && !osGone && lastItem?.role === "thought" ? lastItem.id : null;
+  const devbouleIntent = useMemo(() => latestDevbouleSentence(state.items), [state.items]);
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const resumesEnded = composerResumesEnded(
     observedState ?? null,
@@ -961,7 +982,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             onOpenChild={onOpenSubagent}
             onRevealChange={onRevealChange}
           />
-          {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
+          {turnRunning ? (
+            <div className="workspace-working-turn">
+              <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} />
+              {/* The turn's Devboule sentence rides beside the status line,
+                  outside its live region: the announced words never change. */}
+              {devbouleIntent === null ? null : (
+                <span className="workspace-chat-tool-label is-sentence">{devbouleIntent}</span>
+              )}
+            </div>
+          ) : null}
         </div>
         <div className="workspace-pending-cards">{auxiliary}</div>
       </div>

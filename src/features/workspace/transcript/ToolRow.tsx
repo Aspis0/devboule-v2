@@ -4,7 +4,7 @@ import { isFileChangeKind } from "../../../lib/toolRowKind";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { editCountsOf, toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
+import { editCountsOf, toolPathText, toolPhaseOf, toolRowDisplay } from "../toolRowDisplay";
 import { ChangeCounts } from "../ChangeCounts";
 import {
   devbouleChildSession,
@@ -56,13 +56,7 @@ export const ToolRow = memo(function ToolRow({
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
   const failed = item.kind !== "plan" && isFailedToolCall(item);
-  const phase: ToolPhase = running
-    ? "running"
-    : cancelled
-      ? "cancelled"
-      : failed
-        ? "failed"
-        : "done";
+  const phase = toolPhaseOf(item, transcriptEnded);
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);

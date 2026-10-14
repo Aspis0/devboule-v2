@@ -270,7 +270,9 @@
 /* The parsed `agent_permission_request` envelope: the relayed sentence, and
    the child's excerpt in a quoted block of its own — the block's whole point
    is that its styling does NOT claim "the daemon said this", and neither does
-   the item's label any more: the app cannot verify the sender. */
+   the item's label any more: the app cannot verify the sender. The excerpt
+   carries no fill: a thin purple edge and its own italic voice mark the
+   unverified relay, and nothing heavier. */
 .workspace-chat-permission-request {
   max-width: 90%;
 }
@@ -292,8 +294,7 @@
 .workspace-chat-child-said {
   margin: var(--space-6) 0 0;
   padding: var(--space-6) var(--space-10);
-  border-left: 3px solid var(--purple-deep);
-  background: var(--surface-muted);
+  border-left: 2px solid var(--purple-deep);
 }
 
 .workspace-chat-child-said figcaption {
@@ -751,9 +752,6 @@
   margin: 0 var(--space-12) var(--space-8);
   padding: var(--space-8) var(--space-12);
   overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-8);
-  background: var(--panel-card);
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: var(--type-meta);
@@ -871,13 +869,9 @@
   line-height: var(--leading-body);
 }
 
-/* Opened, the thought is a box: its header is the trigger, its text sits below
-   in muted ink, so it never reads as the answer. */
-.workspace-chat-thought.is-expanded {
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-muted);
-}
+/* Opened, the thought keeps the turn's flat rhythm — no box: its header is the
+   trigger, its text sits below in muted ink, so it never reads as the
+   answer. */
 
 /* Descendant on purpose: `font: inherit` needs a nameable parent, and the
    trigger never renders outside `.workspace-chat-thought`. */
@@ -1396,7 +1390,25 @@ button.workspace-chat-tool-summary {
   line-height: var(--leading-body);
 }
 
-/* The live turn's one line: a quiet dot, the word and the clock, 24 px tall. */
+/* The live turn's one line: a quiet dot, the word and the clock, 24 px tall.
+   The Devboule sentence rides beside it as a sibling, outside the status
+   region, so the announcement's words never change. */
+.workspace-working-turn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  margin-top: var(--space-4);
+}
+
+.workspace-working-turn .workspace-working-line {
+  margin-top: 0;
+}
+
+.workspace-working-turn .workspace-chat-tool-label.is-sentence {
+  font-size: var(--type-small);
+}
+
 .workspace-working-line {
   display: flex;
   flex: none;
