@@ -339,15 +339,13 @@ pub(crate) fn seed_plan_mode(
 
 /// The Codex carrier seam (S4 shape, S6 body — the provider-trait signatures
 /// verbatim, so adoption is a move): the broker's server rides the app-server
-/// launch line as `-c mcp_servers.<name>.url=...` overrides, with the bearer
+/// launch line as `-c mcp_servers.<name>...` overrides, with the bearer
 /// named by `bearer_token_env_var` and carried as child **env**
 /// (`DEVBOULE_MCP_TOKEN`). The token itself never rides argv — the S6
-/// argv-token-free assertion pins this; the URL is not a secret. No
-/// `CODEX_HOME` redirect: a per-session home carries no `auth.json` (measured:
-/// every turn answers 401 "Missing bearer or basic authentication"), and the
-/// rollout this client resumes lives under the home that wrote it, which the
-/// startup sweep then deletes. The child keeps the human's real home, where
-/// the credentials and the rollouts already live.
+/// argv-token-free assertion pins this; the URL is not a secret. The home the
+/// child runs in is not the carrier's to mint: both roads call
+/// [`inject_managed_home`] before this one, so `owned_paths`/`owned_dirs` stay
+/// empty here and the home's own lifecycle stays with the session that owns it.
 pub(crate) fn mcp_launch(
     config: &crate::mcp_broker::McpLaunchConfig,
     _runtime_dir: &Path,
@@ -396,19 +394,54 @@ pub(crate) fn mcp_launch(
     })
 }
 
+/// Point this child at a home of its own, and put that home on the command's
+/// own env — the vector `session_commands` and the image sink both read, so the
+/// command surface and the generated-image sink follow the child instead of
+/// reading the human's `~/.codex` behind its back.
+///
+/// A command carrying no session id keeps the inherited home: the home is
+/// keyed to the row (`thread/resume` reads the rollout out of it), and a
+/// directory nothing can name again is one nothing may ever delete.
+fn inject_managed_home(runtime_dir: &Path, command: &mut PtyCommand) -> Result<(), WireError> {
+    let Some(session_id) = command
+        .env
+        .iter()
+        .find(|(key, _)| key == crate::agent_env::SESSION_ID)
+        .map(|(_, session_id)| session_id.clone())
+    else {
+        return Ok(());
+    };
+    let home = crate::codex_managed_home::create(
+        runtime_dir,
+        &session_id,
+        &crate::codex_command_catalog::resolve_home(),
+    )
+    .map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not prepare the session's Codex home: {error}"),
+        )
+    })?;
+    crate::agent_env::upsert_env(
+        &mut command.env,
+        "CODEX_HOME",
+        &home.to_string_lossy().into_owned(),
+    );
+    Ok(())
+}
+
 /// Spawn Codex (S6 wiring, S9 live): `mcp` is the broker's launch config when
 /// the session was registered for MCP tools, `None` otherwise. `Some` joins the
 /// broker's server onto the launch line (`mcp_launch`) and the bearer onto the
-/// child env; `None` leaves both untouched. The child keeps the human's real
-/// Codex home: the credentials live there and the rollout this family resumes
-/// is written there, which is also why no per-session home is minted.
+/// child env; `None` leaves both untouched.
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
-    command: PtyCommand,
+    mut command: PtyCommand,
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
+    inject_managed_home(state.sessions.runtime_dir(), &mut command)?;
     let goals = session_goals(&command);
     let commands = session_commands(&goals, &command.cwd, &command.env);
     spawn_codex(
@@ -429,10 +462,11 @@ pub(super) fn spawn_process(
 /// is re-sent, the provider's rollout is the conversation.
 pub(super) fn spawn_process_resuming(
     state: &Arc<ServerState>,
-    command: PtyCommand,
+    mut command: PtyCommand,
     peer_session_id: String,
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
+    inject_managed_home(state.sessions.runtime_dir(), &mut command)?;
     let goals = session_goals(&command);
     let commands = session_commands(&goals, &command.cwd, &command.env);
     spawn_codex(
@@ -451,6 +485,18 @@ pub(super) fn spawn_process_resuming(
 /// over the protocol, so the filesystem is the only source: built-ins, then
 /// the skill and prompt walks.
 fn session_commands(goals: &Goals, cwd: &Path, env: &[(String, String)]) -> Arc<CodexCommands> {
+    let home = command_codex_home(env);
+    Arc::new(CodexCommands::new(&home, Some(cwd), goals.enabled()))
+}
+
+/// The Codex home the child this command launches runs in.
+///
+/// The command's own env is the answer first, because that is where the spawn
+/// puts the session's managed home and where both readers — this one and the
+/// image sink — have to agree; the process environment is only the fallback for
+/// a command that carries no injection. Under `cfg(test)` that fallback is a
+/// temp dir, so no test ever walks the machine's real `~/.codex`.
+fn command_codex_home(env: &[(String, String)]) -> std::path::PathBuf {
     let home = env
         .iter()
         .find(|(key, _)| key == "CODEX_HOME")
@@ -459,7 +505,7 @@ fn session_commands(goals: &Goals, cwd: &Path, env: &[(String, String)]) -> Arc<
     let home = home.unwrap_or_else(|| crate::test_dirs::test_temp_dir("devboule-codex-spawn-home"));
     #[cfg(not(test))]
     let home = home.unwrap_or_else(crate::codex_command_catalog::resolve_home);
-    Arc::new(CodexCommands::new(&home, Some(cwd), goals.enabled()))
+    home
 }
 
 fn session_goals(command: &PtyCommand) -> Goals {
@@ -606,16 +652,7 @@ fn spawn_codex(
     // image frames produce nothing, as they did before there was a store. The
     // provider's own generated-image folder is the only root outside the
     // workspace a frame may name a file in.
-    let codex_home = command
-        .env
-        .iter()
-        .find(|(key, _)| key == "CODEX_HOME")
-        .map(|(_, home)| std::path::PathBuf::from(home));
-    #[cfg(test)]
-    let codex_home =
-        codex_home.unwrap_or_else(|| crate::test_dirs::test_temp_dir("devboule-codex-spawn-home"));
-    #[cfg(not(test))]
-    let codex_home = codex_home.unwrap_or_else(crate::codex_command_catalog::resolve_home);
+    let codex_home = command_codex_home(&command.env);
     let image_sink = command
         .env
         .iter()
@@ -1505,8 +1542,8 @@ impl SessionKiller for CodexKiller {
         if let Ok(mut process) = self.process.lock() {
             if process.try_wait().ok().flatten().is_none() {
                 let _ = process.kill();
-                // Bounded re-wait so the home goes away only once nobody can
-                // use it; the teardown's job kill follows within milliseconds.
+                // Bounded re-wait, so teardown returns only once the root is
+                // gone and the teardown's job kill has nothing left to reach.
                 let deadline = Instant::now() + Duration::from_secs(2);
                 while Instant::now() < deadline {
                     if process.try_wait().ok().flatten().is_some() {

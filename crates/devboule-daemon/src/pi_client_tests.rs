@@ -160,8 +160,50 @@ fn spawn_args_keep_rpc_and_add_our_extension() {
     assert!(mode < extension);
     assert_eq!(args[mode + 1], "rpc");
     assert_eq!(args[extension + 1], path.to_string_lossy());
-    assert!(!args.iter().any(|arg| arg == "--no-extensions"));
     assert!(!args.iter().any(|arg| arg == "--tools"));
+}
+
+#[test]
+fn pi_spawn_args_isolate_the_child_from_the_humans_own_extensions_and_mcp_servers() {
+    // Pi discovers the human's extensions and MCP servers out of its own
+    // config dir and loads them next to the `-e` files this daemon splices in,
+    // so the child would offer the agent two tool lanes and it would pick
+    // whichever it saw first. `--no-extensions` closes the first lane and, by
+    // Pi's own spelling, leaves explicit `-e` paths loading — which is how our
+    // bridges arrive; `--no-mcp` closes the second.
+    let command = PtyCommand::new(
+        "pi",
+        vec![
+            "--extension".to_string(),
+            "caller.ts".to_string(),
+            "--no-extensions".to_string(),
+        ],
+        std::env::current_dir().expect("cwd"),
+        Vec::new(),
+    );
+    let permission = Path::new("permission.ts");
+    let bridge = Path::new("bridge.ts");
+    let args = spawn_args(&command, permission, Some(bridge)).expect("Pi args");
+
+    assert!(
+        args.iter().any(|arg| arg == "--no-mcp"),
+        "the human's own MCP servers never connect: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--extension".to_string(), "caller.ts".to_string()]),
+        "a caller extension is still loaded explicitly: {args:?}"
+    );
+    assert!(
+        args.iter().any(|arg| arg == &permission.to_string_lossy())
+            && args.iter().any(|arg| arg == &bridge.to_string_lossy()),
+        "both of our extensions still ride `-e`: {args:?}"
+    );
+    assert_eq!(
+        args.iter().filter(|arg| *arg == "--no-extensions").count(),
+        1,
+        "a caller who already closed extension discovery is not told twice: {args:?}"
+    );
 }
 
 #[test]

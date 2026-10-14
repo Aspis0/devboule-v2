@@ -215,6 +215,13 @@ pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
             swept.len()
         );
     }
+    // A managed Codex home outlives its session on purpose — a session whose
+    // child ended can still be resumed off the rollout inside it — so it goes
+    // when no journal row claims it any more.
+    let swept_homes = state.sessions.sweep_managed_homes();
+    if swept_homes > 0 {
+        eprintln!("daemon removed {swept_homes} Codex home(s) no session claimed");
+    }
     let mcp_server = state.mcp.start(&state).map_err(DaemonError::from)?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
     // Only now is a connect admitted, so only now is the record allowed to say

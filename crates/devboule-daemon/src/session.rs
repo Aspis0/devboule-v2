@@ -981,6 +981,24 @@ impl SessionRegistry {
         self.attachments.clone()
     }
 
+    /// Drop the Codex homes whose session row no longer exists — what a crash,
+    /// or a delete that ran while the daemon was down, left on disk.
+    ///
+    /// The journal decides, not the live map: a session whose child ended is
+    /// still resumable and that resume loads the provider's rollout out of this
+    /// directory, so a home outlives its child and is only swept once no row
+    /// claims it. Returns how many went.
+    pub(crate) fn sweep_managed_homes(&self) -> usize {
+        let Some(journal) = self.journal.as_ref() else {
+            return 0;
+        };
+        let Ok(records) = journal.list() else {
+            return 0;
+        };
+        let claimed = records.into_iter().map(|record| record.id).collect();
+        crate::codex_managed_home::sweep(self.runtime_dir(), &claimed)
+    }
+
     /// Sweep attachment folders left behind by a session that never closed.
     ///
     /// Returns what it reclaimed — one entry per swept session, with the bytes
@@ -2058,6 +2076,9 @@ impl SessionRegistry {
             .delete_session(session_id)
             .map_err(WireError::from)?;
         self.invalidate_journal_roster();
+        // The row is gone, so nothing may resume off this home again: the
+        // rollout in it is the conversation the deleted session held.
+        crate::codex_managed_home::remove_for_session(self.runtime_dir(), session_id);
         if transcript_in_registry {
             let (snapshot, runtime) = {
                 let mut map = self

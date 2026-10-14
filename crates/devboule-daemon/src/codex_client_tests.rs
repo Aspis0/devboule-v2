@@ -2183,6 +2183,7 @@ process.stdin.on("data", (chunk) => {
       { name: "Default", mode: "default", model: "fake-model", reasoning_effort: null }
     ] };
     else if (msg.method === "thread/start") result = { thread: { id: "thread-argv" } };
+    else if (msg.method === "thread/resume") result = { thread: { id: "thread-argv" } };
     process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
   }
 });
@@ -2213,6 +2214,13 @@ fn spawn_carrier_road(
                 env_file.to_string_lossy().into_owned(),
             ),
             ("FAKE_ENV_KEYS".to_string(), env_keys.join(",")),
+            // Every production spawn carries one, and the managed home is
+            // keyed to it; a carrier road without it would test a shape no
+            // real session ever runs.
+            (
+                crate::agent_env::SESSION_ID.to_string(),
+                "s.carrier.1".to_string(),
+            ),
         ],
     );
     let spawned = super::spawn_process(
@@ -3146,14 +3154,13 @@ fn codex_spawn_failure_names_the_program_that_would_not_start() {
 }
 
 #[test]
-fn codex_carrier_road_adds_no_home_redirect_to_the_child_env() {
-    // The contract the removed per-session carrier left behind: the child
-    // keeps the human's Codex home, where the credentials and the rollouts
-    // live — a daemon-chosen `CODEX_HOME` carries no `auth.json`, and every
-    // turn against it answers 401. The fake child records the env it was
-    // actually started with, so re-adding the redirect fails here, not in a
-    // comment. (That this road owns no file is asserted by
-    // `codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env`.)
+fn codex_carrier_road_runs_the_child_in_the_session_managed_home() {
+    // The child must not inherit the human's Codex home: that home carries the
+    // user's own MCP servers, and an agent offered two tool lanes picks the
+    // wrong one (measured: it reached for the user's `mcp__cua_repl__js`
+    // instead of this broker's `browser_new_tab`). The fake child records the
+    // env it was actually started with, so a spawn that stops injecting fails
+    // here, not in a comment.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -3170,12 +3177,149 @@ fn codex_carrier_road_adds_no_home_redirect_to_the_child_env() {
         )),
         "the carrier still rode argv: {argv}"
     );
-    assert_eq!(
-        env.get("CODEX_HOME").and_then(serde_json::Value::as_str),
-        std::env::var("CODEX_HOME").ok().as_deref(),
-        "the child inherits the human's home, never one the daemon chose: {env}"
+    let home = env
+        .get("CODEX_HOME")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::PathBuf::from)
+        .expect("the child was started with a CODEX_HOME of its own");
+    assert_ne!(
+        home,
+        crate::codex_command_catalog::resolve_home(),
+        "the child's home is the daemon's, never the human's: {env}"
     );
+    assert!(
+        home.starts_with(state.sessions.runtime_dir()),
+        "the managed home lives under the runtime dir: {}",
+        home.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("devboule-managed-home")).expect("the marker"),
+        "s.carrier.1\n",
+        "the marker is what lets cleanup prove the home is ours"
+    );
+    // The credentials are copied at every spawn — never cached by the daemon —
+    // so what the child reads is whatever the human's own home holds now. On a
+    // host that authenticates through an API key there is nothing to copy, and
+    // inventing an empty file would be worse than leaving it out.
+    let real_auth = crate::codex_command_catalog::resolve_home().join("auth.json");
+    match std::fs::read(&real_auth) {
+        Ok(bytes) => assert_eq!(
+            std::fs::read(home.join("auth.json")).expect("the copied auth"),
+            bytes,
+            "the credentials are the human's, taken at this spawn"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => assert!(
+            !home.join("auth.json").exists(),
+            "no credentials in the real home means none invented here"
+        ),
+        Err(error) => panic!("the real home's auth.json could not be read: {error}"),
+    }
     spawned.killer.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_command_surface_and_the_image_sink_read_the_injected_home() {
+    // One reader, one answer: the skills and prompts on the menu, and the
+    // folder a provider's generated images land in, both follow the home the
+    // spawn injected rather than the human's `~/.codex` behind its back.
+    let home = crate::test_dirs::test_temp_dir("devboule-codex-injected-home");
+    std::fs::create_dir_all(home.join("prompts")).expect("a prompt directory");
+    std::fs::write(
+        home.join("prompts").join("review.md"),
+        "---\ndescription: Review the diff\n---\nReview it.\n",
+    )
+    .expect("a prompt in the managed home");
+    let env = vec![(
+        "CODEX_HOME".to_string(),
+        home.to_string_lossy().into_owned(),
+    )];
+
+    let goals = super::Goals::from_version_output("0.0.0");
+    let commands = super::session_commands(&goals, Path::new("C:/work"), &env);
+    assert!(
+        commands
+            .views()
+            .iter()
+            .any(|command| command.name == "prompts:review"),
+        "the prompt under the injected home is on this session's menu"
+    );
+    assert_eq!(
+        super::command_codex_home(&env),
+        home,
+        "the image sink roots the same home the command surface read"
+    );
+}
+
+#[test]
+fn a_resumed_child_lands_on_the_home_its_row_already_owns() {
+    // `thread/resume` loads the thread off disk, under the home the generation
+    // before it ran in. A resume that landed anywhere else would find no
+    // rollout there — and with it the conversation the row is.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let state = crate::server::ServerState::new("codex-resume-home".to_string());
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-resume-home");
+    let session_id = "s.resume-home.1";
+
+    let mut home = None;
+    for generation in ["fresh", "resumed"] {
+        let env_file = dir.join(format!("{generation}-env.json"));
+        let command = crate::session::PtyCommand::new(
+            "node",
+            vec!["-e".to_string(), ARGV_FAKE.to_string(), "--".to_string()],
+            crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
+            vec![
+                (
+                    "FAKE_ENV_FILE".to_string(),
+                    env_file.to_string_lossy().into_owned(),
+                ),
+                ("FAKE_ENV_KEYS".to_string(), "CODEX_HOME".to_string()),
+                (
+                    crate::agent_env::SESSION_ID.to_string(),
+                    session_id.to_string(),
+                ),
+            ],
+        );
+        let mut spawned = if generation == "fresh" {
+            super::spawn_process(
+                &state,
+                command,
+                None,
+                crate::profile_delivery::ProfileDelivery::none(),
+            )
+            .expect("the fresh road spawns")
+        } else {
+            super::spawn_process_resuming(&state, command, "thread-argv".to_string(), None)
+                .expect("the resume road spawns")
+        };
+        spawned.killer.kill();
+        let seen: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&env_file).expect("the child recorded its env"),
+        )
+        .expect("the env report parses");
+        let child_home = seen
+            .get("CODEX_HOME")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from);
+        match (&home, child_home) {
+            (_, None) => panic!("the {generation} child was started with no home"),
+            (None, Some(first)) => {
+                assert!(
+                    first.join("devboule-managed-home").exists(),
+                    "the managed home is marked as ours: {}",
+                    first.display()
+                );
+                home = Some(first);
+            }
+            (Some(first), Some(again)) => assert_eq!(
+                &again, first,
+                "the resumed generation runs where the row's rollout is"
+            ),
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

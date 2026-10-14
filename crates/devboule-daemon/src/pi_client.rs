@@ -1532,6 +1532,26 @@ fn spawn_args(
         additions.push("-e".to_string());
         additions.push(bridge.to_string_lossy().into_owned());
     }
+    // Pi discovers the human's own extensions and MCP servers from its config
+    // dir, and both load *alongside* the `-e` files spliced above: the child
+    // then offers two tool lanes and the agent picks whichever it sees first.
+    // Pi's own flags close both, and `--no-extensions` is explicit that `-e`
+    // paths still load, which is how the bridges above arrive.
+    //
+    // Moving the config dir instead (`PI_CODING_AGENT_DIR`, which Pi does
+    // honour) would isolate more and cost the three things that dir holds:
+    // `auth.json`, the session store `--session` resumes from, and the model
+    // catalog a profile naming a custom provider is judged against.
+    let has_flag = |long: &str, short: Option<&str>| {
+        args[..option_end(&args)]
+            .iter()
+            .any(|arg| arg == long || short == Some(arg.as_str()))
+    };
+    for (long, short) in [("--no-extensions", Some("-ne")), ("--no-mcp", None)] {
+        if !has_flag(long, short) {
+            additions.push(long.to_string());
+        }
+    }
     // Where Pi runs (owner bug #14), on its own system prompt's append flag.
     additions.extend([
         "--append-system-prompt".to_string(),

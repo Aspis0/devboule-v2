@@ -150,6 +150,13 @@ pub fn spawn_resumed_session(
     // `--resume`, Codex by `thread/resume`. Anything the gate admitted
     // implements this; the refused families never reach here.
     let family = provider::catalog_registry().provider_for_kind(&metadata.kind);
+    let mut command = command;
+    // The resumed child runs on the row that created named, and a family whose
+    // per-session state is keyed to the row (Codex's managed home, where the
+    // rollout this resume loads off disk lives) needs to hear which row this is
+    // — a fresh spawn is told by `inject_session_env`, and this road stages its
+    // command without that pass.
+    crate::agent_env::upsert_env(&mut command.env, crate::agent_env::SESSION_ID, &metadata.id);
     let spawned = family.spawn_resuming(state, command, context.peer_session_id, mcp)?;
     start_spawned_session(
         state,

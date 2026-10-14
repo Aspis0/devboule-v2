@@ -128,7 +128,7 @@ pub fn inject_session_env(
     }
 }
 
-fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+pub(crate) fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
     if let Some(existing) = env.iter_mut().find(|(name, _)| name == key) {
         existing.1 = value.to_string();
         return;
