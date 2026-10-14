@@ -31,6 +31,7 @@ import {
   settleAttentionFor,
 } from "./attentionNotice";
 import { hasBusyDescendant } from "./attentionToastPolicy";
+import { recordAttentionRaise } from "./notificationCenter";
 import { markSessionOpened } from "./openedSessions";
 import { isTopLevel } from "./sessionAncestry";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
@@ -961,26 +962,31 @@ export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
 let sharedController: WorkspaceSessionController | null = null;
 
 /**
- * The app-lifetime roster. Created with the production attention observer so
- * raises become OS toasts no matter which surface is on screen. One
- * instance, because the daemon keeps a single roster watch per connection:
- * a second controller's watch would silently replace this one's.
+ * The app-lifetime roster. Created with the production attention observer —
+ * the single observer slot — so one callback serves both surfaces a raise
+ * feeds: the notification center's row first, then the OS toast, which owns
+ * the dedupe that keeps one raise from announcing twice. One instance, because
+ * the daemon keeps a single roster watch per connection: a second controller's
+ * watch would silently replace this one's.
  */
 export function sharedSessionController(): WorkspaceSessionController {
   if (sharedController === null) {
     sharedController = createWorkspaceSessionController(
       DEFAULT_SOURCE,
-      (session, attention, roster) =>
+      (session, attention, roster) => {
+        const title = sessionTitle(session);
+        recordAttentionRaise(session, attention, title);
         fireAttentionToast(
           { sessionId: session.id, workspaceId: session.workspaceId },
-          sessionTitle(session),
+          title,
           attention,
           undefined,
           {
             topLevel: isTopLevel(session),
             childBusy: hasBusyDescendant(session.id, roster),
           },
-        ),
+        );
+      },
     );
   }
   return sharedController;

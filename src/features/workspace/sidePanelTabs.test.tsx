@@ -305,13 +305,13 @@ describe("the right panel's tabs", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
-  it("shows Files, Changes, Design and Tasks as icon tabs at the default width, Changes active", async () => {
+  it("shows the five spec tabs as icon tabs at the default width, Changes active", async () => {
     await renderWorkspace();
 
     const list = tablist();
     expect(list.getAttribute("aria-label")).toBe("Side panel");
     const names = tabs().map((tab) => tab.getAttribute("title"));
-    expect(names).toEqual(["Files", "Changes", "Design", "Tasks"]);
+    expect(names).toEqual(["Files", "Changes", "Design", "Tasks", "Notifications"]);
     expect(container.querySelector(".workspace-panel-tab-label")).toBeNull();
     for (const tab of tabs()) {
       expect(tab.querySelector("svg")).not.toBeNull();
@@ -362,10 +362,10 @@ describe("the right panel's tabs", () => {
         new KeyboardEvent("keydown", { key: "End", bubbles: true }),
       );
     });
-    expect(tabByName("Tasks").getAttribute("aria-selected")).toBe("true");
+    expect(tabByName("Notifications").getAttribute("aria-selected")).toBe("true");
 
     await act(async () => {
-      tabByName("Tasks").dispatchEvent(
+      tabByName("Notifications").dispatchEvent(
         new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
       );
     });
@@ -408,7 +408,7 @@ describe("the right panel's tabs", () => {
   it("keeps the mock panels in the kebab instead of crowding the tabs", async () => {
     await renderWorkspace();
 
-    expect(tabs()).toHaveLength(4);
+    expect(tabs()).toHaveLength(5);
     const button = kebab();
     // The trigger lives beside the tablist, not inside it (strip shape).
     expect(tablist().contains(button)).toBe(false);
@@ -489,7 +489,7 @@ describe("the right panel's tabs", () => {
     // its accessible name, and no label is drawn to be clipped.
     expect(
       tabs().map((tab) => tab.getAttribute("aria-label") ?? tab.getAttribute("title")),
-    ).toEqual(["Files", "Changes", "Design", "Tasks"]);
+    ).toEqual(["Files", "Changes", "Design", "Tasks", "Notifications"]);
     expect(container.querySelector(".workspace-panel-tab-label")).toBeNull();
   });
 
@@ -510,12 +510,14 @@ describe("the right panel's tabs", () => {
       "Changes",
       "Design",
       "Tasks",
+      "Notifications",
     ]);
     expect(tabs().map((tab) => tab.getAttribute("title"))).toEqual([
       "Files",
       "Changes",
       "Design",
       "Tasks",
+      "Notifications",
     ]);
     // The keyboard contract is unchanged: the tablist still owns one selection.
     expect(tabs()[1]?.getAttribute("aria-selected")).toBe("true");

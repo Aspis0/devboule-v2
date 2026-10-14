@@ -185,7 +185,7 @@ describe("the workspace's Tasks tab", () => {
     const order = Array.from(container.querySelectorAll("[data-panel-tab]")).map((node) =>
       node.getAttribute("data-panel-tab"),
     );
-    expect(order).toEqual(["files", "changes", "design", "tasks"]);
+    expect(order).toEqual(["files", "changes", "design", "tasks", "notifications"]);
   });
 
   it("shows the list the pane's surface reports, once the tab is opened", async () => {

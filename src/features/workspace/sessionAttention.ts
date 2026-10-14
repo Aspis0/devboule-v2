@@ -1,4 +1,12 @@
-import type { Attention, Session } from "../../types/ipc";
+import type { Attention, AttentionReason, Session } from "../../types/ipc";
+
+/** A raise's word, the same one in every table that lists attention. */
+export function attentionReasonLabel(reason: AttentionReason): string {
+  if (reason === "permission") return "Needs your approval";
+  if (reason === "finished") return "Done";
+  if (reason === "error") return "Failed";
+  return "Needs attention";
+}
 
 type AttentionSession = Pick<Session, "state" | "attention">;
 
@@ -13,8 +21,5 @@ export function sessionNeedsApproval(session: AttentionSession): boolean {
 export function sessionAttentionLabel(session: AttentionSession): string | null {
   const attention = activeSessionAttention(session);
   if (attention === undefined) return null;
-  if (attention.reason === "permission") return "Needs your approval";
-  if (attention.reason === "finished") return "Done";
-  if (attention.reason === "error") return "Failed";
-  return "Needs attention";
+  return attentionReasonLabel(attention.reason);
 }

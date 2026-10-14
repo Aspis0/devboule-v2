@@ -42,6 +42,7 @@ import {
 import { childRow } from "./subagentRows";
 import { archiveTargets, type ArchiveTarget } from "./subagentArchive";
 import { useTasksAttention } from "./useTasksAttention";
+import { useNotificationFeed } from "./notificationCenter";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
 import { PanelStub } from "./PanelToggle";
@@ -407,6 +408,14 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   } | null>(null);
   const tasksVisible = activeSidePanel === "tasks" && !rightCollapsed;
   const tasksUnseen = useTasksAttention(paneAgent, tasksVisible);
+  const { unreadCount: unreadNotifications } = useNotificationFeed();
+  const notificationsVisible = activeSidePanel === "notifications" && !rightCollapsed;
+  // The tab row's dots: the tasks tab's own news, plus raises the notification
+  // center holds that its panel has not read yet.
+  const sidePanelAttentionIds = [
+    ...(tasksUnseen && !tasksVisible ? ["tasks"] : []),
+    ...(unreadNotifications > 0 && !notificationsVisible ? ["notifications"] : []),
+  ];
   const [historyOpen, setHistoryOpen] = useState(false);
   // The message the sidebar's search opened a session at: the transcript scrolls
   // to it once. The nonce makes a second open of the same message scroll again.
@@ -3138,7 +3147,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                 onSelect={setActiveSidePanel}
                 onCollapse={() => setRightCollapsed(true)}
                 panelWidth={rightWidth}
-                attentionIds={tasksUnseen && !tasksVisible ? ["tasks"] : undefined}
+                attentionIds={sidePanelAttentionIds.length > 0 ? sidePanelAttentionIds : undefined}
               />
 
               <div

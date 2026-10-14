@@ -1,0 +1,83 @@
+/* The Notifications tab: a plain list like the Tasks tab's. A row is one line —
+ * name, the raise's word, the time — with the reason's mark in front. */
+
+.notifications-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  font-size: var(--type-interface);
+}
+
+.notifications-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.notifications-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notifications-list li {
+  margin: 0;
+}
+
+.notifications-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-4) 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.notifications-row:hover .notifications-title {
+  text-decoration: underline;
+}
+
+.notifications-mark {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.notifications-mark-permission {
+  background: var(--accent);
+}
+
+.notifications-mark-error {
+  background: var(--danger);
+}
+
+.notifications-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+}
+
+.notifications-label {
+  flex: none;
+  color: var(--muted);
+}
+
+.notifications-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}

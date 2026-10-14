@@ -10,6 +10,7 @@ export type PanelIconName =
   | "app"
   | "pr"
   | "tasks"
+  | "bell"
   | "panel"
   | "panel-left"
   | "panel-right"
@@ -59,6 +60,13 @@ function paths(name: PanelIconName): ReactNode {
           <path d="M4 6h.01" />
           <path d="M4 12h.01" />
           <path d="M4 18h.01" />
+        </>
+      );
+    case "bell":
+      return (
+        <>
+          <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+          <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
         </>
       );
     case "panel":

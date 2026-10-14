@@ -75,6 +75,12 @@ function applyAttentionActivation(payload: unknown): void {
   openWithNoStrip(target);
 }
 
+/** An in-app surface opening the session a notification names: the same road a
+ *  toast click travels, so both arrive the same way. */
+export function activateAttentionTarget(target: AttentionTarget): void {
+  applyAttentionActivation(target);
+}
+
 let activationListener: Promise<UnlistenFn> | null = null;
 let releaseListener: UnlistenFn | null = null;
 /** Bumped by every dispose, so a registration that resolves afterwards knows it is stale. */

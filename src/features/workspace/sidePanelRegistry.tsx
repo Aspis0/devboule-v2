@@ -4,6 +4,7 @@ import { ChangesSurface } from "./ChangesSurface";
 import type { RevealRequest } from "./useRevealedPath";
 import { FilesSurface } from "./FilesSurface";
 import { TasksPanel } from "./TasksPanel";
+import { NotificationPanel } from "./NotificationPanel";
 import type { PanelIconName } from "./panel/PanelIcon";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { FileToolTabKind } from "./strip/toolTabs";
@@ -27,7 +28,7 @@ export interface AgentTasksContext {
 }
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
- * three spec tabs stay tabs; mock and future panels must not crowd them. */
+ * spec tabs stay tabs; mock and future panels must not crowd them. */
 export type PanelPlacement = "tab" | "menu";
 
 export interface SidePanelContext {
@@ -114,6 +115,13 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     placement: "tab",
     icon: "tasks",
     render: ({ agentTasks }) => <TasksPanel tasks={agentTasks ?? null} />,
+  },
+  {
+    id: "notifications",
+    name: "Notifications",
+    placement: "tab",
+    icon: "bell",
+    render: () => <NotificationPanel />,
   },
   {
     id: "pr",
