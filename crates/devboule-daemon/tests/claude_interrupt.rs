@@ -95,6 +95,12 @@ fn setup(name: &str) -> InterruptEnv {
 /// starts existing on stdout, so the daemon's admission of the replacement
 /// necessarily precedes its read of the result.
 fn wait_console_contains(console_file: &std::path::Path, needle: &str) {
+    wait_console_line(console_file, needle, "prompt")
+}
+
+/// The noun names what the needle is in the timeout panic, so an "INTERRUPT"
+/// miss does not report itself as a prompt miss.
+fn wait_console_line(console_file: &std::path::Path, needle: &str, noun: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
         if std::fs::read_to_string(console_file)
@@ -105,7 +111,7 @@ fn wait_console_contains(console_file: &std::path::Path, needle: &str) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("the stub never read the {needle:?} prompt");
+    panic!("the stub never read the {needle:?} {noun}");
 }
 
 /// The race the fix exists for, forced by the fixture: the replacement is
@@ -302,6 +308,11 @@ fn interrupt_steered_interrupt_one_result_finishes_once() {
     env.client
         .session_interrupt(&env.session_id)
         .expect("first interrupt (no result follows)");
+    // The interrupt frame is written by a detached thread, so the steer must
+    // wait for proof the stub read it — otherwise the steer can arrive first,
+    // the eager aborted result is judged against interrupt #1's snapshot and
+    // withheld, and the turn never finishes.
+    wait_console_line(&env.console_file, "INTERRUPT", "interrupt frame");
     env.client
         .session_send(&env.session_id, "HOLD: second")
         .expect("steered replacement, itself held");

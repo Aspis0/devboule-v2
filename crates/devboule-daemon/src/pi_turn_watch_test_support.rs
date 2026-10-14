@@ -76,11 +76,11 @@ pub(super) fn harness(broker: &Arc<PermissionBroker>) -> PiWatchHarness {
     let next_id = Arc::new(AtomicU64::new(1));
     let cancelled = Arc::new(AtomicBool::new(false));
     let owed_late_end = Arc::new(super::OwedTurnEnd::default());
-    // A failure-only bound: long enough that the live tick thread can
-    // never fire mid-test (every expiry is driven by the watch's own
-    // deterministic hooks), short enough that a wedged watch is a failed
-    // test, not a hung one.
-    let watch = super::pi_turn_watch(
+    // A failure-only bound, on a watch with no live tick thread: every
+    // expiry runs on the test thread through the watch's deterministic
+    // hooks, and the bound only turns a wedged watch into a failed test
+    // rather than a hung one.
+    let watch = super::pi_turn_watch_for_test(
         Duration::from_secs(30),
         Arc::clone(&stdin),
         Arc::clone(&next_id),

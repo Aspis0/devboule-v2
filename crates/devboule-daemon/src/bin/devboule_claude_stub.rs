@@ -330,6 +330,16 @@ fn main() -> io::Result<()> {
                 continue;
             }
             if frame.pointer("/request/subtype").and_then(Value::as_str) == Some("interrupt") {
+                // The marker lets a test block on "the stub has read this
+                // interrupt" before sending its next frame, so the daemon's
+                // detached interrupt write cannot be overtaken on the wire.
+                if !console_file.is_empty() {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&console_file)?;
+                    writeln!(file, "INTERRUPT")?;
+                }
                 emit(&json!({
                     "type": "control_response",
                     "response": {

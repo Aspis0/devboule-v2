@@ -59,7 +59,7 @@ enum PromptPhase {
 /// What expiry does, in the family's own words: end the run and publish the
 /// finish. It receives the runtime, the abandoned prompt id and the silence
 /// bound the message reports.
-type Expire = Arc<dyn Fn(&SessionRuntime, u64, Duration) + Send + Sync>;
+pub(crate) type Expire = Arc<dyn Fn(&SessionRuntime, u64, Duration) + Send + Sync>;
 
 pub(crate) struct TurnWatch {
     silence: Duration,
@@ -88,6 +88,18 @@ pub(crate) struct TurnWatch {
 
 impl TurnWatch {
     pub(crate) fn new(silence: Duration, expire: Expire) -> Arc<Self> {
+        Self::with_ticker(silence, expire, true)
+    }
+
+    /// The same watch with no live tick thread: a test harness drives every
+    /// tick through `tick_for_test`, so an expiry it backdated cannot be
+    /// stolen by the thread's own 50 ms cadence.
+    #[cfg(test)]
+    pub(crate) fn new_without_ticker(silence: Duration, expire: Expire) -> Arc<Self> {
+        Self::with_ticker(silence, expire, false)
+    }
+
+    fn with_ticker(silence: Duration, expire: Expire, spawn_ticker: bool) -> Arc<Self> {
         let watch = Arc::new(Self {
             silence,
             expire,
@@ -107,20 +119,22 @@ impl TurnWatch {
                     .unwrap_or(u64::MAX),
             ),
         });
-        let thread_watch = Arc::downgrade(&watch);
-        let _ = std::thread::Builder::new()
-            .name("turn-watch".to_string())
-            .spawn(move || loop {
-                let Some(watch) = thread_watch.upgrade() else {
-                    return;
-                };
-                if watch.stop.load(Ordering::Acquire) {
-                    return;
-                }
-                watch.tick();
-                drop(watch);
-                std::thread::sleep(Duration::from_millis(50));
-            });
+        if spawn_ticker {
+            let thread_watch = Arc::downgrade(&watch);
+            let _ = std::thread::Builder::new()
+                .name("turn-watch".to_string())
+                .spawn(move || loop {
+                    let Some(watch) = thread_watch.upgrade() else {
+                        return;
+                    };
+                    if watch.stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    watch.tick();
+                    drop(watch);
+                    std::thread::sleep(Duration::from_millis(50));
+                });
+        }
         watch
     }
 

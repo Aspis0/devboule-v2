@@ -11,7 +11,7 @@ use devboule_protocol::SessionEvent;
 use serde_json::Value;
 
 use crate::session::permission_broker::PermissionBroker;
-use crate::session::turn_watch::{silence_from_env, watchdog_message, TurnWatch};
+use crate::session::turn_watch::{silence_from_env, watchdog_message, Expire, TurnWatch};
 
 /// The turn watchdog's silence bound: quiet stretches with nothing carded
 /// and nothing running past the tool grace. Twice the house silence mark —
@@ -151,37 +151,81 @@ pub(super) fn pi_turn_watch(
 ) -> Arc<TurnWatch> {
     TurnWatch::new(
         silence,
-        Arc::new(move |runtime, _prompt, silence_bound| {
-            // Past a kill the run is already ended — the kill wrote its
-            // own abort — and settling on the gone child would publish an
-            // expiry for a turn the kill owns.
-            if cancelled.load(Ordering::Acquire) {
-                return;
-            }
-            write_abort_frame(&stdin, &next_id);
-            // The expiry is the abort road: the poll window belongs to the
-            // run just ended, and a silent pi will not close it itself.
-            if let Some(usage) = &usage_poller {
-                usage.stop_window();
-            }
-            broker.cancel_pending();
-            let _ = runtime.settle_turn_finish(|| false);
-            let _ = runtime.publish_agent_error(watchdog_message("Pi", silence_bound));
-            let published = runtime.publish_daemon_event(SessionEvent::AgentFinished {
-                at_ms: None,
-                stop_reason: "error".to_string(),
-                model_id: None,
-                usage: None,
-            });
-            // The late end is owed only for a finish that landed: a publish
-            // the closed stream refused leaves nothing for a late end to
-            // duplicate, and an owed mark with no finish behind it would eat
-            // the next turn's own end.
-            if published {
-                owed_late_end.owe();
-            }
-        }),
+        pi_expire(
+            stdin,
+            next_id,
+            broker,
+            cancelled,
+            owed_late_end,
+            usage_poller,
+        ),
     )
+}
+
+/// The harness construction: no live tick thread, so a backdated activity is
+/// judged only by the test's own `tick_for_test` and `drain` never races a
+/// thread-owned expiry.
+#[cfg(test)]
+pub(in crate::session::pi_client) fn pi_turn_watch_for_test(
+    silence: Duration,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    broker: Arc<PermissionBroker>,
+    cancelled: Arc<AtomicBool>,
+    owed_late_end: Arc<OwedTurnEnd>,
+    usage_poller: Option<Arc<super::pi_usage_poller::PiUsagePoller>>,
+) -> Arc<TurnWatch> {
+    TurnWatch::new_without_ticker(
+        silence,
+        pi_expire(
+            stdin,
+            next_id,
+            broker,
+            cancelled,
+            owed_late_end,
+            usage_poller,
+        ),
+    )
+}
+
+fn pi_expire(
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    broker: Arc<PermissionBroker>,
+    cancelled: Arc<AtomicBool>,
+    owed_late_end: Arc<OwedTurnEnd>,
+    usage_poller: Option<Arc<super::pi_usage_poller::PiUsagePoller>>,
+) -> Expire {
+    Arc::new(move |runtime, _prompt, silence_bound| {
+        // Past a kill the run is already ended — the kill wrote its
+        // own abort — and settling on the gone child would publish an
+        // expiry for a turn the kill owns.
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        write_abort_frame(&stdin, &next_id);
+        // The expiry is the abort road: the poll window belongs to the
+        // run just ended, and a silent pi will not close it itself.
+        if let Some(usage) = &usage_poller {
+            usage.stop_window();
+        }
+        broker.cancel_pending();
+        let _ = runtime.settle_turn_finish(|| false);
+        let _ = runtime.publish_agent_error(watchdog_message("Pi", silence_bound));
+        let published = runtime.publish_daemon_event(SessionEvent::AgentFinished {
+            at_ms: None,
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        });
+        // The late end is owed only for a finish that landed: a publish
+        // the closed stream refused leaves nothing for a late end to
+        // duplicate, and an owed mark with no finish behind it would eat
+        // the next turn's own end.
+        if published {
+            owed_late_end.owe();
+        }
+    })
 }
 
 #[cfg(test)]
